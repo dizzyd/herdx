@@ -13,8 +13,6 @@ final class PreferencesWindowController: NSWindowController {
     private let fontNote = NSTextField(labelWithString: "")
     private let appearancePopUp = NSPopUpButton()
     private let terminalPopUp = NSPopUpButton()
-    private let marginField = NSTextField()
-    private let marginStepper = NSStepper()
     private let paddingField = NSTextField()
     private let paddingStepper = NSStepper()
     private let backgroundWell = NSColorWell()
@@ -28,7 +26,7 @@ final class PreferencesWindowController: NSWindowController {
         self.onChange = onChange
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 440, height: 290),
+            contentRect: NSRect(x: 0, y: 0, width: 440, height: 260),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false)
@@ -79,21 +77,6 @@ final class PreferencesWindowController: NSWindowController {
         terminalPopUp.target = self
         terminalPopUp.action = #selector(changed)
 
-        marginField.alignment = .right
-        marginField.target = self
-        marginField.action = #selector(marginChanged)
-        marginField.widthAnchor.constraint(equalToConstant: 48).isActive = true
-        marginStepper.minValue = 0
-        marginStepper.maxValue = 32
-        marginStepper.increment = 1
-        marginStepper.valueWraps = false
-        marginStepper.target = self
-        marginStepper.action = #selector(marginStepped)
-
-        let margin = NSStackView(views: [marginField, marginStepper, caption("points")])
-        margin.orientation = .horizontal
-        margin.spacing = 4
-
         paddingField.alignment = .right
         paddingField.target = self
         paddingField.action = #selector(paddingChanged)
@@ -129,7 +112,6 @@ final class PreferencesWindowController: NSWindowController {
             [label("Appearance:"), appearancePopUp],
             [label("Terminal:"), terminalPopUp],
             [label("Colours:"), colours],
-            [label("Margin:"), margin],
             [label("Pane padding:"), padding],
         ])
         grid.rowSpacing = 10
@@ -190,8 +172,6 @@ final class PreferencesWindowController: NSWindowController {
         backgroundWell.color = preferences.background ?? resolved.background
         foregroundWell.color = preferences.foreground ?? resolved.foreground
 
-        marginField.stringValue = String(format: "%.0f", preferences.margin)
-        marginStepper.doubleValue = Double(preferences.margin)
         paddingField.stringValue = String(format: "%.0f", preferences.panePadding)
         paddingStepper.doubleValue = Double(preferences.panePadding)
     }
@@ -218,16 +198,6 @@ final class PreferencesWindowController: NSWindowController {
     /// does not apply to a terminal grid.
     @objc func validModesForFontPanel(_ panel: NSFontPanel) -> NSFontPanel.ModeMask {
         [.collection, .face, .size]
-    }
-
-    @objc private func marginStepped() {
-        preferences.margin = CGFloat(marginStepper.doubleValue)
-        apply()
-    }
-
-    @objc private func marginChanged() {
-        preferences.margin = CGFloat(marginField.doubleValue).clamped(to: 0...32)
-        apply()
     }
 
     @objc private func paddingStepped() {

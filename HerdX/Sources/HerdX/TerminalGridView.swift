@@ -9,30 +9,29 @@ import CHerdrCore
 /// later without changing how surfaces or patches are delivered.
 final class TerminalGridView: NSView {
     var session: HerdrSession?
-    var theme: Theme = .dark
+    /// Cached pane colours are resolved against the theme, so they go stale
+    /// with it.
+    var theme: Theme = .dark {
+        didSet { recomputePaneBackgrounds() }
+    }
     var onResize: ((Int, Int) -> Void)?
     /// Raised when a click lands in a pane that does not have focus.
     var onFocusPane: ((String) -> Void)?
 
     private(set) var cellSize: CGSize = .zero
-    /// Breathing room between the terminal and the window edge.
+    /// Space between a pane's border and its text.
     ///
     /// Applied once as a translation when drawing, and subtracted again when
     /// hit-testing, so every cell-to-point conversion stays in plain cell
-    /// coordinates.
-    private var contentInset: CGFloat = 4
-
-    /// Space between a pane's border and its text.
-    ///
-    /// Drawn rather than reserved in cells: the server decides how many cells
-    /// each pane gets, so this shifts the content inside that area. The grid
-    /// asks for enough slack to cover it, which is why it is reported too.
+    /// coordinates. It is drawn rather than reserved per pane — the server
+    /// decides how many cells each pane gets — so the grid asks for enough
+    /// slack to cover it, which is why the server has to be told when it
+    /// changes.
     private var panePadding: CGFloat = 6
 
-    /// Both change how many cells fit, so the server has to be told.
-    func apply(margin: CGFloat, panePadding padding: CGFloat) {
-        guard margin != contentInset || padding != panePadding else { return }
-        contentInset = margin
+    /// It changes how many cells fit, so the server has to be told.
+    func apply(panePadding padding: CGFloat) {
+        guard padding != panePadding else { return }
         panePadding = padding
         reportGridSize()
         needsDisplay = true
@@ -48,6 +47,15 @@ final class TerminalGridView: NSView {
     /// allocating a string per pane, which is far too much work to repeat for
     /// every mouse-moved and scroll event.
     private(set) var panes: [PaneView] = []
+
+    /// The colour each pane is mostly painted in, keyed by pane id.
+    ///
+    /// The padding around a pane's text belongs to that pane, not to the
+    /// window, so it has to be filled in the pane's own background — a program
+    /// that sets its own would otherwise sit in a frame of the theme's colour.
+    /// Recomputed only when the surface advances, since counting cells per
+    /// frame would be far too much work for something that rarely changes.
+    private var paneBackgrounds: [String: NSColor] = [:]
 
     /// The focused pane, from the snapshot rather than the surface.
     ///
@@ -113,7 +121,7 @@ final class TerminalGridView: NSView {
         guard cellSize.width > 0, cellSize.height > 0 else { return (80, 24) }
         // The padding is drawn inside each pane, so leave room for it or the
         // last column and row would be pushed under the border.
-        let reserved = (contentInset + panePadding) * 2
+        let reserved = panePadding * 2
         let usable = CGSize(width: bounds.width - reserved, height: bounds.height - reserved)
         return (
             max(Int(usable.width / cellSize.width), 1),
@@ -148,6 +156,7 @@ final class TerminalGridView: NSView {
     func forgetSurface() {
         lastRevision = .max
         panes = []
+        paneBackgrounds = [:]
         selection = nil
         copyMode = nil
         paneViews.values.forEach { $0.removeFromSuperview() }
@@ -164,6 +173,7 @@ final class TerminalGridView: NSView {
         guard let latest, latest.revision != lastRevision else { return }
         lastRevision = latest.revision
         panes = latest.panes
+        recomputePaneBackgrounds()
         pruneImageCache(keeping: latest.placements)
         syncPaneViews()
         needsDisplay = true
@@ -196,6 +206,56 @@ final class TerminalGridView: NSView {
     /// to diagnose from a screenshot.
     var placeholder: String?
 
+    /// Finds the dominant background of each pane.
+    ///
+    /// The mode rather than, say, the first cell: a pane's first row is as
+    /// likely to be a coloured status line as it is to be ordinary output, and
+    /// the colour wanted here is the one the pane is mostly filled with.
+    private func recomputePaneBackgrounds() {
+        guard let session, !panes.isEmpty else {
+            paneBackgrounds = [:]
+            return
+        }
+        paneBackgrounds =
+            session.withGrid { grid in
+                var result: [String: NSColor] = [:]
+                for pane in panes {
+                    let maxY = min(pane.inner.y + pane.inner.height, grid.height)
+                    let maxX = min(pane.inner.x + pane.inner.width, grid.width)
+                    guard maxX > pane.inner.x, maxY > pane.inner.y else { continue }
+
+                    var counts: [UInt32: Int] = [:]
+                    for row in pane.inner.y..<maxY {
+                        let base = row * grid.width
+                        for col in pane.inner.x..<maxX {
+                            counts[grid.cells[base + col].bg, default: 0] += 1
+                        }
+                    }
+                    guard let packed = counts.max(by: { $0.value < $1.value })?.key else {
+                        continue
+                    }
+                    result[pane.id] = PackedColor(packed, theme: theme, isForeground: false)
+                        .resolved(theme: theme, isForeground: false)
+                }
+                return result
+            } ?? [:]
+    }
+
+    /// The colour to lay a pane down on, and to leave showing in its padding.
+    private func background(of pane: PaneView) -> NSColor {
+        paneBackgrounds[pane.id] ?? theme.background
+    }
+
+    /// A pane's text area grown by the padding: what the pane visually covers.
+    private func paddedRect(of pane: PaneView) -> CGRect {
+        CGRect(
+            x: CGFloat(pane.inner.x) * cellSize.width,
+            y: CGFloat(pane.inner.y) * cellSize.height,
+            width: CGFloat(pane.inner.width) * cellSize.width,
+            height: CGFloat(pane.inner.height) * cellSize.height
+        ).insetBy(dx: -panePadding, dy: -panePadding)
+    }
+
     /// The container paints only the background; panes draw themselves.
     override func draw(_ dirtyRect: NSRect) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
@@ -208,13 +268,22 @@ final class TerminalGridView: NSView {
 
         if !panes.isEmpty, let session {
             context.saveGState()
-            context.translateBy(x: contentInset + panePadding, y: contentInset + panePadding)
+            context.translateBy(x: panePadding, y: panePadding)
             session.withGrid { grid in
                 for pane in panes {
+                    let background = background(of: pane)
+                    if background != theme.background {
+                        context.addPath(
+                            CGPath(
+                                roundedRect: paddedRect(of: pane), cornerWidth: 4,
+                                cornerHeight: 4, transform: nil))
+                        context.setFillColor(background.cgColor)
+                        context.fillPath()
+                    }
                     // The pane's *inner* rect: the margin between it and `rect`
                     // is where the server drew its own border, and drawing both
                     // that and ours gave every pane a double outline.
-                    drawRegion(grid, pane.inner, in: context)
+                    drawRegion(grid, pane.inner, over: background, in: context)
                     drawImages(grid, in: context, within: pane.inner)
                 }
                 drawSelection(grid, in: context)
@@ -332,14 +401,8 @@ final class TerminalGridView: NSView {
     /// which pane takes your keystrokes is obvious without a second outline
     /// competing with it.
     private func drawPaneBorder(_ pane: PaneView, in context: CGContext) {
-        let rect = CGRect(
-            x: CGFloat(pane.inner.x) * cellSize.width,
-            y: CGFloat(pane.inner.y) * cellSize.height,
-            width: CGFloat(pane.inner.width) * cellSize.width,
-            height: CGFloat(pane.inner.height) * cellSize.height
-        ).insetBy(dx: -panePadding, dy: -panePadding)
-
-        let path = CGPath(roundedRect: rect, cornerWidth: 4, cornerHeight: 4, transform: nil)
+        let path = CGPath(
+            roundedRect: paddedRect(of: pane), cornerWidth: 4, cornerHeight: 4, transform: nil)
         context.addPath(path)
         if pane.focused {
             context.setStrokeColor(NSColor.controlAccentColor.cgColor)
@@ -375,7 +438,9 @@ final class TerminalGridView: NSView {
         }
     }
 
-    private func drawRegion(_ grid: GridView, _ region: CellRect, in context: CGContext) {
+    private func drawRegion(
+        _ grid: GridView, _ region: CellRect, over base: NSColor, in context: CGContext
+    ) {
         let maxY = min(region.y + region.height, grid.height)
         let maxX = min(region.x + region.width, grid.width)
         guard maxX > region.x, maxY > region.y else { return }
@@ -391,12 +456,13 @@ final class TerminalGridView: NSView {
                 let bg = resolvedBackground(cell, style: style)
 
                 if bg != runColor {
-                    flushBackground(runColor, from: runStart, to: col, row: row, in: context)
+                    flushBackground(
+                        runColor, from: runStart, to: col, row: row, over: base, in: context)
                     runStart = col
                     runColor = bg
                 }
             }
-            flushBackground(runColor, from: runStart, to: maxX, row: row, in: context)
+            flushBackground(runColor, from: runStart, to: maxX, row: row, over: base, in: context)
 
             drawText(grid, row: row, from: region.x, to: maxX, in: context)
         }
@@ -411,9 +477,11 @@ final class TerminalGridView: NSView {
     }
 
     private func flushBackground(
-        _ color: NSColor?, from startCol: Int, to endCol: Int, row: Int, in context: CGContext
+        _ color: NSColor?, from startCol: Int, to endCol: Int, row: Int, over base: NSColor,
+        in context: CGContext
     ) {
-        guard let color, endCol > startCol, color != theme.background else { return }
+        // Cells matching what the pane was laid down on are already painted.
+        guard let color, endCol > startCol, color != base else { return }
         color.setFill()
         context.fill(
             CGRect(
@@ -573,7 +641,7 @@ extension TerminalGridView {
     private func hit(_ event: NSEvent) -> (pane: PaneView, column: Int, row: Int)? {
         guard cellSize.width > 0, cellSize.height > 0 else { return nil }
         let point = convert(event.locationInWindow, from: nil)
-        let origin = contentInset + panePadding
+        let origin = panePadding
         let column = Int((point.x - origin) / cellSize.width)
         let row = Int((point.y - origin) / cellSize.height)
 
@@ -594,8 +662,8 @@ extension TerminalGridView {
             button: button,
             column: UInt16(max(column, 0)),
             row: UInt16(max(row, 0)),
-            pixel_x: UInt32(max(point.x - contentInset - panePadding, 0)),
-            pixel_y: UInt32(max(point.y - contentInset - panePadding, 0)),
+            pixel_x: UInt32(max(point.x - panePadding, 0)),
+            pixel_y: UInt32(max(point.y - panePadding, 0)),
             modifiers: KeyMapper.modifiers(event.modifierFlags),
             lines: UInt16(max(lines, 0)))
     }

@@ -38,8 +38,6 @@ struct Preferences {
     /// particular background — it has to be the same colour.
     var background: NSColor?
     var foreground: NSColor?
-    /// Space between the terminal and the window edge, in points.
-    var margin: CGFloat
     /// Space between a pane's border and its text, in points.
     var panePadding: CGFloat
 
@@ -50,7 +48,6 @@ struct Preferences {
         static let terminalAppearance = "terminalAppearance"
         static let background = "terminalBackground"
         static let foreground = "terminalForeground"
-        static let margin = "terminalMargin"
         static let panePadding = "panePadding"
     }
 
@@ -88,7 +85,6 @@ struct Preferences {
                     .flatMap(Appearance.init(rawValue:)) ?? .system,
                 background: decode(defaults.string(forKey: Key.background)),
                 foreground: decode(defaults.string(forKey: Key.foreground)),
-                margin: defaults.object(forKey: Key.margin) as? CGFloat ?? 4,
                 panePadding: defaults.object(forKey: Key.panePadding) as? CGFloat ?? 6)
         }
         set {
@@ -99,7 +95,6 @@ struct Preferences {
             defaults.set(newValue.terminalAppearance.rawValue, forKey: Key.terminalAppearance)
             defaults.set(encode(newValue.background), forKey: Key.background)
             defaults.set(encode(newValue.foreground), forKey: Key.foreground)
-            defaults.set(newValue.margin, forKey: Key.margin)
             defaults.set(newValue.panePadding, forKey: Key.panePadding)
         }
     }

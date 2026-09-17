@@ -96,6 +96,15 @@ pub fn discover() -> Vec<Endpoint> {
 
 /// The endpoint herdr last had selected, so the app opens where you left off.
 pub fn saved_selection() -> Option<String> {
+    // `HERDX_ENDPOINT` picks an endpoint for one run without writing to the
+    // selection the TUI shares, which matters for headless capture: a remote
+    // endpoint needs an ssh key the agent may refuse, and there is no point
+    // photographing a window that is still connecting.
+    if let Ok(forced) = std::env::var("HERDX_ENDPOINT") {
+        if !forced.is_empty() {
+            return Some(forced);
+        }
+    }
     let text = std::fs::read_to_string(client_state_dir().join("endpoint-selection.json")).ok()?;
     serde_json::from_str::<Selection>(&text).ok()?.selected_profile
 }
