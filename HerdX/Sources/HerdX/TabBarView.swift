@@ -7,22 +7,21 @@ import AppKit
 /// you scan, while tabs are the thing you flick between constantly. Nesting
 /// them made every level of the tree look selected at once.
 final class TabBarView: NSView {
-    static let height: CGFloat = 30
+    static let height: CGFloat = 34
 
     var onSelectTab: ((String) -> Void)?
     var onCloseTab: ((String) -> Void)?
     var onNewTab: (() -> Void)?
 
     private let stack = NSStackView()
-    private var theme: Theme = .dark
+    private var chrome = Chrome(theme: .dark)
     private var lastSignature: String?
 
     /// Drawn rather than set on the layer: a layer background is not part of
     /// the view's own drawing, which makes it invisible to anything that
     /// renders the hierarchy through `draw`, including the offscreen capture.
     override func draw(_ dirtyRect: NSRect) {
-        let tint: NSColor = theme.background.isDarkish ? .white : .black
-        (theme.background.blended(withFraction: 0.05, of: tint) ?? theme.background).setFill()
+        chrome.content.setFill()
         dirtyRect.fill()
     }
 
@@ -32,9 +31,9 @@ final class TabBarView: NSView {
         layerContentsRedrawPolicy = .onSetNeedsDisplay
 
         stack.orientation = .horizontal
-        stack.spacing = 4
+        stack.spacing = 2
         stack.alignment = .centerY
-        stack.edgeInsets = NSEdgeInsets(top: 3, left: 8, bottom: 3, right: 8)
+        stack.edgeInsets = NSEdgeInsets(top: 3, left: 12, bottom: 3, right: 8)
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
         NSLayoutConstraint.activate([
@@ -47,8 +46,8 @@ final class TabBarView: NSView {
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    func apply(theme: Theme) {
-        self.theme = theme
+    func apply(chrome: Chrome) {
+        self.chrome = chrome
         needsDisplay = true
         lastSignature = nil
     }
@@ -58,8 +57,15 @@ final class TabBarView: NSView {
         let tabs = snapshot.map { snapshot in
             snapshot.tabs.filter { $0.workspaceID == snapshot.focusedWorkspaceID }
         } ?? []
+        // A tab holding one pane is the ordinary case and says nothing worth
+        // the width, so only a split is counted out.
+        let panes = Dictionary(
+            grouping: snapshot?.panes ?? [], by: \.tabID
+        ).mapValues(\.count)
 
-        let signature = tabs.map { "\($0.tabID):\($0.label):\($0.focused):\($0.agentStatus)" }
+        let signature =
+            tabs
+            .map { "\($0.tabID):\($0.label):\($0.focused):\($0.agentStatus):\(panes[$0.tabID] ?? 1)" }
             .joined(separator: "|")
         guard lastSignature != signature else { return }
         lastSignature = signature
@@ -67,16 +73,16 @@ final class TabBarView: NSView {
         for tab in tabs {
             stack.addArrangedSubview(
                 TabChip(
-                    tab: tab, onDark: theme.background.isDarkish,
+                    tab: tab, paneCount: panes[tab.tabID] ?? 1, chrome: chrome,
                     onSelect: { [weak self] in self?.onSelectTab?(tab.tabID) },
                     onClose: { [weak self] in self?.onCloseTab?(tab.tabID) }))
         }
 
-        let add = NSButton(title: "+", target: self, action: #selector(newTab))
-        add.bezelStyle = .inline
+        let add = NSButton(
+            image: NSImage(systemSymbolName: "plus", accessibilityDescription: "New tab")
+                ?? NSImage(), target: self, action: #selector(newTab))
         add.isBordered = false
-        add.font = .systemFont(ofSize: 14)
-        add.contentTintColor = .secondaryLabelColor
+        add.contentTintColor = chrome.secondary
         stack.addArrangedSubview(add)
     }
 
@@ -88,47 +94,56 @@ private final class TabChip: NSView {
     private let onSelect: () -> Void
     private let onClose: () -> Void
     private let focused: Bool
-    private let onDark: Bool
+    private let chrome: Chrome
     private var hovered = false
     private var trackingArea: NSTrackingArea?
-    private let close = NSButton(title: "×", target: nil, action: nil)
+    private let close = NSButton()
 
     init(
-        tab: Snapshot.Tab, onDark: Bool, onSelect: @escaping () -> Void,
+        tab: Snapshot.Tab, paneCount: Int, chrome: Chrome, onSelect: @escaping () -> Void,
         onClose: @escaping () -> Void
     ) {
         self.onSelect = onSelect
         self.onClose = onClose
         focused = tab.focused
-        self.onDark = onDark
+        self.chrome = chrome
         super.init(frame: .zero)
 
         wantsLayer = true
-        layer?.cornerRadius = 5
+        layer?.cornerRadius = 6
 
-        let dot = NSTextField(labelWithString: "●")
-        dot.font = .systemFont(ofSize: 7)
-        dot.textColor = SidebarRow.color(for: tab.agentStatus, onDark: onDark)
+        let dot = StatusDot()
+        dot.set(status: tab.agentStatus, chrome: chrome)
 
         // herdr's label is what the TUI shows; the number is internal and
         // usually the same, which read as "1 1".
         let title = tab.label.isEmpty ? "\(tab.number)" : tab.label
         let label = NSTextField(labelWithString: tab.zoomed ? "\(title) ⤢" : title)
-        label.font = .systemFont(ofSize: 11, weight: focused ? .semibold : .regular)
-        label.textColor = focused ? .labelColor : .secondaryLabelColor
+        label.font = .systemFont(ofSize: 12, weight: .semibold)
+        label.textColor = focused ? chrome.primary : chrome.secondary
 
+        var views: [NSView] = [dot, label]
+
+        if paneCount > 1 {
+            let count = NSTextField(labelWithString: "\(paneCount)")
+            count.font = .systemFont(ofSize: 11)
+            count.textColor = chrome.tertiary
+            views.append(count)
+        }
+
+        close.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close tab")
         close.isBordered = false
-        close.font = .systemFont(ofSize: 10)
-        close.contentTintColor = .tertiaryLabelColor
+        close.contentTintColor = chrome.tertiary
         close.target = self
         close.action = #selector(closeTab)
         // Only shown on hover, so a row of tabs is not a row of buttons.
         close.isHidden = true
+        views.append(close)
 
-        let row = NSStackView(views: [dot, label, close])
+        let row = NSStackView(views: views)
         row.orientation = .horizontal
-        row.spacing = 5
-        row.edgeInsets = NSEdgeInsets(top: 3, left: 8, bottom: 3, right: 6)
+        row.spacing = 6
+        row.edgeInsets = NSEdgeInsets(top: 4, left: 9, bottom: 4, right: 7)
         row.translatesAutoresizingMaskIntoConstraints = false
         addSubview(row)
         NSLayoutConstraint.activate([
@@ -168,8 +183,10 @@ private final class TabChip: NSView {
     @objc private func closeTab() { onClose() }
 
     private func updateBackground() {
-        let alpha: CGFloat = focused ? 0.16 : (hovered ? 0.08 : 0)
-        layer?.backgroundColor = (onDark ? NSColor.white : NSColor.black)
-            .withAlphaComponent(alpha).cgColor
+        // The active tab is tinted toward the accent rather than filled with
+        // it: a saturated chip beside a terminal pulls the eye away from the
+        // output, which is the thing actually worth looking at.
+        let fill: NSColor? = focused ? chrome.accentFill : (hovered ? chrome.hover : nil)
+        layer?.backgroundColor = fill?.cgColor
     }
 }

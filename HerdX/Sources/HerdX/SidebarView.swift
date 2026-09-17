@@ -1,6 +1,11 @@
 import AppKit
 
 /// One clickable row in the sidebar.
+///
+/// Two lines, like herdr's own list: the name you are looking for on top and
+/// the context that distinguishes two rows with the same name underneath. A
+/// single line forced "paperless-go" and "paperless-go" to be told apart by a
+/// truncated suffix.
 final class SidebarRow: NSView {
     enum Target {
         case endpoint(Int)
@@ -11,65 +16,117 @@ final class SidebarRow: NSView {
 
     let target: Target
     private let onSelect: (Target) -> Void
+    /// Raised by the disclosure triangle, which acts on the row without
+    /// selecting it.
+    private let onToggle: (() -> Void)?
     private var hovered = false
     private let selected: Bool
-    private let onDark: Bool
+    private let chrome: Chrome
     private var trackingArea: NSTrackingArea?
 
     init(
-        text: String,
-        detail: String?,
+        title: String,
+        subtitle: String?,
         status: Snapshot.AgentStatus,
+        symbol: String?,
+        shortcut: String?,
+        collapsed: Bool?,
         selected: Bool,
         indent: CGFloat,
-        onDark: Bool,
+        chrome: Chrome,
         target: Target,
-        onSelect: @escaping (Target) -> Void
+        onSelect: @escaping (Target) -> Void,
+        onToggle: (() -> Void)? = nil
     ) {
         self.target = target
         self.selected = selected
-        self.onDark = onDark
+        self.chrome = chrome
         self.onSelect = onSelect
+        self.onToggle = onToggle
         super.init(frame: .zero)
 
         wantsLayer = true
-        layer?.cornerRadius = 5
+        layer?.cornerRadius = 6
 
-        let dot = NSTextField(labelWithString: "●")
-        dot.font = .systemFont(ofSize: 8)
-        dot.textColor = Self.color(for: status, onDark: onDark)
+        var leading: [NSView] = []
 
-        let label = NSTextField(labelWithString: text)
-        label.font = .systemFont(ofSize: 12, weight: selected ? .semibold : .regular)
-        label.textColor = selected ? .labelColor : .secondaryLabelColor
-        label.lineBreakMode = .byTruncatingTail
-        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-
-        let stack = NSStackView(views: [dot, label])
-        stack.orientation = .horizontal
-        stack.spacing = 6
-
-        if let detail, !detail.isEmpty {
-            let branch = NSTextField(labelWithString: detail)
-            branch.font = .systemFont(ofSize: 10)
-            branch.textColor = .tertiaryLabelColor
-            branch.lineBreakMode = .byTruncatingTail
-            branch.setContentCompressionResistancePriority(.defaultLow - 1, for: .horizontal)
-            stack.addArrangedSubview(branch)
+        if let collapsed {
+            let chevron = NSButton(
+                image: Self.symbol(collapsed ? "chevron.right" : "chevron.down", size: 9)
+                    ?? NSImage(), target: self, action: #selector(toggle))
+            chevron.isBordered = false
+            chevron.contentTintColor = chrome.tertiary
+            chevron.widthAnchor.constraint(equalToConstant: 12).isActive = true
+            leading.append(chevron)
         }
 
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(stack)
+        if let symbol, let image = Self.symbol(symbol, size: 11) {
+            let glyph = NSImageView(image: image)
+            glyph.contentTintColor = chrome.secondary
+            glyph.widthAnchor.constraint(equalToConstant: 15).isActive = true
+            leading.append(glyph)
+        } else {
+            let dot = StatusDot()
+            dot.set(status: status, chrome: chrome)
+            leading.append(dot)
+        }
+
+        let name = NSTextField(labelWithString: title)
+        name.font = .systemFont(ofSize: 12, weight: .semibold)
+        name.textColor = chrome.primary
+        name.lineBreakMode = .byTruncatingTail
+        name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        let caption = NSTextField(labelWithString: subtitle ?? "")
+        caption.font = .systemFont(ofSize: 11)
+        caption.textColor = chrome.tertiary
+        caption.lineBreakMode = .byTruncatingTail
+        caption.setContentCompressionResistancePriority(.defaultLow - 1, for: .horizontal)
+        caption.isHidden = (subtitle ?? "").isEmpty
+
+        let lines = NSStackView(views: [name, caption])
+        lines.orientation = .vertical
+        lines.alignment = .leading
+        lines.spacing = 1
+
+        let row = NSStackView(views: leading + [lines])
+        row.orientation = .horizontal
+        // The glyph sits beside the pair of lines, aligned with the first of
+        // them rather than floating in the middle of both.
+        row.alignment = .top
+        row.spacing = 6
+
+        // A keystroke that reaches this row, shown where a menu would show it.
+        if let shortcut {
+            let key = NSTextField(labelWithString: shortcut)
+            key.font = .systemFont(ofSize: 11)
+            key.textColor = chrome.tertiary
+            key.setContentCompressionResistancePriority(.required, for: .horizontal)
+            key.setContentHuggingPriority(.required, for: .horizontal)
+            row.addArrangedSubview(key)
+        }
+
+        row.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(row)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6 + indent),
-            stack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -6),
-            stack.topAnchor.constraint(equalTo: topAnchor, constant: 3),
-            stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -3),
+            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8 + indent),
+            row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            row.topAnchor.constraint(equalTo: topAnchor, constant: 5),
+            row.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -5),
         ])
+        // The glyph column aligns with the name, not the top of the row's box.
+        for view in leading {
+            view.centerYAnchor.constraint(equalTo: name.centerYAnchor).isActive = true
+        }
         updateBackground()
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
+
+    private static func symbol(_ name: String, size: CGFloat) -> NSImage? {
+        NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: size, weight: .medium))
+    }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -94,27 +151,11 @@ final class SidebarRow: NSView {
         onSelect(target)
     }
 
-    private func updateBackground() {
-        let alpha: CGFloat = selected ? 0.16 : (hovered ? 0.08 : 0)
-        // Lightening works on a dark sidebar and darkening on a light one;
-        // using white for both makes the highlight vanish in light mode.
-        let tint: NSColor = onDark ? .white : .black
-        layer?.backgroundColor = tint.withAlphaComponent(alpha).cgColor
-    }
+    @objc private func toggle() { onToggle?() }
 
-    /// herdr's whole point is knowing which agents need you, so blocked has to
-    /// be the one that catches the eye.
-    static func color(for status: Snapshot.AgentStatus, onDark: Bool) -> NSColor {
-        switch status {
-        case .working:
-            return onDark ? Theme.rgb(102, 178, 242) : Theme.rgb(20, 110, 200)
-        case .blocked:
-            return onDark ? Theme.rgb(242, 166, 64) : Theme.rgb(186, 106, 10)
-        case .done:
-            return onDark ? Theme.rgb(115, 204, 128) : Theme.rgb(30, 140, 60)
-        case .idle, .unknown:
-            return onDark ? NSColor(white: 0.38, alpha: 1) : NSColor(white: 0.66, alpha: 1)
-        }
+    private func updateBackground() {
+        let fill: NSColor? = selected ? chrome.raised : (hovered ? chrome.hover : nil)
+        layer?.backgroundColor = fill?.cgColor
     }
 }
 
@@ -126,7 +167,7 @@ final class SidebarRow: NSView {
 /// selection. Tabs live in the tab bar; agents show up as the status of the
 /// workspace and tab that contain them.
 final class SidebarView: NSView {
-    static let width: CGFloat = 220
+    static let width: CGFloat = 240
 
     /// Raised when a row is clicked, with the method needed to focus it.
     var onSelect: ((Command) -> Void)?
@@ -138,15 +179,28 @@ final class SidebarView: NSView {
     private let stack = NSStackView()
     /// What the rows were last built from, so they are not rebuilt needlessly.
     private var lastSignature: String?
-    private var theme: Theme = .dark
+    private var chrome = Chrome(theme: .dark)
+    /// Machines whose workspaces are hidden, by endpoint id.
+    private var collapsed: Set<String> = []
+    /// The last list built, so a collapse can rebuild without waiting for a
+    /// snapshot to change.
+    private var endpoints: [EndpointInfo] = []
+    private var active = 0
+
+    /// Workspaces reachable by keystroke, in the order they are listed.
+    ///
+    /// Flat across machines, like the shortcuts herdr's own sidebar shows: the
+    /// number is a position in the list you are looking at, not a per-machine
+    /// index.
+    private(set) var shortcutTargets: [(workspaceID: String, endpoint: Int)] = []
 
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 1
-        stack.edgeInsets = NSEdgeInsets(top: 10, left: 6, bottom: 12, right: 6)
+        stack.spacing = 2
+        stack.edgeInsets = NSEdgeInsets(top: 12, left: 6, bottom: 12, right: 6)
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
         NSLayoutConstraint.activate([
@@ -159,13 +213,11 @@ final class SidebarView: NSView {
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    /// Tints the sidebar to sit just off the terminal background, so the two
-    /// panes of the window read as one surface rather than two apps.
-    func apply(theme: Theme) {
-        self.theme = theme
-        layer?.backgroundColor = theme.background.blended(
-            withFraction: 0.06,
-            of: theme.background.isDarkish ? .white : .black)?.cgColor
+    /// Sets the sidebar a shade back from the terminal, so the two halves of
+    /// the window read as one surface rather than two apps.
+    func apply(chrome: Chrome) {
+        self.chrome = chrome
+        layer?.backgroundColor = chrome.surface.cgColor
         lastSignature = nil
     }
 
@@ -183,21 +235,37 @@ final class SidebarView: NSView {
                 .map { "\($0.workspaceID):\($0.label):\($0.branch ?? ""):\($0.focused):\($0.agentStatus)" }
                 .joined(separator: ",") ?? ""
             return "\(endpoint.id):\(endpoint.status):\(workspaces)"
-        }.joined(separator: "|") + "@\(active)"
+        }.joined(separator: "|") + "@\(active)+\(collapsed.sorted().joined(separator: ","))"
         guard lastSignature != signature else { return }
         lastSignature = signature
+        self.endpoints = endpoints
+        self.active = active
 
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        shortcutTargets = []
 
         for endpoint in endpoints {
             let isActive = endpoint.index == active
             addMachine(endpoint, isActive: isActive)
-            guard let snapshot = endpoint.snapshot else { continue }
+            guard !collapsed.contains(endpoint.id), let snapshot = endpoint.snapshot else {
+                continue
+            }
             for workspace in snapshot.workspaces {
+                // Only the first nine get a keystroke, because that is how many
+                // digits there are.
+                var shortcut: String?
+                if shortcutTargets.count < 9 {
+                    shortcutTargets.append((workspace.workspaceID, endpoint.index))
+                    shortcut = "⌥⌘\(shortcutTargets.count)"
+                }
                 add(
-                    text: workspace.label,
-                    detail: workspace.branch,
+                    title: workspace.label,
+                    subtitle: [endpoint.label, workspace.branch]
+                        .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "),
                     status: workspace.agentStatus,
+                    symbol: nil,
+                    shortcut: shortcut,
+                    collapsed: nil,
                     // Only the machine you are looking at has a selected
                     // workspace; the others are focused on their own server,
                     // which is not the same as being what you are looking at.
@@ -209,25 +277,43 @@ final class SidebarView: NSView {
     }
 
     private func addMachine(_ endpoint: EndpointInfo, isActive: Bool) {
-        let detail: String?
+        // A machine is highlighted only when none of its workspaces is, or the
+        // sidebar shows two selections stacked on top of each other for what is
+        // really one choice.
+        let ownsSelection =
+            isActive && !(endpoint.snapshot?.workspaces.contains { $0.focused } ?? false)
+
+        let subtitle: String
         switch endpoint.status {
-        case .connecting: detail = "connecting…"
-        case .offline: detail = "offline"
+        case .connecting: subtitle = "connecting…"
+        case .offline: subtitle = "not connected"
         case .online:
+            let count = endpoint.snapshot?.workspaces.count ?? 0
+            let spaces = count == 1 ? "1 space" : "\(count) spaces"
             // A machine you are not looking at can still say it needs you.
-            detail = endpoint.snapshot.flatMap { snapshot in
-                snapshot.agents.contains { $0.agentStatus == .blocked }
-                    ? "needs attention" : nil
-            }
+            let blocked = endpoint.snapshot?.agents.contains { $0.agentStatus == .blocked } ?? false
+            subtitle = blocked ? "\(spaces) · needs attention" : spaces
         }
 
         add(
-            text: endpoint.label,
-            detail: detail,
+            title: endpoint.label,
+            subtitle: subtitle,
             status: Self.machineStatus(endpoint),
-            selected: isActive,
+            symbol: endpoint.isRemote ? "server.rack" : "desktopcomputer",
+            shortcut: nil,
+            collapsed: collapsed.contains(endpoint.id),
+            selected: ownsSelection,
             indent: 0,
-            target: .endpoint(endpoint.index))
+            target: .endpoint(endpoint.index),
+            onToggle: { [weak self] in
+                guard let self else { return }
+                if self.collapsed.contains(endpoint.id) {
+                    self.collapsed.remove(endpoint.id)
+                } else {
+                    self.collapsed.insert(endpoint.id)
+                }
+                self.update(endpoints: self.endpoints, active: self.active)
+            })
     }
 
     /// A machine's dot reflects its agents, falling back to its connection.
@@ -240,27 +326,33 @@ final class SidebarView: NSView {
     }
 
     private func add(
-        text: String,
-        detail: String?,
+        title: String,
+        subtitle: String?,
         status: Snapshot.AgentStatus,
+        symbol: String?,
+        shortcut: String?,
+        collapsed: Bool?,
         selected: Bool,
         indent: CGFloat,
-        target: SidebarRow.Target
+        target: SidebarRow.Target,
+        onToggle: (() -> Void)? = nil
     ) {
         let row = SidebarRow(
-            text: text, detail: detail, status: status, selected: selected,
-            indent: indent, onDark: theme.background.isDarkish, target: target
-        ) { [weak self] target in
-            switch target {
-            case .endpoint(let index): self?.onSelectEndpoint?(index)
-            case .workspace(let id, let endpoint):
-                // Clicking a workspace on another machine switches to it first,
-                // otherwise the command goes to the wrong server.
-                self?.onSelectWorkspace?(id, endpoint)
-            case .tab(let id): self?.onSelect?(.focusTab(id))
-            case .pane(let id): self?.onSelect?(.focusPane(id))
-            }
-        }
+            title: title, subtitle: subtitle, status: status, symbol: symbol,
+            shortcut: shortcut, collapsed: collapsed, selected: selected,
+            indent: indent, chrome: chrome, target: target,
+            onSelect: { [weak self] target in
+                switch target {
+                case .endpoint(let index): self?.onSelectEndpoint?(index)
+                case .workspace(let id, let endpoint):
+                    // Clicking a workspace on another machine switches to it
+                    // first, otherwise the command goes to the wrong server.
+                    self?.onSelectWorkspace?(id, endpoint)
+                case .tab(let id): self?.onSelect?(.focusTab(id))
+                case .pane(let id): self?.onSelect?(.focusPane(id))
+                }
+            },
+            onToggle: onToggle)
         row.translatesAutoresizingMaskIntoConstraints = false
         stack.addArrangedSubview(row)
         row.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -12).isActive = true

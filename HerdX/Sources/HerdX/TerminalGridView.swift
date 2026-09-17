@@ -14,6 +14,9 @@ final class TerminalGridView: NSView {
     var theme: Theme = .dark {
         didSet { recomputePaneBackgrounds() }
     }
+    /// The chrome the frame and rules are drawn from, so the terminal's edges
+    /// match the sidebar and tabs rather than the system's accent alone.
+    var chrome = Chrome(theme: .dark)
     var onResize: ((Int, Int) -> Void)?
     /// Raised when a click lands in a pane that does not have focus.
     var onFocusPane: ((String) -> Void)?
@@ -289,11 +292,7 @@ final class TerminalGridView: NSView {
                 drawSelection(grid, in: context)
                 drawCopyModeCursor(in: context)
                 drawCursor(grid, in: context)
-                if panes.count > 1 {
-                    for pane in panes {
-                        drawPaneBorder(pane, in: context)
-                    }
-                }
+                drawPaneBorders(in: context)
             }
             context.restoreGState()
             return
@@ -400,18 +399,35 @@ final class TerminalGridView: NSView {
     /// The focused pane gets the accent colour and the others a faint line, so
     /// which pane takes your keystrokes is obvious without a second outline
     /// competing with it.
-    private func drawPaneBorder(_ pane: PaneView, in context: CGContext) {
-        let path = CGPath(
-            roundedRect: paddedRect(of: pane), cornerWidth: 4, cornerHeight: 4, transform: nil)
-        context.addPath(path)
-        if pane.focused {
-            context.setStrokeColor(NSColor.controlAccentColor.cgColor)
-            context.setLineWidth(2)
-        } else {
-            context.setStrokeColor(theme.foreground.withAlphaComponent(0.15).cgColor)
-            context.setLineWidth(1)
-        }
+    /// Frames the terminal region, and the focused pane within it.
+    ///
+    /// One outer frame rather than a box per pane: boxing each one gave a split
+    /// tab a stack of nested outlines. Unfocused panes get nothing at all —
+    /// the frame already says where the terminal ends, and the only edge worth
+    /// drawing inside it is the one around the pane taking your keystrokes.
+    private func drawPaneBorders(in context: CGContext) {
+        guard !panes.isEmpty else { return }
+        let rects = panes.map { (pane: $0, rect: paddedRect(of: $0)) }
+        let outer = rects.dropFirst().reduce(rects[0].rect) { $0.union($1.rect) }
+
+        // The frame is quiet when it is only a frame, and the accent when the
+        // focused pane is the whole of it.
+        let focusedIsEverything = rects.count == 1
+        context.addPath(
+            CGPath(roundedRect: outer, cornerWidth: 5, cornerHeight: 5, transform: nil))
+        context.setStrokeColor(
+            (focusedIsEverything ? chrome.accent : chrome.separator).cgColor)
+        context.setLineWidth(focusedIsEverything ? 1.5 : 1)
         context.strokePath()
+
+        if !focusedIsEverything, let focused = rects.first(where: { $0.pane.id == focusedPane }) {
+            context.addPath(
+                CGPath(
+                    roundedRect: focused.rect, cornerWidth: 4, cornerHeight: 4, transform: nil))
+            context.setStrokeColor(chrome.accent.cgColor)
+            context.setLineWidth(1.5)
+            context.strokePath()
+        }
     }
 
     /// Paints the selection as a translucent overlay.

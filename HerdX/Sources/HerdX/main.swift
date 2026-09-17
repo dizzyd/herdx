@@ -19,6 +19,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var lastConnectError: String?
     /// A title set by a program inside a pane, which outranks ours.
     private var serverTitle: String?
+    /// Held so a theme change can recolour their dividers.
+    private var windowSplit: ChromeSplitView?
+    private var terminalSplit: ChromeSplitView?
 
     /// Runs without ever showing a window.
     ///
@@ -39,6 +42,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var appliedSystemIsDark: Bool?
     private let copyModeStatus = CopyModeStatusView()
     private let tabBar = TabBarView()
+    private let header = HeaderView()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         preferences = Preferences.current
@@ -105,6 +109,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.title = "HerdX"
         window.delegate = self
         window.center()
+        // A transparent title bar takes the window's background colour, which
+        // is what carries the chrome up over the traffic lights. Not
+        // `.fullSizeContentView`, which is the other half of that look: drawing
+        // under the title bar means every view below needs safe-area insets,
+        // and that inset shifted the terminal's dirty rect by exactly the title
+        // bar's height so it never painted.
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
 
 
         copyModeStatus.translatesAutoresizingMaskIntoConstraints = false
@@ -116,17 +128,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // correctly as a split view's arranged subview, and every attempt to
         // make it a constrained sibling ended with one of the two views never
         // drawing at all.
-        let terminalArea = NSSplitView()
+        let terminalArea = ChromeSplitView()
         terminalArea.isVertical = false
         terminalArea.dividerStyle = .thin
+        // Header, tabs and terminal are one surface, so the seams between them
+        // should not be visible at all.
+        terminalArea.seamless = true
+        terminalArea.addArrangedSubview(header)
         terminalArea.addArrangedSubview(tabBar)
         terminalArea.addArrangedSubview(gridView)
-        terminalArea.setHoldingPriority(.init(260), forSubviewAt: 0)
-        terminalArea.setHoldingPriority(.init(250), forSubviewAt: 1)
+        terminalArea.setHoldingPriority(.init(270), forSubviewAt: 0)
+        terminalArea.setHoldingPriority(.init(260), forSubviewAt: 1)
+        terminalArea.setHoldingPriority(.init(250), forSubviewAt: 2)
+        terminalSplit = terminalArea
 
-        let split = NSSplitView()
+        let split = ChromeSplitView()
         split.isVertical = true
         split.dividerStyle = .thin
+        windowSplit = split
         split.addArrangedSubview(sidebar)
         split.addArrangedSubview(terminalArea)
         // The terminal takes all the slack; the sidebar holds its width.
@@ -248,10 +267,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// what the app draws.
     private func applyTheme() {
         appliedSystemIsDark = systemIsDark
-        let chrome = preferences.theme(matching: systemIsDark)
+        // Two themes and one palette: `window` is the light/dark appearance the
+        // Mac controls follow, `terminal` is what the grid is painted in, and
+        // the palette is the chrome derived from the terminal so the window
+        // reads as one surface.
+        let windowTheme = preferences.theme(matching: systemIsDark)
         let terminal = preferences.terminalTheme(matching: systemIsDark)
+        let palette = Chrome(theme: terminal)
 
         gridView.theme = terminal
+        gridView.chrome = palette
         gridView.apply(panePadding: preferences.panePadding)
         gridView.needsDisplay = true
 
@@ -260,9 +285,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case .dark: window.appearance = NSAppearance(named: .darkAqua)
         case .light: window.appearance = NSAppearance(named: .aqua)
         }
-        sidebar.apply(theme: chrome)
-        tabBar.apply(theme: chrome)
-        copyModeStatus.apply(theme: chrome)
+        // The title bar is transparent, so the window's own colour is what
+        // shows above the sidebar and header.
+        window.backgroundColor = palette.surface
+        sidebar.apply(chrome: palette)
+        tabBar.apply(chrome: palette)
+        header.apply(chrome: palette)
+        windowSplit?.apply(chrome: palette)
+        terminalSplit?.apply(chrome: palette)
+        copyModeStatus.apply(theme: windowTheme)
         publish(theme: terminal)
     }
 
@@ -398,6 +429,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // compares a signature and returns immediately when nothing moved.
         sidebar.update(endpoints: session.endpoints, active: session.activeEndpoint)
         tabBar.update(with: session.lastSnapshot)
+        header.update(
+            snapshot: session.lastSnapshot,
+            machine: session.endpoints.first { $0.index == session.activeEndpoint }?.label)
 
         if snapshotsChanged {
             if let snapshot = session.lastSnapshot {
@@ -434,10 +468,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func installKeyMonitor() {
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, let session = self.session else { return event }
+            if self.focusListedWorkspace(event, session: session) { return nil }
             let (command, consumed) = self.chords.resolve(event)
             if let command { self.invoke(command, session: session) }
             return consumed ? nil : event
         }
+    }
+
+    /// ⌥⌘1…9 jumps to a workspace by its place in the sidebar.
+    ///
+    /// The sidebar owns the numbering because it owns the order, and the order
+    /// runs across machines: the digit means "the nth row I can see", which is
+    /// what you are counting when you reach for it.
+    private func focusListedWorkspace(_ event: NSEvent, session: HerdrSession) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard flags == [.command, .option],
+            let digit = event.charactersIgnoringModifiers.flatMap(Int.init), (1...9).contains(digit),
+            digit <= sidebar.shortcutTargets.count
+        else { return false }
+
+        let target = sidebar.shortcutTargets[digit - 1]
+        if target.endpoint != session.activeEndpoint {
+            session.setActiveEndpoint(target.endpoint)
+            gridView.forgetSurface()
+        }
+        invoke(
+            .focusWorkspace(target.workspaceID), session: session,
+            bootID: session.bootID(forEndpoint: target.endpoint))
+        window.makeFirstResponder(gridView)
+        return true
     }
 
     private func invoke(_ command: Command, session: HerdrSession, bootID: String? = nil) {
