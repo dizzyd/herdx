@@ -1164,6 +1164,12 @@ mod tests {
         }
     }
 
+    /// Installs a surface the way the receive loop does.
+    fn install(grid: &mut Grid, frame: &PaneSurfaceFrame) {
+        let mut assets = AssetCache::default();
+        grid.replace(frame, &mut assets);
+    }
+
     fn text(grid: &Grid) -> String {
         grid.source.iter().map(|c| c.symbol.as_str()).collect()
     }
@@ -1171,7 +1177,7 @@ mod tests {
     #[test]
     fn full_surface_populates_the_flattened_view() {
         let mut grid = Grid::default();
-        grid.replace(&surface(1));
+        install(&mut grid, &surface(1));
 
         assert_eq!(text(&grid), "abcdef");
         assert_eq!(grid.cells.len(), 6);
@@ -1183,7 +1189,7 @@ mod tests {
     #[test]
     fn patch_updates_only_the_spans_it_carries() {
         let mut grid = Grid::default();
-        grid.replace(&surface(1));
+        install(&mut grid, &surface(1));
 
         let applied = grid.apply_patch(&patch(
             1,
@@ -1201,7 +1207,7 @@ mod tests {
     #[test]
     fn patch_rebuilds_the_flattened_glyphs() {
         let mut grid = Grid::default();
-        grid.replace(&surface(1));
+        install(&mut grid, &surface(1));
         grid.apply_patch(&patch(
             1,
             2,
@@ -1217,7 +1223,7 @@ mod tests {
     #[test]
     fn patch_against_a_different_revision_is_refused() {
         let mut grid = Grid::default();
-        grid.replace(&surface(1));
+        install(&mut grid, &surface(1));
 
         let applied = grid.apply_patch(&patch(
             7,
@@ -1235,7 +1241,7 @@ mod tests {
     #[test]
     fn out_of_bounds_span_is_refused_without_panicking() {
         let mut grid = Grid::default();
-        grid.replace(&surface(1));
+        install(&mut grid, &surface(1));
 
         let applied = grid.apply_patch(&patch(
             1,
@@ -1398,7 +1404,7 @@ mod tests {
     #[test]
     fn patch_pane_metadata_merges_in_place() {
         let mut grid = Grid::default();
-        grid.replace(&surface(1));
+        install(&mut grid, &surface(1));
 
         let mut updated = pane("p1");
         updated.focused = false;

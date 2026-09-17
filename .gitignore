@@ -1,6 +1,7 @@
-/target
+.build/
 .DS_Store
 *.xcuserstate
-xcuserdata/
-.build/
+/build
+/target
 DerivedData/
+xcuserdata/

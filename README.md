@@ -166,10 +166,19 @@ fall back to AppKit so its font fallback still covers emoji and box drawing.
 
 ```sh
 git submodule update --init
-cargo test                                 # protocol guards, shim drift, surface model
-cargo run -p herdr-core --example probe    # handshake against a running server
-cargo run -p herdr-core --example dump     # print the current surface as text
-./scripts/bundle.sh                        # build build/HerdX.app
+./scripts/check.sh                         # build and test everything
+./scripts/bundle.sh                        # just build build/HerdX.app
+```
+
+Examples talk to a running server, which is the only way to check the parts
+that assumptions get wrong:
+
+```sh
+cargo run -p herdr-core --example probe      # handshake, snapshot, first surface
+cargo run -p herdr-core --example dump       # print the current surface as text
+cargo run -p herdr-core --example call       # invoke any endpoint method
+cargo run -p herdr-core --example selection  # read selected text back
+cargo run -p herdr-core --example copymode   # copy-mode motions and search
 ```
 
 HerdX attaches to a herdr server that is already running; start one with `herdr`

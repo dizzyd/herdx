@@ -101,8 +101,9 @@ final class EventPresenter {
             // pasteboard is the whole point of forwarding it.
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)
-        case .windowTitle(let title):
-            window?.title = title ?? "HerdX"
+        case .windowTitle:
+            // Handled by the app delegate, which knows what it outranks.
+            break
         case .bell:
             NSSound.beep()
         case .error(let message):

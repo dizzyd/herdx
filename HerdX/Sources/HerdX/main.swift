@@ -15,7 +15,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var timer: Timer?
     private let events = EventPresenter()
     private var reconnecting = false
+    /// Why the last connection attempt failed, shown while waiting.
     private var lastConnectError: String?
+    /// A title set by a program inside a pane, which outranks ours.
+    private var serverTitle: String?
     private var preferences = Preferences.current
     private var preferencesWindow: PreferencesWindowController?
     private var appearanceObserver: NSKeyValueObservation?
@@ -80,7 +83,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if !connect() {
             // A server that is not running yet is not fatal: herdr sessions
             // outlive their clients, so wait for one instead of giving up.
-            window.subtitle = "waiting for herdr…"
+            window.subtitle = "waiting for herdr… (\(lastConnectError ?? "no server"))"
+            reconnect()
         }
 
         buildMenu()
@@ -112,6 +116,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // revision when a surface actually lands, so a cheap tick is enough.
         timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60, repeats: true) { [weak self] _ in
             self?.tick()
+        }
+    }
+
+    private var workspaceTitle: String?
+
+    private func applyTitle() {
+        if let serverTitle, !serverTitle.isEmpty {
+            window.title = serverTitle
+        } else if let workspaceTitle {
+            window.title = "HerdX — \(workspaceTitle)"
+        } else {
+            window.title = "HerdX"
         }
     }
 
@@ -218,6 +234,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         reconnecting = true
         session = nil
         gridView.session = nil
+        serverTitle = nil
+        applyTitle()
         window.subtitle = "reconnecting…"
 
         // Back off so a server that is down does not get hammered, but stay
@@ -244,11 +262,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             sidebar.update(with: snapshot)
             gridView.focusedPaneFromSnapshot = snapshot.focusedPaneID
             if let focused = snapshot.workspaces.first(where: \.focused) {
-                window.title = "HerdX — \(focused.label)"
+                workspaceTitle = focused.label
                 window.subtitle = focused.branch ?? ""
             }
+            applyTitle()
         }
         for event in session.drainEvents() {
+            // A program in a pane setting the title outranks the workspace
+            // name, which is only a default; snapshots arrive constantly and
+            // would otherwise clobber it within a frame.
+            if case .windowTitle(let title) = event {
+                serverTitle = title
+                applyTitle()
+                continue
+            }
             events.present(event, window: window)
         }
         gridView.refreshIfNeeded()
