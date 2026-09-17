@@ -109,10 +109,20 @@ it in bracketed-paste markers when the program asked for them.
 
 ### Chrome
 
-The sidebar is two levels: machines, and the workspaces of the active one. Tabs
-live in a bar above the terminal instead of nested in the sidebar. Nesting them
-meant workspace, tab and agent all highlighted at once — each is "focused" in
-the snapshot — which read as noise rather than as one selection.
+The sidebar is two levels: every attached machine, and its workspaces. Tabs live
+in a bar above the terminal instead of nested in the sidebar. Nesting them meant
+workspace, tab and agent all highlighted at once — each is "focused" in the
+snapshot — which read as noise rather than as one selection.
+
+Only the machine you are looking at shows a selected workspace. The others have
+a focused workspace on their own server, which is not the same as being what you
+are looking at; clicking one switches machines first, and carries that machine's
+boot id so the command does not land on the wrong server.
+
+The tab bar and the terminal are arranged by a split view rather than as
+constrained siblings in a plain container. That is not stylistic: as siblings,
+whichever was added last drew and the other never did, which left the terminal
+blank.
 
 ### Machines
 

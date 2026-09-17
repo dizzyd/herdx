@@ -64,6 +64,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self.invoke(.newTab, session: session)
             self.window.makeFirstResponder(self.gridView)
         }
+        sidebar.onSelectWorkspace = { [weak self] workspaceID, endpoint in
+            guard let self, let session = self.session else { return }
+            if endpoint != session.activeEndpoint {
+                session.setActiveEndpoint(endpoint)
+                self.gridView.forgetSurface()
+            }
+            // The command must carry the boot id of the machine it targets, not
+            // of whichever one happened to be active a moment ago.
+            self.invoke(
+                .focusWorkspace(workspaceID), session: session,
+                bootID: session.bootID(forEndpoint: endpoint))
+            self.window.makeFirstResponder(self.gridView)
+        }
         sidebar.onSelectEndpoint = { [weak self] index in
             guard let self, let session = self.session else { return }
             session.setActiveEndpoint(index)
@@ -89,21 +102,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.delegate = self
         window.center()
 
-        // Tabs go in a title-bar accessory, the native place for them, rather
-        // than as a sibling of the terminal. Sharing a container with the grid
-        // meant one of the two never drew, depending on their order.
-        let tabs = NSTitlebarAccessoryViewController()
-        tabs.view = tabBar
-        tabs.layoutAttribute = .bottom
-        window.addTitlebarAccessoryViewController(tabs)
 
         copyModeStatus.translatesAutoresizingMaskIntoConstraints = false
+
+        // Tabs sit above the terminal and start where the terminal starts, so
+        // the sidebar keeps the whole left column.
+        //
+        // A split view rather than a plain container: the terminal renders
+        // correctly as a split view's arranged subview, and every attempt to
+        // make it a constrained sibling ended with one of the two views never
+        // drawing at all.
+        let terminalArea = NSSplitView()
+        terminalArea.isVertical = false
+        terminalArea.dividerStyle = .thin
+        terminalArea.addArrangedSubview(tabBar)
+        terminalArea.addArrangedSubview(gridView)
+        terminalArea.setHoldingPriority(.init(260), forSubviewAt: 0)
+        terminalArea.setHoldingPriority(.init(250), forSubviewAt: 1)
 
         let split = NSSplitView()
         split.isVertical = true
         split.dividerStyle = .thin
         split.addArrangedSubview(sidebar)
-        split.addArrangedSubview(gridView)
+        split.addArrangedSubview(terminalArea)
         // The terminal takes all the slack; the sidebar holds its width.
         split.setHoldingPriority(.init(260), forSubviewAt: 0)
         split.setHoldingPriority(.init(250), forSubviewAt: 1)
@@ -386,7 +407,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    private func invoke(_ command: Command, session: HerdrSession) {
+    private func invoke(_ command: Command, session: HerdrSession, bootID: String? = nil) {
         // Copy mode is entirely client-side: herdr has no endpoint method for
         // it, because the shell that owns the keymap owns the mode.
         if case .copyMode = command {
@@ -394,10 +415,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             window.makeFirstResponder(gridView)
             return
         }
-        guard let snapshot = session.lastSnapshot,
+        guard let boot = bootID ?? session.lastSnapshot?.bootID,
             let json = command.requestJSON(id: UUID().uuidString)
         else { return }
-        session.request(json, bootID: snapshot.bootID)
+        session.request(json, bootID: boot)
     }
 
     @objc private func findInPane(_ sender: Any?) {

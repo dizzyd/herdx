@@ -173,8 +173,12 @@ final class TerminalGridView: NSView {
     /// The container paints only the background; panes draw themselves.
     override func draw(_ dirtyRect: NSRect) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
+        // The whole view, not just `dirtyRect`: every cell is redrawn below,
+        // and cells whose background matches the theme skip their own fill, so
+        // clearing only the dirty rect leaves the previous frame's text showing
+        // through everywhere else.
         theme.background.setFill()
-        context.fill(dirtyRect)
+        context.fill(bounds)
 
         if !panes.isEmpty, let session {
             session.withGrid { grid in

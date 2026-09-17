@@ -4,7 +4,7 @@ import AppKit
 final class SidebarRow: NSView {
     enum Target {
         case endpoint(Int)
-        case workspace(String)
+        case workspace(String, endpoint: Int)
         case tab(String)
         case pane(String)
     }
@@ -132,6 +132,8 @@ final class SidebarView: NSView {
     var onSelect: ((Command) -> Void)?
     /// Raised when a machine is clicked.
     var onSelectEndpoint: ((Int) -> Void)?
+    /// Raised when a workspace is clicked, with the machine it belongs to.
+    var onSelectWorkspace: ((String, Int) -> Void)?
 
     private let stack = NSStackView()
     /// What the rows were last built from, so they are not rebuilt needlessly.
@@ -169,9 +171,9 @@ final class SidebarView: NSView {
 
     /// Rebuilds the machine list.
     ///
-    /// Only the active machine's workspaces are listed. The others stay
-    /// attached and reporting status — that is why they are here — but showing
-    /// every project on every machine would bury the one you are working in.
+    /// Every attached machine lists its workspaces, like herdr's own sidebar:
+    /// seeing what is running elsewhere without switching to it is the point of
+    /// attaching to several machines at once.
     func update(endpoints: [EndpointInfo], active: Int) {
         // Snapshots are republished constantly and mostly change nothing the
         // sidebar shows; rebuilding every time would throw away hover state
@@ -188,16 +190,20 @@ final class SidebarView: NSView {
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
 
         for endpoint in endpoints {
-            addMachine(endpoint, isActive: endpoint.index == active)
-            guard endpoint.index == active, let snapshot = endpoint.snapshot else { continue }
+            let isActive = endpoint.index == active
+            addMachine(endpoint, isActive: isActive)
+            guard let snapshot = endpoint.snapshot else { continue }
             for workspace in snapshot.workspaces {
                 add(
                     text: workspace.label,
                     detail: workspace.branch,
                     status: workspace.agentStatus,
-                    selected: workspace.focused,
+                    // Only the machine you are looking at has a selected
+                    // workspace; the others are focused on their own server,
+                    // which is not the same as being what you are looking at.
+                    selected: isActive && workspace.focused,
                     indent: 16,
-                    target: .workspace(workspace.workspaceID))
+                    target: .workspace(workspace.workspaceID, endpoint: endpoint.index))
             }
         }
     }
@@ -247,7 +253,10 @@ final class SidebarView: NSView {
         ) { [weak self] target in
             switch target {
             case .endpoint(let index): self?.onSelectEndpoint?(index)
-            case .workspace(let id): self?.onSelect?(.focusWorkspace(id))
+            case .workspace(let id, let endpoint):
+                // Clicking a workspace on another machine switches to it first,
+                // otherwise the command goes to the wrong server.
+                self?.onSelectWorkspace?(id, endpoint)
             case .tab(let id): self?.onSelect?(.focusTab(id))
             case .pane(let id): self?.onSelect?(.focusPane(id))
             }

@@ -132,6 +132,11 @@ final class HerdrSession {
         }
     }
 
+    /// The server boot an endpoint is on, which its commands must carry.
+    func bootID(forEndpoint index: Int) -> String? {
+        snapshots[index]?.bootID
+    }
+
     @discardableResult
     func setActiveEndpoint(_ index: Int) -> Bool {
         guard let handle else { return false }
