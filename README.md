@@ -84,6 +84,15 @@ complete one — a stitched grid is worse than a slightly stale one.
 - [ ] Promote panes to real `NSView`s (the patch-routing seam is already in place)
 - [ ] Kitty graphics, ligatures, font configuration
 
+### Rendering
+
+Rows are drawn as runs of identical style through CoreText, with every glyph
+placed at its own cell origin. Both halves matter: batching avoids running the
+text pipeline per cell, and explicit positioning stops a long run from drifting
+out of its columns, which happens because a monospace advance is rarely exactly
+the integral cell width the grid snaps to. Clusters and glyphs the font lacks
+fall back to AppKit so its font fallback still covers emoji and box drawing.
+
 ## Development
 
 ```sh

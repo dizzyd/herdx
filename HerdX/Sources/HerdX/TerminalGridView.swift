@@ -15,9 +15,11 @@ final class TerminalGridView: NSView {
     var onFocusPane: ((String) -> Void)?
 
     private(set) var cellSize: CGSize = .zero
-    private var font: NSFont
-    private var boldFont: NSFont
+    private let glyphs: GlyphRunDrawer
     private var lastRevision: UInt64 = .max
+    /// Last grid size we told the server about, so a live drag does not send a
+    /// resize per pixel.
+    private var reportedGridSize: (cols: Int, rows: Int)?
     /// Pane geometry from the last surface we drew.
     ///
     /// Cached because resolving it means crossing the FFI boundary and
@@ -42,21 +44,12 @@ final class TerminalGridView: NSView {
     override var acceptsFirstResponder: Bool { true }
 
     init(pointSize: CGFloat) {
-        font = NSFont.monospacedSystemFont(ofSize: pointSize, weight: .regular)
-        boldFont = NSFont.monospacedSystemFont(ofSize: pointSize, weight: .bold)
+        glyphs = GlyphRunDrawer(pointSize: pointSize)
+        cellSize = glyphs.cellSize
         super.init(frame: .zero)
-        measureCell()
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
-
-    /// Cell metrics come from the font's advance, so the grid stays aligned
-    /// with what the server thinks a cell is.
-    private func measureCell() {
-        let advance = font.maximumAdvancement.width
-        let lineHeight = ceil(font.ascender - font.descender + font.leading)
-        cellSize = CGSize(width: ceil(advance), height: max(lineHeight, 1))
-    }
 
     var gridSize: (cols: Int, rows: Int) {
         guard cellSize.width > 0, cellSize.height > 0 else { return (80, 24) }
@@ -68,8 +61,12 @@ final class TerminalGridView: NSView {
 
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
-        let (cols, rows) = gridSize
-        onResize?(cols, rows)
+        // A live resize drag fires this continuously; only the grid size
+        // matters to the server, so report it when it actually changes.
+        let size = gridSize
+        guard reportedGridSize == nil || reportedGridSize! != size else { return }
+        reportedGridSize = size
+        onResize?(size.cols, size.rows)
     }
 
     /// Called each tick; only repaints when the surface actually advanced.
@@ -127,9 +124,7 @@ final class TerminalGridView: NSView {
             }
             flushBackground(runColor, from: runStart, to: maxX, row: row, in: context)
 
-            for col in region.x..<maxX {
-                drawGlyph(grid, row: row, col: col, in: context)
-            }
+            drawText(grid, row: row, from: region.x, to: maxX, in: context)
         }
     }
 
@@ -154,42 +149,102 @@ final class TerminalGridView: NSView {
                 height: cellSize.height))
     }
 
-    private func drawGlyph(_ grid: GridView, row: Int, col: Int, in context: CGContext) {
-        let cell = grid.cells[row * grid.width + col]
-        let style = CellStyle(rawValue: cell.modifier)
-        guard !style.contains(.hidden) else { return }
+    /// Draws one row as runs of identical style.
+    ///
+    /// Terminal output is overwhelmingly long stretches of one style, so
+    /// batching collapses a row into a handful of draws instead of one per
+    /// column.
+    private func drawText(
+        _ grid: GridView, row: Int, from startCol: Int, to endCol: Int, in context: CGContext
+    ) {
+        var runCells: [(column: Int, text: String)] = []
+        var runStyle: (fg: UInt32, bg: UInt32, modifier: UInt16)?
 
-        let glyph = grid.glyph(cell)
-        guard !glyph.isEmpty, glyph != " " else { return }
+        func flush() {
+            guard let style = runStyle, !runCells.isEmpty else {
+                runCells.removeAll(keepingCapacity: true)
+                return
+            }
+            paint(runCells, row: row, style: style, in: context)
+            runCells.removeAll(keepingCapacity: true)
+        }
 
-        let fgPacked = PackedColor(cell.fg, theme: theme, isForeground: true)
-        let bgPacked = PackedColor(cell.bg, theme: theme, isForeground: false)
+        for col in startCol..<endCol {
+            let cell = grid.cells[row * grid.width + col]
+            let style = CellStyle(rawValue: cell.modifier)
+            if style.contains(.hidden) { continue }
+
+            let text = grid.glyph(cell)
+            if text.isEmpty || text == " " { continue }
+
+            let key = (fg: cell.fg, bg: cell.bg, modifier: cell.modifier)
+            if runStyle == nil || runStyle! != key {
+                flush()
+                runStyle = key
+            }
+            runCells.append((column: col, text: text))
+        }
+        flush()
+    }
+
+    private func paint(
+        _ cells: [(column: Int, text: String)],
+        row: Int,
+        style key: (fg: UInt32, bg: UInt32, modifier: UInt16),
+        in context: CGContext
+    ) {
+        let style = CellStyle(rawValue: key.modifier)
+        let fg = PackedColor(key.fg, theme: theme, isForeground: true)
+        let bg = PackedColor(key.bg, theme: theme, isForeground: false)
         var color =
             style.contains(.reversed)
-            ? bgPacked.resolved(theme: theme, isForeground: false)
-            : fgPacked.resolved(theme: theme, isForeground: true)
-        if style.contains(.dim) {
-            color = color.withAlphaComponent(0.55)
+            ? bg.resolved(theme: theme, isForeground: false)
+            : fg.resolved(theme: theme, isForeground: true)
+        if style.contains(.dim) { color = color.withAlphaComponent(0.55) }
+
+        let font = glyphs.font(bold: style.contains(.bold), italic: style.contains(.italic))
+        let fallback = glyphs.draw(
+            cells: cells, row: row, font: font, color: color, in: context)
+
+        // Clusters and glyphs missing from the font go through AppKit so its
+        // font fallback applies — emoji and box drawing mostly.
+        if !fallback.isEmpty {
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: font, .foregroundColor: color,
+            ]
+            for cell in fallback {
+                NSAttributedString(string: cell.text, attributes: attributes).draw(
+                    at: CGPoint(
+                        x: CGFloat(cell.column) * cellSize.width,
+                        y: CGFloat(row) * cellSize.height))
+            }
         }
 
-        var attributes: [NSAttributedString.Key: Any] = [
-            .font: style.contains(.bold) ? boldFont : font,
-            .foregroundColor: color,
-        ]
+        if style.contains(.underlined) || style.contains(.crossedOut) {
+            decorate(cells, row: row, style: style, color: color, in: context)
+        }
+    }
+
+    /// Underlines and strikethroughs, drawn as spans rather than per glyph.
+    private func decorate(
+        _ cells: [(column: Int, text: String)],
+        row: Int,
+        style: CellStyle,
+        color: NSColor,
+        in context: CGContext
+    ) {
+        guard let first = cells.first, let last = cells.last else { return }
+        let x = CGFloat(first.column) * cellSize.width
+        let width = CGFloat(last.column - first.column + 1) * cellSize.width
+        let top = CGFloat(row) * cellSize.height
+        context.setFillColor(color.cgColor)
         if style.contains(.underlined) {
-            attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue
+            context.fill(CGRect(x: x, y: top + cellSize.height - 1, width: width, height: 1))
         }
         if style.contains(.crossedOut) {
-            attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
+            context.fill(
+                CGRect(x: x, y: top + cellSize.height / 2, width: width, height: 1))
         }
-        if style.contains(.italic) {
-            attributes[.obliqueness] = 0.2
-        }
-
-        let origin = CGPoint(
-            x: CGFloat(col) * cellSize.width,
-            y: CGFloat(row) * cellSize.height)
-        NSAttributedString(string: glyph, attributes: attributes).draw(at: origin)
     }
 
     private func drawCursor(_ grid: GridView, in context: CGContext) {
