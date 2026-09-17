@@ -3,8 +3,7 @@
 //! This is the seam the Swift app sits on. It owns the socket, the handshake
 //! and framing; everything above it works in terms of decoded protocol types.
 
-use std::io;
-use std::os::unix::net::UnixStream;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use herdr_protocol::protocol::endpoint::{
@@ -52,6 +51,22 @@ fn config_dir() -> PathBuf {
 }
 
 /// A generation-1 hello describing a native client surface.
+///
+/// `surface_active` is what makes federation cheap: every machine stays
+/// connected so its agents show up in the sidebar, but only the one you are
+/// looking at renders a surface. An inactive endpoint still sends snapshots.
+pub fn hello_with_surface(
+    cols: u16,
+    rows: u16,
+    cell_width_px: u32,
+    cell_height_px: u32,
+    surface_active: bool,
+) -> EndpointClientHello {
+    let mut hello = hello(cols, rows, cell_width_px, cell_height_px);
+    hello.surface_active = surface_active;
+    hello
+}
+
 pub fn hello(cols: u16, rows: u16, cell_width_px: u32, cell_height_px: u32) -> EndpointClientHello {
     EndpointClientHello {
         generation: ENDPOINT_PROTOCOL_GENERATION,
@@ -79,27 +94,57 @@ pub fn hello(cols: u16, rows: u16, cell_width_px: u32, cell_height_px: u32) -> E
 
 /// An established endpoint connection.
 pub struct EndpointConnection {
-    stream: UnixStream,
+    reader: crate::endpoint::ReadHalf,
+    writer: Option<crate::endpoint::WriteHalf>,
     welcome: EndpointServerWelcome,
 }
 
 impl EndpointConnection {
-    /// Connects and completes the generation-1 handshake.
+    /// Connects to the local server over its socket.
     pub fn connect(path: &Path, hello: &EndpointClientHello) -> io::Result<Self> {
-        let mut stream = UnixStream::connect(path)?;
+        Self::attach(
+            &crate::endpoint::Endpoint {
+                id: "local".into(),
+                label: "Local".into(),
+                kind: crate::endpoint::EndpointKind::Local,
+            },
+            path,
+            hello,
+        )
+    }
+
+    /// Connects to any endpoint — the local socket or a machine over ssh — and
+    /// completes the generation-1 handshake.
+    pub fn attach(
+        endpoint: &crate::endpoint::Endpoint,
+        socket: &Path,
+        hello: &EndpointClientHello,
+    ) -> io::Result<Self> {
+        let (mut reader, mut writer) = crate::endpoint::Transport::connect(endpoint, socket)?;
 
         let data = serde_json::to_string(hello).map_err(io::Error::other)?;
         write_message(
-            &mut stream,
+            &mut writer,
             &ClientMessage::EndpointControl {
                 kind: ENDPOINT_HELLO_KIND.into(),
                 data,
             },
         )
         .map_err(|e| io::Error::other(e.to_string()))?;
+        writer.flush()?;
 
-        let reply: ServerMessage = read_message(&mut stream, herdr_protocol::protocol::MAX_FRAME_SIZE)
-            .map_err(|e| io::Error::other(e.to_string()))?;
+        let reply: ServerMessage =
+            match read_message(&mut reader, herdr_protocol::protocol::MAX_FRAME_SIZE) {
+                Ok(reply) => reply,
+                Err(error) => {
+                    // A transport that died during the handshake usually knows
+                    // why; saying "the stream ended" hides the real reason.
+                    return Err(io::Error::other(match reader.diagnostics() {
+                        Some(details) => format!("{error}: {details}"),
+                        None => error.to_string(),
+                    }));
+                }
+            };
 
         let ServerMessage::EndpointControl { kind, data } = reply else {
             return Err(io::Error::other(
@@ -121,7 +166,11 @@ impl EndpointConnection {
             )));
         }
 
-        Ok(Self { stream, welcome })
+        Ok(Self {
+            reader,
+            writer: Some(writer),
+            welcome,
+        })
     }
 
     /// Whether the server is running the same build this crate vendored.
@@ -156,19 +205,28 @@ impl EndpointConnection {
     }
 
     pub fn send(&mut self, message: &ClientMessage) -> io::Result<()> {
-        write_message(&mut self.stream, message).map_err(|e| io::Error::other(e.to_string()))
+        let Some(writer) = self.writer.as_mut() else {
+            return Err(io::Error::other("write half already taken"));
+        };
+        write_message(writer, message).map_err(|e| io::Error::other(e.to_string()))?;
+        writer.flush()
     }
 
-    /// A second handle on the socket, for writing from another thread.
+    /// Takes the write half, for sending from another thread.
     ///
     /// The receive loop blocks in `recv`, so outbound messages need their own
     /// handle rather than waiting for it to return.
-    pub fn try_clone_writer(&self) -> io::Result<UnixStream> {
-        self.stream.try_clone()
+    pub fn take_writer(&mut self) -> Option<crate::endpoint::WriteHalf> {
+        self.writer.take()
     }
 
     pub fn recv(&mut self) -> io::Result<ServerMessage> {
-        read_message(&mut self.stream, herdr_protocol::protocol::MAX_FRAME_SIZE)
-            .map_err(|e| io::Error::other(e.to_string()))
+        match read_message(&mut self.reader, herdr_protocol::protocol::MAX_FRAME_SIZE) {
+            Ok(message) => Ok(message),
+            Err(error) => Err(io::Error::other(match self.reader.diagnostics() {
+                Some(details) => format!("{error}: {details}"),
+                None => error.to_string(),
+            })),
+        }
     }
 }

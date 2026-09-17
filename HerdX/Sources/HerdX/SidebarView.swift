@@ -3,6 +3,7 @@ import AppKit
 /// One clickable row in the sidebar.
 final class SidebarRow: NSView {
     enum Target {
+        case endpoint(Int)
         case workspace(String)
         case tab(String)
         case pane(String)
@@ -127,9 +128,12 @@ final class SidebarView: NSView {
 
     /// Raised when a row is clicked, with the method needed to focus it.
     var onSelect: ((Command) -> Void)?
+    /// Raised when a machine is clicked.
+    var onSelectEndpoint: ((Int) -> Void)?
 
     private let stack = NSStackView()
-    private var lastRevision: UInt64?
+    /// What the rows were last built from, so they are not rebuilt needlessly.
+    private var lastSignature: String?
     private var theme: Theme = .dark
 
     override init(frame: NSRect) {
@@ -158,25 +162,73 @@ final class SidebarView: NSView {
         layer?.backgroundColor = theme.background.blended(
             withFraction: 0.06,
             of: theme.background.isDarkish ? .white : .black)?.cgColor
-        lastRevision = nil
+        lastSignature = nil
     }
 
-    func update(with snapshot: Snapshot) {
-        // Snapshots are republished on every revision, most of which change
-        // nothing the sidebar shows. Rebuilding the row views each time would
-        // throw away hover state mid-gesture.
-        guard lastRevision != snapshot.revision else { return }
-        lastRevision = snapshot.revision
+    /// Rebuilds the machine list.
+    ///
+    /// Only the active machine's workspaces are expanded. The others are
+    /// attached and reporting status — that is why they are here — but showing
+    /// every tab of every machine would bury the thing you came to see.
+    func update(endpoints: [EndpointInfo], active: Int) {
+        // Snapshots are republished constantly and mostly change nothing the
+        // sidebar shows; rebuilding every time would throw away hover state
+        // mid-gesture.
+        let signature = endpoints.map { endpoint in
+            "\(endpoint.id):\(endpoint.status):\(endpoint.snapshot?.revision ?? 0)"
+        }.joined(separator: "|") + "@\(active)"
+        guard lastSignature != signature else { return }
+        lastSignature = signature
 
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
 
+        for endpoint in endpoints {
+            addMachine(endpoint, isActive: endpoint.index == active)
+            guard endpoint.index == active, let snapshot = endpoint.snapshot else { continue }
+            addTree(snapshot)
+        }
+    }
+
+    private func addMachine(_ endpoint: EndpointInfo, isActive: Bool) {
+        let detail: String?
+        switch endpoint.status {
+        case .connecting: detail = "connecting…"
+        case .offline: detail = "offline"
+        case .online:
+            // The worst status among its agents, so a machine you are not
+            // looking at can still say it needs you.
+            detail = endpoint.snapshot.flatMap { snapshot in
+                snapshot.agents.contains { $0.agentStatus == .blocked }
+                    ? "needs attention" : nil
+            }
+        }
+
+        add(
+            text: endpoint.label,
+            detail: detail,
+            status: Self.machineStatus(endpoint),
+            selected: isActive,
+            indent: 0,
+            target: .endpoint(endpoint.index))
+    }
+
+    /// A machine's dot reflects its agents, falling back to its connection.
+    private static func machineStatus(_ endpoint: EndpointInfo) -> Snapshot.AgentStatus {
+        guard endpoint.status == .online else { return .unknown }
+        guard let agents = endpoint.snapshot?.agents, !agents.isEmpty else { return .idle }
+        if agents.contains(where: { $0.agentStatus == .blocked }) { return .blocked }
+        if agents.contains(where: { $0.agentStatus == .working }) { return .working }
+        return .idle
+    }
+
+    private func addTree(_ snapshot: Snapshot) {
         for workspace in snapshot.workspaces {
             add(
                 text: "\(workspace.number)  \(workspace.label)",
                 detail: workspace.branch,
                 status: workspace.agentStatus,
                 selected: workspace.focused,
-                indent: 0,
+                indent: 14,
                 target: .workspace(workspace.workspaceID))
 
             for tab in snapshot.tabs where tab.workspaceID == workspace.workspaceID {
@@ -185,7 +237,7 @@ final class SidebarView: NSView {
                     detail: tab.zoomed ? "zoom" : nil,
                     status: tab.agentStatus,
                     selected: tab.focused,
-                    indent: 14,
+                    indent: 28,
                     target: .tab(tab.tabID))
 
                 let panesInTab = Set(
@@ -196,7 +248,7 @@ final class SidebarView: NSView {
                         detail: nil,
                         status: agent.agentStatus,
                         selected: agent.focused,
-                        indent: 28,
+                        indent: 42,
                         target: .pane(agent.paneID))
                 }
             }
@@ -216,6 +268,7 @@ final class SidebarView: NSView {
             indent: indent, onDark: theme.background.isDarkish, target: target
         ) { [weak self] target in
             switch target {
+            case .endpoint(let index): self?.onSelectEndpoint?(index)
             case .workspace(let id): self?.onSelect?(.focusWorkspace(id))
             case .tab(let id): self?.onSelect?(.focusTab(id))
             case .pane(let id): self?.onSelect?(.focusPane(id))

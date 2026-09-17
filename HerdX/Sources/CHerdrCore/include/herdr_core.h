@@ -108,9 +108,21 @@ bool hx_grid_acquire(HxSession *session, HxGrid *out);
 bool hx_asset(HxSession *session, uint64_t asset_id, HxAsset *out);
 
 char *hx_pane_id(const HxSession *session, uint32_t id_index);
-/// Pops the next queued event as JSON, or NULL when empty.
-char *hx_next_event(const HxSession *session);
-char *hx_take_snapshot_json(const HxSession *session);
+
+// Endpoints: the local server plus each saved SSH machine.
+#define HX_ENDPOINT_CONNECTING 0
+#define HX_ENDPOINT_ONLINE 1
+#define HX_ENDPOINT_OFFLINE 2
+
+size_t hx_endpoint_count(const HxSession *session);
+char *hx_endpoint_id(const HxSession *session, size_t index);
+char *hx_endpoint_label(const HxSession *session, size_t index);
+uint8_t hx_endpoint_status(const HxSession *session, size_t index);
+bool hx_endpoint_is_remote(const HxSession *session, size_t index);
+size_t hx_active_endpoint(const HxSession *session);
+bool hx_set_active_endpoint(HxSession *session, size_t index);
+char *hx_endpoint_snapshot_json(const HxSession *session, size_t index);
+char *hx_next_endpoint_event(const HxSession *session, size_t index);
 char *hx_last_error(const HxSession *session);
 char *hx_connect_error(void);
 void hx_string_free(char *s);

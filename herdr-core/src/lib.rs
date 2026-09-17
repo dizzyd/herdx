@@ -5,6 +5,7 @@
 //! maintaining the surface the renderer draws.
 
 pub mod client;
+pub mod endpoint;
 pub mod ffi;
 
 /// Re-exported so callers need only depend on this crate.

@@ -86,6 +86,7 @@ complete one — a stitched grid is worse than a slightly stale one.
 - [x] Copy mode (`prefix+[`, ⇧⌘[) with vi motions, search (⌘F), and visual selection
 - [x] Light and dark themes, font and appearance settings (⌘,)
 - [x] Kitty graphics (images in panes)
+- [x] Federated machines: the local server plus saved SSH remotes
 
 ### Selection
 
@@ -105,6 +106,33 @@ terminal is paths, URLs and identifiers.
 
 Paste is its own protocol event rather than committed text, so the pane can wrap
 it in bracketed-paste markers when the program asked for them.
+
+### Machines
+
+herdr clients are federated: the local server and every saved SSH machine appear
+together, so an agent needing attention on another box is visible without
+switching to it. Machines come from herdr's own catalog at
+`~/.local/state/herdr/client/endpoints.json`, and the app opens on whichever one
+herdr last had selected.
+
+A remote endpoint is `ssh <target> herdr remote-client-bridge`, which speaks the
+identical generation-1 protocol over stdio — so one connection implementation
+serves both, with only the transport differing.
+
+Every machine stays attached for its snapshots, but only the active one is asked
+to render a surface (`surface_active` in the handshake). That is what keeps
+watching several machines cheap.
+
+Each endpoint connects and reconnects on its own thread with its own backoff. A
+machine that is asleep must not stop the others from working, which is exactly
+what a session-wide retry did: the first version tore down every connection each
+frame because the *active* endpoint was still completing an ssh handshake, so it
+never finished one.
+
+ssh runs with `BatchMode=yes` — there is no terminal to answer a password or
+host-key prompt, and a stall would be indistinguishable from a slow machine —
+and its stderr is captured, since discarding it makes an unknown host key, a
+missing remote herdr and a refused connection all look like "the stream ended".
 
 ### Images
 
@@ -211,6 +239,19 @@ herdr session delete hxtest
 Note that `HERDR_SOCKET_PATH` takes precedence over `HERDR_CLIENT_SOCKET_PATH`,
 and herdr sets it for processes running inside a pane — so from a herdr pane,
 `env -u HERDR_SOCKET_PATH` is needed or you will talk to your own session.
+
+### Running it without a window in your face
+
+Development means running the app constantly, and a window that steals focus
+every time is not acceptable when someone is working. `HERDX_HEADLESS=1` lays
+the window out off-screen and never activates, so nothing appears on any
+display:
+
+```sh
+HERDX_HEADLESS=1 ./build/HerdX.app/Contents/MacOS/HerdX
+```
+
+`HERDX_CAPTURE` implies it. Always use one of them when testing.
 
 ### Looking at the renderer without a window in your face
 

@@ -61,6 +61,18 @@ struct GridView {
     }
 }
 
+/// One machine the client is attached to.
+struct EndpointInfo {
+    enum Status { case connecting, online, offline }
+
+    let index: Int
+    let id: String
+    let label: String
+    let status: Status
+    let isRemote: Bool
+    var snapshot: Snapshot?
+}
+
 /// Owns the connection to the herdr server.
 ///
 /// The Rust core runs the socket on its own thread; this type is the polling
@@ -70,6 +82,8 @@ final class HerdrSession {
     private(set) var lastSnapshot: Snapshot?
     /// Callbacks awaiting a reply, keyed by request id.
     private var pendingReplies: [String: (String) -> Void] = [:]
+    /// The latest snapshot from each endpoint, keyed by index.
+    private var snapshots: [Int: Snapshot] = [:]
 
     enum ConnectError: Error, LocalizedError {
         case failed(String)
@@ -92,6 +106,59 @@ final class HerdrSession {
     }
 
     var isConnected: Bool { handle.map { hx_session_connected($0) } ?? false }
+
+    // MARK: - Endpoints
+
+    var endpointCount: Int { handle.map { hx_endpoint_count($0) } ?? 0 }
+    var activeEndpoint: Int { handle.map { hx_active_endpoint($0) } ?? 0 }
+
+    /// Every attached machine, with whatever snapshot it has sent so far.
+    var endpoints: [EndpointInfo] {
+        guard let handle else { return [] }
+        return (0..<hx_endpoint_count(handle)).map { index in
+            EndpointInfo(
+                index: index,
+                id: Self.take(hx_endpoint_id(handle, index)) ?? "",
+                label: Self.take(hx_endpoint_label(handle, index)) ?? "",
+                status: {
+                    switch hx_endpoint_status(handle, index) {
+                    case UInt8(HX_ENDPOINT_ONLINE): return .online
+                    case UInt8(HX_ENDPOINT_OFFLINE): return .offline
+                    default: return .connecting
+                    }
+                }(),
+                isRemote: hx_endpoint_is_remote(handle, index),
+                snapshot: snapshots[index])
+        }
+    }
+
+    @discardableResult
+    func setActiveEndpoint(_ index: Int) -> Bool {
+        guard let handle else { return false }
+        return hx_set_active_endpoint(handle, index)
+    }
+
+    /// Picks up new snapshots from every endpoint, not only the active one:
+    /// the sidebar shows remote agent status, which is the point of attaching
+    /// to machines you are not currently looking at.
+    ///
+    /// Returns true when anything changed.
+    @discardableResult
+    func pollEndpointSnapshots() -> Bool {
+        guard let handle else { return false }
+        var changed = false
+        let decoder = JSONDecoder()
+        for index in 0..<hx_endpoint_count(handle) {
+            guard let json = Self.take(hx_endpoint_snapshot_json(handle, index)),
+                let data = json.data(using: .utf8),
+                let snapshot = try? decoder.decode(Snapshot.self, from: data)
+            else { continue }
+            snapshots[index] = snapshot
+            if index == hx_active_endpoint(handle) { lastSnapshot = snapshot }
+            changed = true
+        }
+        return changed
+    }
 
     /// Runs `body` with the current surface, or returns nil if none has arrived.
     ///
@@ -156,17 +223,6 @@ final class HerdrSession {
             format: asset.format)
     }
 
-    /// Picks up a new snapshot if one arrived. Returns true when it changed.
-    @discardableResult
-    func pollSnapshot() -> Bool {
-        guard let handle, let json = Self.take(hx_take_snapshot_json(handle)) else { return false }
-        guard let data = json.data(using: .utf8),
-            let snapshot = try? JSONDecoder().decode(Snapshot.self, from: data)
-        else { return false }
-        lastSnapshot = snapshot
-        return true
-    }
-
     /// Drains queued server events, oldest first.
     ///
     /// Replies with a registered callback are delivered to it and left out of
@@ -176,7 +232,13 @@ final class HerdrSession {
         guard let handle else { return [] }
         var events: [ServerEvent] = []
         let decoder = JSONDecoder()
-        while let json = Self.take(hx_next_event(handle)) {
+        var queue: [String] = []
+        for index in 0..<hx_endpoint_count(handle) {
+            while let json = Self.take(hx_next_endpoint_event(handle, index)) {
+                queue.append(json)
+            }
+        }
+        for json in queue {
             guard let data = json.data(using: .utf8),
                 let event = try? decoder.decode(ServerEvent.self, from: data)
             else { continue }

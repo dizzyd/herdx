@@ -19,6 +19,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var lastConnectError: String?
     /// A title set by a program inside a pane, which outranks ours.
     private var serverTitle: String?
+
+    /// Runs without ever showing a window.
+    ///
+    /// Set by `HERDX_HEADLESS`, and implied by `HERDX_CAPTURE`. Development on
+    /// this app means running it dozens of times; every one of those stealing
+    /// focus from whoever is at the keyboard is not acceptable, so not showing
+    /// a window is its own mode rather than a side effect of capturing one.
+    static var isHeadless: Bool {
+        let environment = ProcessInfo.processInfo.environment
+        return environment["HERDX_HEADLESS"] != nil || environment["HERDX_CAPTURE"] != nil
+    }
     private var preferences = Preferences.current
     private var preferencesWindow: PreferencesWindowController?
     private var appearanceObserver: NSKeyValueObservation?
@@ -36,6 +47,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         sidebar.onSelect = { [weak self] command in
             guard let self, let session = self.session else { return }
             self.invoke(command, session: session)
+            self.window.makeFirstResponder(self.gridView)
+        }
+        sidebar.onSelectEndpoint = { [weak self] index in
+            guard let self, let session = self.session else { return }
+            session.setActiveEndpoint(index)
+            // The new machine's surface has not arrived; drop the old one so
+            // the previous machine's output is not shown under a new name.
+            self.gridView.forgetSurface()
             self.window.makeFirstResponder(self.gridView)
         }
 
@@ -80,6 +99,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         ])
         window.contentView = container
 
+        // Lay out before connecting: the handshake carries a surface size, and
+        // asking for one before the views have frames requests a 1x1 surface —
+        // which the server duly composes, leaving an empty window.
+        window.contentView?.layoutSubtreeIfNeeded()
+
         if !connect() {
             // A server that is not running yet is not fatal: herdr sessions
             // outlive their clients, so wait for one instead of giving up.
@@ -99,7 +123,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
         }
 
-        if capturePath == nil {
+        if !AppDelegate.isHeadless {
             window.makeKeyAndOrderFront(nil)
             window.makeFirstResponder(gridView)
             NSApp.activate(ignoringOtherApps: true)
@@ -109,6 +133,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             window.setFrameOrigin(NSPoint(x: -20000, y: -20000))
             window.contentView?.layoutSubtreeIfNeeded()
         }
+
+        // Layout has certainly happened by now, so make sure the server has the
+        // real size even if no frame change fired after the handshake.
+        gridView.reportGridSize()
 
         installCaptureHookIfRequested()
 
@@ -221,6 +249,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         window.subtitle = ""
         publish(theme: preferences.theme(matching: systemIsDark))
+        // The view is laid out by now, so tell the server the real size; the
+        // size used for the handshake was whatever existed before layout.
+        gridView.reportGridSize()
         return true
     }
 
@@ -258,12 +289,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func tick() {
         guard let session else { return }
-        if session.pollSnapshot(), let snapshot = session.lastSnapshot {
-            sidebar.update(with: snapshot)
-            gridView.focusedPaneFromSnapshot = snapshot.focusedPaneID
-            if let focused = snapshot.workspaces.first(where: \.focused) {
-                workspaceTitle = focused.label
-                window.subtitle = focused.branch ?? ""
+        let snapshotsChanged = session.pollEndpointSnapshots()
+
+        // Rebuilt every tick, not only when a snapshot lands: an endpoint's
+        // connection status changes on its own, and gating on snapshots left
+        // a machine reading "connecting…" long after it was up. The sidebar
+        // compares a signature and returns immediately when nothing moved.
+        sidebar.update(endpoints: session.endpoints, active: session.activeEndpoint)
+
+        if snapshotsChanged {
+            if let snapshot = session.lastSnapshot {
+                gridView.focusedPaneFromSnapshot = snapshot.focusedPaneID
+                if let focused = snapshot.workspaces.first(where: \.focused) {
+                    workspaceTitle = focused.label
+                    window.subtitle = focused.branch ?? ""
+                }
             }
             applyTitle()
         }
@@ -282,9 +322,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if let error = session.takeError() {
             NSLog("herdr: %@", error)
         }
-        if !session.isConnected {
-            reconnect()
-        }
+        // Endpoints reconnect individually inside the core, so a machine
+        // being unreachable is shown in the sidebar rather than treated as a
+        // reason to rebuild the session.
     }
 
     /// The prefix chord has to be seen before the view turns it into pane input.
@@ -413,7 +453,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
 let delegate = AppDelegate()
 let app = NSApplication.shared
-app.setActivationPolicy(
-    ProcessInfo.processInfo.environment["HERDX_CAPTURE"] == nil ? .regular : .prohibited)
+app.setActivationPolicy(AppDelegate.isHeadless ? .prohibited : .regular)
 app.delegate = delegate
 app.run()

@@ -97,10 +97,34 @@ final class TerminalGridView: NSView {
         super.setFrameSize(newSize)
         // A live resize drag fires this continuously; only the grid size
         // matters to the server, so report it when it actually changes.
+        //
+        // Nothing is recorded before a handler exists: layout runs before the
+        // session is connected, and remembering that early size meant the real
+        // one was later judged "unchanged" and never sent, leaving the server
+        // composing a surface for a window that had since grown.
+        guard let onResize else { return }
         let size = gridSize
-        guard reportedGridSize == nil || reportedGridSize! != size else { return }
+        if let reported = reportedGridSize, reported == size { return }
+        reportedGridSize = size
+        onResize(size.cols, size.rows)
+    }
+
+    /// Tells the server the current size, whatever it last heard.
+    func reportGridSize() {
+        let size = gridSize
         reportedGridSize = size
         onResize?(size.cols, size.rows)
+    }
+
+    /// Discards the current surface, for when the machine underneath changes.
+    func forgetSurface() {
+        lastRevision = .max
+        panes = []
+        selection = nil
+        copyMode = nil
+        paneViews.values.forEach { $0.removeFromSuperview() }
+        paneViews.removeAll()
+        needsDisplay = true
     }
 
     /// Called each tick; only repaints when the surface actually advanced.

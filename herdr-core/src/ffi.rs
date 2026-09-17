@@ -6,6 +6,7 @@
 //! happen on the render path.
 
 use std::ffi::{c_char, CStr, CString};
+use std::io::Write as _;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -407,8 +408,31 @@ struct Geometry {
     cell_height_px: u32,
 }
 
-pub struct HxSession {
+/// Connection state, mirroring what the sidebar needs to show.
+pub const HX_ENDPOINT_CONNECTING: u8 = 0;
+pub const HX_ENDPOINT_ONLINE: u8 = 1;
+pub const HX_ENDPOINT_OFFLINE: u8 = 2;
+
+/// One attached machine.
+struct EndpointState {
+    endpoint: crate::endpoint::Endpoint,
     shared: Arc<Shared>,
+    /// Queued before the connection is up, so input is never lost to a race
+    /// with a slow ssh handshake.
+    outbound: std::sync::mpsc::Sender<ClientMessage>,
+    status: Arc<std::sync::atomic::AtomicU8>,
+}
+
+pub struct HxSession {
+    endpoints: Vec<EndpointState>,
+    /// Which endpoint renders a surface and receives input.
+    active: usize,
+    /// The active endpoint's handles, so everything that works on "the current
+    /// machine" does not have to resolve it each time.
+    shared: Arc<Shared>,
+    outbound: std::sync::mpsc::Sender<ClientMessage>,
+    /// The window is one size, so geometry is shared: every endpoint is told
+    /// about a resize, since any of them may become active.
     geometry: Mutex<Geometry>,
     /// Render-thread-private copy. `hx_grid_acquire` refreshes it from the
     /// receive thread's buffer, so pointers handed to the caller stay valid
@@ -416,12 +440,28 @@ pub struct HxSession {
     front: Grid,
     /// Image bytes copied out for the caller, for the same reason.
     front_asset: Vec<u8>,
-    outbound: std::sync::mpsc::Sender<ClientMessage>,
 }
 
-/// Connects to the running herdr server and starts the receive loop.
+impl HxSession {
+    /// Points the cached handles at the endpoint at `index`.
+    fn select(&mut self, index: usize) {
+        let Some(endpoint) = self.endpoints.get(index) else {
+            return;
+        };
+        self.active = index;
+        self.shared = Arc::clone(&endpoint.shared);
+        self.outbound = endpoint.outbound.clone();
+        // The new surface has not arrived yet; showing the previous machine's
+        // grid under the new machine's name would be worse than showing none.
+        self.front = Grid::default();
+    }
+}
+
+/// Connects to every endpoint: the local server and each saved SSH machine.
 ///
-/// Returns null on failure; call `hx_last_error` for the reason.
+/// Returns as soon as the endpoints exist, without waiting for any of them.
+/// Reaching a machine over ssh can take seconds, and the window should be up
+/// and showing local work long before that resolves.
 ///
 /// # Safety
 /// The returned pointer must be released with `hx_session_free`.
@@ -432,135 +472,39 @@ pub unsafe extern "C" fn hx_session_connect(
     cell_width_px: u32,
     cell_height_px: u32,
 ) -> *mut HxSession {
-    let shared = Arc::new(Shared {
-        grid: Mutex::new(Grid::default()),
-        snapshot_json: Mutex::new(None),
-        error: Mutex::new(None),
-        events: Mutex::new(std::collections::VecDeque::new()),
-        assets: Mutex::new(AssetCache::default()),
-        connected: AtomicBool::new(false),
-    });
+    let discovered = crate::endpoint::discover();
+    let selection = crate::endpoint::saved_selection();
+    let active = selection
+        .and_then(|id| discovered.iter().position(|e| e.id == id))
+        .unwrap_or(0);
 
-    let path = default_socket_path();
-    let mut conn =
-        match EndpointConnection::connect(&path, &hello(cols, rows, cell_width_px, cell_height_px))
-        {
-            Ok(conn) => conn,
-            Err(err) => {
-                *LAST_CONNECT_ERROR().lock().unwrap() = Some(format!("{err}"));
-                return std::ptr::null_mut();
-            }
-        };
-
-    if let Some(note) = conn.version_note() {
-        *shared.error.lock().unwrap() = Some(note);
-    }
-    shared.connected.store(true, Ordering::Release);
-
-    let (tx, rx) = std::sync::mpsc::channel::<ClientMessage>();
-    match conn.try_clone_writer() {
-        Ok(mut writer) => {
-            std::thread::spawn(move || {
-                for message in rx {
-                    if herdr_protocol::protocol::write_message(&mut writer, &message).is_err() {
-                        return;
-                    }
-                }
-            });
-        }
-        Err(err) => {
-            *LAST_CONNECT_ERROR().lock().unwrap() = Some(format!("{err}"));
-            return std::ptr::null_mut();
-        }
+    let mut endpoints = Vec::new();
+    for (index, endpoint) in discovered.into_iter().enumerate() {
+        endpoints.push(spawn_endpoint(
+            endpoint,
+            index == active,
+            Geometry {
+                cols,
+                rows,
+                cell_width_px,
+                cell_height_px,
+            },
+        ));
     }
 
-    let loop_shared = Arc::clone(&shared);
-    std::thread::spawn(move || {
-        let mut pending = PendingResponses::default();
-        loop {
-        match conn.recv() {
-            Ok(ServerMessage::PaneSurface(frame)) => {
-                let mut assets = loop_shared.assets.lock().unwrap();
-                loop_shared.grid.lock().unwrap().replace(&frame, &mut assets);
-            }
-            Ok(ServerMessage::PaneSurfacePatch(patch)) => {
-                let mut grid = loop_shared.grid.lock().unwrap();
-                if !grid.apply_patch(&patch) {
-                    // Keep the last coherent surface rather than a stitched
-                    // one, and wait for the server's next complete frame.
-                    let held = grid.revision;
-                    drop(grid);
-                    *loop_shared.error.lock().unwrap() = Some(format!(
-                        "ignored surface patch {} built on revision {}; holding revision {held}",
-                        patch.surface_revision, patch.base_surface_revision
-                    ));
-                }
-            }
-            Ok(ServerMessage::EndpointControl { kind, data })
-                if kind == herdr_protocol::protocol::endpoint::ENDPOINT_SNAPSHOT_KIND =>
-            {
-                *loop_shared.snapshot_json.lock().unwrap() = Some(data);
-            }
-            Ok(ServerMessage::SemanticNotification(notification)) => {
-                loop_shared.push(semantic_event(notification));
-            }
-            Ok(ServerMessage::Notify { kind, message, body }) => {
-                // Only the host-notification kind is ours to present; the toast
-                // kinds are for a client drawing herdr's own TUI chrome.
-                if matches!(kind, herdr_protocol::protocol::NotifyKind::SystemToast) {
-                    loop_shared.push(Event::Notification {
-                        kind: "custom".into(),
-                        title: message,
-                        body,
-                        sound: None,
-                        agent: None,
-                        workspace_id: None,
-                        tab_id: None,
-                        pane_id: None,
-                    });
-                }
-            }
-            Ok(ServerMessage::Clipboard { data }) => {
-                use base64::Engine as _;
-                if let Some(text) = base64::engine::general_purpose::STANDARD
-                    .decode(data.as_bytes())
-                    .ok()
-                    .and_then(|bytes| String::from_utf8(bytes).ok())
-                {
-                    loop_shared.push(Event::Clipboard { text });
-                }
-            }
-            Ok(ServerMessage::WindowTitle { title }) => {
-                loop_shared.push(Event::WindowTitle { title });
-            }
-            Ok(ServerMessage::TerminalBell { count }) => {
-                loop_shared.push(Event::Bell { count });
-            }
-            Ok(ServerMessage::ClientShellError { message }) => {
-                loop_shared.push(Event::Error { message });
-            }
-            Ok(ServerMessage::ClientShellEndpointResponseChunk {
-                request_id,
-                final_chunk,
-                data,
-                ..
-            }) => {
-                if let Some((request_id, body)) = pending.push(request_id, &data, final_chunk) {
-                    loop_shared.push(Event::Response { request_id, body });
-                }
-            }
-            Ok(_) => {}
-            Err(err) => {
-                *loop_shared.error.lock().unwrap() = Some(format!("{err}"));
-                loop_shared.connected.store(false, Ordering::Release);
-                return;
-            }
-        }
-        }
-    });
+    if endpoints.is_empty() {
+        *LAST_CONNECT_ERROR().lock().unwrap() = Some("no endpoints configured".into());
+        return std::ptr::null_mut();
+    }
 
+    let active = active.min(endpoints.len() - 1);
+    let shared = Arc::clone(&endpoints[active].shared);
+    let outbound = endpoints[active].outbound.clone();
     Box::into_raw(Box::new(HxSession {
+        endpoints,
+        active,
         shared,
+        outbound,
         geometry: Mutex::new(Geometry {
             cols,
             rows,
@@ -569,26 +513,190 @@ pub unsafe extern "C" fn hx_session_connect(
         }),
         front: Grid::default(),
         front_asset: Vec::new(),
-        outbound: tx,
     }))
 }
 
-/// Why the most recent `hx_session_connect` failed. Caller frees with
-/// `hx_string_free`.
-#[no_mangle]
-pub extern "C" fn hx_connect_error() -> *mut c_char {
-    match LAST_CONNECT_ERROR()
-        .lock()
-        .unwrap()
-        .take()
-        .and_then(|s| CString::new(s).ok())
-    {
-        Some(s) => s.into_raw(),
-        None => std::ptr::null_mut(),
+/// Starts one endpoint's connection and receive loop on its own thread.
+fn spawn_endpoint(
+    endpoint: crate::endpoint::Endpoint,
+    surface_active: bool,
+    geometry: Geometry,
+) -> EndpointState {
+    let shared = Arc::new(Shared {
+        grid: Mutex::new(Grid::default()),
+        snapshot_json: Mutex::new(None),
+        error: Mutex::new(None),
+        events: Mutex::new(std::collections::VecDeque::new()),
+        assets: Mutex::new(AssetCache::default()),
+        connected: AtomicBool::new(false),
+    });
+    let status = Arc::new(std::sync::atomic::AtomicU8::new(HX_ENDPOINT_CONNECTING));
+    let (tx, rx) = std::sync::mpsc::channel::<ClientMessage>();
+
+    // Outbound messages are funnelled through one queue that survives
+    // reconnects, so input is never lost to a machine that briefly went away.
+    let outbound = Arc::new(Mutex::new(
+        None::<crate::endpoint::WriteHalf>,
+    ));
+    let writer_slot = Arc::clone(&outbound);
+    std::thread::spawn(move || {
+        for message in rx {
+            let mut slot = writer_slot.lock().unwrap();
+            if let Some(writer) = slot.as_mut() {
+                if crate::protocol::write_message(writer, &message).is_err()
+                    || writer.flush().is_err()
+                {
+                    // The connection went away; the endpoint thread will
+                    // install a new writer when it reconnects.
+                    *slot = None;
+                }
+            }
+        }
+    });
+
+    let thread_shared = Arc::clone(&shared);
+    let thread_status = Arc::clone(&status);
+    let thread_endpoint = endpoint.clone();
+    std::thread::spawn(move || {
+        let socket = default_socket_path();
+        let mut backoff = std::time::Duration::from_millis(250);
+
+        loop {
+            let hello = crate::client::hello_with_surface(
+                geometry.cols,
+                geometry.rows,
+                geometry.cell_width_px,
+                geometry.cell_height_px,
+                surface_active,
+            );
+
+            match crate::client::EndpointConnection::attach(&thread_endpoint, &socket, &hello) {
+                Ok(mut conn) => {
+                    *outbound.lock().unwrap() = conn.take_writer();
+                    thread_shared.connected.store(true, Ordering::Release);
+                    thread_status.store(HX_ENDPOINT_ONLINE, Ordering::Release);
+                    backoff = std::time::Duration::from_millis(250);
+
+                    receive_loop(conn, Arc::clone(&thread_shared), Arc::clone(&thread_status));
+                    *outbound.lock().unwrap() = None;
+                }
+                Err(err) => {
+                    *thread_shared.error.lock().unwrap() =
+                        Some(format!("{}: {err}", thread_endpoint.label));
+                    thread_status.store(HX_ENDPOINT_OFFLINE, Ordering::Release);
+                }
+            }
+
+            // Each endpoint reconnects on its own. A machine that is asleep
+            // must not stop the others from working, which is what a
+            // session-wide retry would do.
+            std::thread::sleep(backoff);
+            backoff = (backoff * 2).min(std::time::Duration::from_secs(10));
+            thread_status.store(HX_ENDPOINT_CONNECTING, Ordering::Release);
+        }
+    });
+
+    EndpointState {
+        endpoint,
+        shared,
+        outbound: tx,
+        status,
     }
 }
 
+/// Reads from one endpoint until it goes away.
+fn receive_loop(
+    mut conn: crate::client::EndpointConnection,
+    loop_shared: Arc<Shared>,
+    status: Arc<std::sync::atomic::AtomicU8>,
+) {
+    let mut pending = PendingResponses::default();
+    loop {
+        match conn.recv() {
+        Ok(ServerMessage::PaneSurface(frame)) => {
+            let mut assets = loop_shared.assets.lock().unwrap();
+            loop_shared.grid.lock().unwrap().replace(&frame, &mut assets);
+        }
+        Ok(ServerMessage::PaneSurfacePatch(patch)) => {
+            let mut grid = loop_shared.grid.lock().unwrap();
+            if !grid.apply_patch(&patch) {
+                // Keep the last coherent surface rather than a stitched
+                // one, and wait for the server's next complete frame.
+                let held = grid.revision;
+                drop(grid);
+                *loop_shared.error.lock().unwrap() = Some(format!(
+                    "ignored surface patch {} built on revision {}; holding revision {held}",
+                    patch.surface_revision, patch.base_surface_revision
+                ));
+            }
+        }
+        Ok(ServerMessage::EndpointControl { kind, data })
+            if kind == herdr_protocol::protocol::endpoint::ENDPOINT_SNAPSHOT_KIND =>
+        {
+            *loop_shared.snapshot_json.lock().unwrap() = Some(data);
+        }
+        Ok(ServerMessage::SemanticNotification(notification)) => {
+            loop_shared.push(semantic_event(notification));
+        }
+        Ok(ServerMessage::Notify { kind, message, body }) => {
+            // Only the host-notification kind is ours to present; the toast
+            // kinds are for a client drawing herdr's own TUI chrome.
+            if matches!(kind, herdr_protocol::protocol::NotifyKind::SystemToast) {
+                loop_shared.push(Event::Notification {
+                    kind: "custom".into(),
+                    title: message,
+                    body,
+                    sound: None,
+                    agent: None,
+                    workspace_id: None,
+                    tab_id: None,
+                    pane_id: None,
+                });
+            }
+        }
+        Ok(ServerMessage::Clipboard { data }) => {
+            use base64::Engine as _;
+            if let Some(text) = base64::engine::general_purpose::STANDARD
+                .decode(data.as_bytes())
+                .ok()
+                .and_then(|bytes| String::from_utf8(bytes).ok())
+            {
+                loop_shared.push(Event::Clipboard { text });
+            }
+        }
+        Ok(ServerMessage::WindowTitle { title }) => {
+            loop_shared.push(Event::WindowTitle { title });
+        }
+        Ok(ServerMessage::TerminalBell { count }) => {
+            loop_shared.push(Event::Bell { count });
+        }
+        Ok(ServerMessage::ClientShellError { message }) => {
+            loop_shared.push(Event::Error { message });
+        }
+        Ok(ServerMessage::ClientShellEndpointResponseChunk {
+            request_id,
+            final_chunk,
+            data,
+            ..
+        }) => {
+            if let Some((request_id, body)) = pending.push(request_id, &data, final_chunk) {
+                loop_shared.push(Event::Response { request_id, body });
+            }
+        }
+        Ok(_) => {}
+        Err(err) => {
+            *loop_shared.error.lock().unwrap() = Some(format!("{err}"));
+            loop_shared.connected.store(false, Ordering::Release);
+            status.store(HX_ENDPOINT_OFFLINE, Ordering::Release);
+            return;
+        }
+        }
+    }
+}
+
+
 /// # Safety
+/// `session` must come from `hx_session_connect`/// # Safety
 /// `session` must come from `hx_session_connect` and not be used afterwards.
 #[no_mangle]
 pub unsafe extern "C" fn hx_session_free(session: *mut HxSession) {
@@ -597,13 +705,193 @@ pub unsafe extern "C" fn hx_session_free(session: *mut HxSession) {
     }
 }
 
+/// Why the most recent `hx_session_connect` failed. Caller frees with
+/// `hx_string_free`.
+#[no_mangle]
+pub extern "C" fn hx_connect_error() -> *mut c_char {
+    string_or_null(LAST_CONNECT_ERROR().lock().unwrap().take())
+}
+
+/// How many machines are attached.
+///
+/// # Safety
+/// `session` must be live.
+#[no_mangle]
+pub unsafe extern "C" fn hx_endpoint_count(session: *const HxSession) -> usize {
+    session.as_ref().map_or(0, |s| s.endpoints.len())
+}
+
+/// The endpoint's opaque id. Caller frees with `hx_string_free`.
+///
+/// # Safety
+/// `session` must be live.
+#[no_mangle]
+pub unsafe extern "C" fn hx_endpoint_id(session: *const HxSession, index: usize) -> *mut c_char {
+    string_or_null(
+        session
+            .as_ref()
+            .and_then(|s| s.endpoints.get(index))
+            .map(|e| e.endpoint.id.clone()),
+    )
+}
+
+/// The endpoint's display name. Caller frees with `hx_string_free`.
+///
+/// # Safety
+/// `session` must be live.
+#[no_mangle]
+pub unsafe extern "C" fn hx_endpoint_label(session: *const HxSession, index: usize) -> *mut c_char {
+    string_or_null(
+        session
+            .as_ref()
+            .and_then(|s| s.endpoints.get(index))
+            .map(|e| e.endpoint.label.clone()),
+    )
+}
+
+/// One of `HX_ENDPOINT_*`.
+///
+/// # Safety
+/// `session` must be live.
+#[no_mangle]
+pub unsafe extern "C" fn hx_endpoint_status(session: *const HxSession, index: usize) -> u8 {
+    session
+        .as_ref()
+        .and_then(|s| s.endpoints.get(index))
+        .map_or(HX_ENDPOINT_OFFLINE, |e| e.status.load(Ordering::Acquire))
+}
+
+/// Whether the endpoint is reached over ssh rather than the local socket.
+///
+/// # Safety
+/// `session` must be live.
+#[no_mangle]
+pub unsafe extern "C" fn hx_endpoint_is_remote(session: *const HxSession, index: usize) -> bool {
+    session
+        .as_ref()
+        .and_then(|s| s.endpoints.get(index))
+        .is_some_and(|e| !matches!(e.endpoint.kind, crate::endpoint::EndpointKind::Local))
+}
+
+/// Which endpoint currently renders a surface and takes input.
+///
+/// # Safety
+/// `session` must be live.
+#[no_mangle]
+pub unsafe extern "C" fn hx_active_endpoint(session: *const HxSession) -> usize {
+    session.as_ref().map_or(0, |s| s.active)
+}
+
+/// Switches which machine is shown.
+///
+/// Every endpoint stays connected either way — that is what keeps remote agent
+/// status live in the sidebar — but only the active one is asked to render a
+/// surface, so the cost of watching several machines stays small.
+///
+/// # Safety
+/// `session` must be a live session pointer, used from one thread at a time.
+#[no_mangle]
+pub unsafe extern "C" fn hx_set_active_endpoint(session: *mut HxSession, index: usize) -> bool {
+    let Some(session) = session.as_mut() else {
+        return false;
+    };
+    if index >= session.endpoints.len() {
+        return false;
+    }
+    if index == session.active {
+        return true;
+    }
+
+    let geometry = *session.geometry.lock().unwrap();
+    for (position, endpoint) in session.endpoints.iter().enumerate() {
+        let active = position == index;
+        let request = format!(
+            r#"{{"id":"surface-{position}","method":"client_shell.surface.set","params":{{"active":{active}}}}}"#
+        );
+        // The boot id is the endpoint's own; an empty one lets the server use
+        // the connection it arrived on.
+        let _ = endpoint
+            .outbound
+            .send(ClientMessage::ClientShellEndpointRequest {
+                boot_id: String::new(),
+                request,
+            });
+        if active {
+            let _ = endpoint.outbound.send(ClientMessage::ClientShellResize {
+                cell_width_px: geometry.cell_width_px,
+                cell_height_px: geometry.cell_height_px,
+                surface_size: herdr_protocol::protocol::ClientSurfaceSize {
+                    cols: geometry.cols,
+                    rows: geometry.rows,
+                },
+                pixel_mouse: true,
+            });
+        }
+    }
+
+    session.select(index);
+    true
+}
+
+/// The latest snapshot for one endpoint, or null. Caller frees with
+/// `hx_string_free`.
+///
+/// Each machine has its own workspace tree, so the sidebar reads them all
+/// rather than only the active one.
+///
+/// # Safety
+/// `session` must be live.
+#[no_mangle]
+pub unsafe extern "C" fn hx_endpoint_snapshot_json(
+    session: *const HxSession,
+    index: usize,
+) -> *mut c_char {
+    string_or_null(
+        session
+            .as_ref()
+            .and_then(|s| s.endpoints.get(index))
+            .and_then(|e| e.shared.snapshot_json.lock().unwrap().take()),
+    )
+}
+
+/// Pops the next event from any endpoint, oldest first within each.
+///
+/// # Safety
+/// `session` must be live.
+#[no_mangle]
+pub unsafe extern "C" fn hx_next_endpoint_event(
+    session: *const HxSession,
+    index: usize,
+) -> *mut c_char {
+    string_or_null(
+        session
+            .as_ref()
+            .and_then(|s| s.endpoints.get(index))
+            .and_then(|e| e.shared.events.lock().unwrap().pop_front()),
+    )
+}
+
+fn string_or_null(value: Option<String>) -> *mut c_char {
+    match value.and_then(|s| CString::new(s).ok()) {
+        Some(s) => s.into_raw(),
+        None => std::ptr::null_mut(),
+    }
+}
+
+/// Whether any endpoint is currently attached.
+///
+/// Endpoints reconnect individually, so this is about whether the session is
+/// worth keeping rather than a prompt to rebuild it.
+///
 /// # Safety
 /// `session` must be a live session pointer.
 #[no_mangle]
 pub unsafe extern "C" fn hx_session_connected(session: *const HxSession) -> bool {
-    session
-        .as_ref()
-        .is_some_and(|s| s.shared.connected.load(Ordering::Acquire))
+    session.as_ref().is_some_and(|s| {
+        s.endpoints
+            .iter()
+            .any(|e| e.shared.connected.load(Ordering::Acquire))
+    })
 }
 
 /// Refreshes the caller's grid view from the receive thread.
@@ -717,39 +1005,7 @@ pub unsafe extern "C" fn hx_pane_id(session: *const HxSession, id_index: u32) ->
     }
 }
 
-/// Returns the latest snapshot as JSON, or null. Caller frees with `hx_string_free`.
-///
-/// # Safety
-/// `session` must be live.
-#[no_mangle]
-pub unsafe extern "C" fn hx_take_snapshot_json(session: *const HxSession) -> *mut c_char {
-    let Some(session) = session.as_ref() else {
-        return std::ptr::null_mut();
-    };
-    let taken = session.shared.snapshot_json.lock().unwrap().take();
-    match taken.and_then(|s| CString::new(s).ok()) {
-        Some(s) => s.into_raw(),
-        None => std::ptr::null_mut(),
-    }
-}
 
-/// Pops the next queued event as JSON, or null when the queue is empty.
-///
-/// Caller frees with `hx_string_free`.
-///
-/// # Safety
-/// `session` must be live.
-#[no_mangle]
-pub unsafe extern "C" fn hx_next_event(session: *const HxSession) -> *mut c_char {
-    let Some(session) = session.as_ref() else {
-        return std::ptr::null_mut();
-    };
-    let next = session.shared.events.lock().unwrap().pop_front();
-    match next.and_then(|s| CString::new(s).ok()) {
-        Some(s) => s.into_raw(),
-        None => std::ptr::null_mut(),
-    }
-}
 
 /// # Safety
 /// `session` must be live.
@@ -758,11 +1014,14 @@ pub unsafe extern "C" fn hx_last_error(session: *const HxSession) -> *mut c_char
     let Some(session) = session.as_ref() else {
         return std::ptr::null_mut();
     };
-    let taken = session.shared.error.lock().unwrap().take();
-    match taken.and_then(|s| CString::new(s).ok()) {
-        Some(s) => s.into_raw(),
-        None => std::ptr::null_mut(),
+    // Every endpoint, not just the active one: a machine failing in the
+    // background is exactly the failure you cannot see any other way.
+    for endpoint in &session.endpoints {
+        if let Some(message) = endpoint.shared.error.lock().unwrap().take() {
+            return string_or_null(Some(message));
+        }
     }
+    std::ptr::null_mut()
 }
 
 /// # Safety
@@ -1080,6 +1339,16 @@ pub unsafe extern "C" fn hx_resize(
         cell_width_px,
         cell_height_px,
     };
+    // Tell every endpoint, not just the active one: switching machines should
+    // not show a surface composed for the wrong window size.
+    for endpoint in &session.endpoints {
+        let _ = endpoint.outbound.send(ClientMessage::ClientShellResize {
+            cell_width_px,
+            cell_height_px,
+            surface_size: herdr_protocol::protocol::ClientSurfaceSize { cols, rows },
+            pixel_mouse: true,
+        });
+    }
     session
         .outbound
         .send(ClientMessage::ClientShellResize {
