@@ -15,6 +15,12 @@ final class TerminalGridView: NSView {
     var onFocusPane: ((String) -> Void)?
 
     private(set) var cellSize: CGSize = .zero
+    /// Breathing room between the terminal and the window edge.
+    ///
+    /// Applied once as a translation when drawing, and subtracted again when
+    /// hit-testing, so every cell-to-point conversion stays in plain cell
+    /// coordinates.
+    private let contentInset: CGFloat = 8
     private var glyphs: GlyphRunDrawer
     private var lastRevision: UInt64 = .max
     /// Last grid size we told the server about, so a live drag does not send a
@@ -89,9 +95,11 @@ final class TerminalGridView: NSView {
 
     var gridSize: (cols: Int, rows: Int) {
         guard cellSize.width > 0, cellSize.height > 0 else { return (80, 24) }
+        let usable = CGSize(
+            width: bounds.width - contentInset * 2, height: bounds.height - contentInset * 2)
         return (
-            max(Int(bounds.width / cellSize.width), 1),
-            max(Int(bounds.height / cellSize.height), 1)
+            max(Int(usable.width / cellSize.width), 1),
+            max(Int(usable.height / cellSize.height), 1)
         )
     }
 
@@ -181,20 +189,26 @@ final class TerminalGridView: NSView {
         context.fill(bounds)
 
         if !panes.isEmpty, let session {
+            context.saveGState()
+            context.translateBy(x: contentInset, y: contentInset)
             session.withGrid { grid in
                 for pane in panes {
-                    drawRegion(grid, pane.rect, in: context)
-                    drawImages(grid, in: context, within: pane.rect)
+                    // The pane's *inner* rect: the margin between it and `rect`
+                    // is where the server drew its own border, and drawing both
+                    // that and ours gave every pane a double outline.
+                    drawRegion(grid, pane.inner, in: context)
+                    drawImages(grid, in: context, within: pane.inner)
                 }
                 drawSelection(grid, in: context)
                 drawCopyModeCursor(in: context)
                 drawCursor(grid, in: context)
                 if panes.count > 1 {
-                    for pane in panes where pane.focused {
-                        drawFocusRing(pane.rect, in: context)
+                    for pane in panes {
+                        drawPaneBorder(pane, in: context)
                     }
                 }
             }
+            context.restoreGState()
             return
         }
 
@@ -294,17 +308,29 @@ final class TerminalGridView: NSView {
         context.stroke(rect.insetBy(dx: 0.75, dy: 0.75))
     }
 
-    /// A focus ring, which is the point of having real pane views: with several
-    /// panes open you have to be able to see which one takes your keystrokes.
-    private func drawFocusRing(_ region: CellRect, in context: CGContext) {
+    /// One border per pane, drawn only when there is more than one.
+    ///
+    /// The focused pane gets the accent colour and the others a faint line, so
+    /// which pane takes your keystrokes is obvious without a second outline
+    /// competing with it.
+    private func drawPaneBorder(_ pane: PaneView, in context: CGContext) {
         let rect = CGRect(
-            x: CGFloat(region.x) * cellSize.width,
-            y: CGFloat(region.y) * cellSize.height,
-            width: CGFloat(region.width) * cellSize.width,
-            height: CGFloat(region.height) * cellSize.height)
-        context.setStrokeColor(NSColor.controlAccentColor.withAlphaComponent(0.65).cgColor)
-        context.setLineWidth(2)
-        context.stroke(rect.insetBy(dx: 1, dy: 1))
+            x: CGFloat(pane.inner.x) * cellSize.width,
+            y: CGFloat(pane.inner.y) * cellSize.height,
+            width: CGFloat(pane.inner.width) * cellSize.width,
+            height: CGFloat(pane.inner.height) * cellSize.height
+        ).insetBy(dx: -3, dy: -3)
+
+        let path = CGPath(roundedRect: rect, cornerWidth: 4, cornerHeight: 4, transform: nil)
+        context.addPath(path)
+        if pane.focused {
+            context.setStrokeColor(NSColor.controlAccentColor.cgColor)
+            context.setLineWidth(2)
+        } else {
+            context.setStrokeColor(theme.foreground.withAlphaComponent(0.15).cgColor)
+            context.setLineWidth(1)
+        }
+        context.strokePath()
     }
 
     /// Paints the selection as a translucent overlay.
@@ -529,8 +555,8 @@ extension TerminalGridView {
     private func hit(_ event: NSEvent) -> (pane: PaneView, column: Int, row: Int)? {
         guard cellSize.width > 0, cellSize.height > 0 else { return nil }
         let point = convert(event.locationInWindow, from: nil)
-        let column = Int(point.x / cellSize.width)
-        let row = Int(point.y / cellSize.height)
+        let column = Int((point.x - contentInset) / cellSize.width)
+        let row = Int((point.y - contentInset) / cellSize.height)
 
         let pane = panes.first {
             column >= $0.rect.x && column < $0.rect.x + $0.rect.width
@@ -549,8 +575,8 @@ extension TerminalGridView {
             button: button,
             column: UInt16(max(column, 0)),
             row: UInt16(max(row, 0)),
-            pixel_x: UInt32(max(point.x, 0)),
-            pixel_y: UInt32(max(point.y, 0)),
+            pixel_x: UInt32(max(point.x - contentInset, 0)),
+            pixel_y: UInt32(max(point.y - contentInset, 0)),
             modifiers: KeyMapper.modifiers(event.modifierFlags),
             lines: UInt16(max(lines, 0)))
     }

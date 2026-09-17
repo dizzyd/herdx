@@ -215,6 +215,17 @@ Cells carrying explicit colours still come from the program in the pane, so an
 agent with a dark theme stays dark inside a light window. That is the program's
 choice to make, not the client's.
 
+### Pane borders
+
+The server draws its own pane borders into the cells — the margin between a
+pane's `rect` and its `inner_rect` — so drawing a focus ring on top of that gave
+every pane two outlines, one of which moved with focus. Only the inner rect is
+rendered, and the border is ours: the accent colour on the focused pane and a
+faint line on the others, with a margin so the terminal is not flush against the
+window edge. That inset is applied once as a translation when drawing and
+subtracted again when hit-testing, so every cell-to-point conversion stays in
+plain cell coordinates.
+
 ### Rendering
 
 Rows are drawn as runs of identical style through CoreText, with every glyph
