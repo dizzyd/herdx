@@ -7,11 +7,12 @@ final class PreferencesWindowController: NSWindowController {
     private let familyPopUp = NSPopUpButton()
     private let sizeField = NSTextField()
     private let appearancePopUp = NSPopUpButton()
+    private let terminalPopUp = NSPopUpButton()
 
     init(onChange: @escaping (Preferences) -> Void) {
         self.onChange = onChange
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 360, height: 150),
+            contentRect: NSRect(x: 0, y: 0, width: 380, height: 190),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false)
@@ -40,10 +41,27 @@ final class PreferencesWindowController: NSWindowController {
         appearancePopUp.target = self
         appearancePopUp.action = #selector(changed)
 
+        // Separate from the window's appearance: herdr applies the foreground
+        // client's host theme to every pane, so when a herdr TUI is attached to
+        // the same session the two have to agree, or the pane re-themes each
+        // time focus moves between them.
+        terminalPopUp.addItem(withTitle: "Match Window")
+        terminalPopUp.lastItem?.representedObject = Preferences.Appearance.system.rawValue
+        for option in [Preferences.Appearance.dark, .light] {
+            terminalPopUp.addItem(withTitle: option.title)
+            terminalPopUp.lastItem?.representedObject = option.rawValue
+        }
+        terminalPopUp.selectItem(
+            withTitle: preferences.terminalAppearance == .system
+                ? "Match Window" : preferences.terminalAppearance.title)
+        terminalPopUp.target = self
+        terminalPopUp.action = #selector(changed)
+
         let grid = NSGridView(views: [
             [label("Font"), familyPopUp],
             [label("Size"), sizeField],
             [label("Appearance"), appearancePopUp],
+            [label("Terminal"), terminalPopUp],
         ])
         grid.rowSpacing = 12
         grid.columnSpacing = 12
@@ -76,10 +94,15 @@ final class PreferencesWindowController: NSWindowController {
             (appearancePopUp.selectedItem?.representedObject as? String)
             .flatMap(Preferences.Appearance.init(rawValue:)) ?? .system
 
+        let terminal =
+            (terminalPopUp.selectedItem?.representedObject as? String)
+            .flatMap(Preferences.Appearance.init(rawValue:)) ?? .system
+
         let preferences = Preferences(
             fontName: family == "System Monospace" ? "" : family,
             fontSize: size,
-            appearance: appearance)
+            appearance: appearance,
+            terminalAppearance: terminal)
         Preferences.current = preferences
         onChange(preferences)
     }

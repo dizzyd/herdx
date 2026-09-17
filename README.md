@@ -189,20 +189,20 @@ the one call that requires it, so it retries once against a fresher revision.
 
 Light mode is not the dark palette inverted — the same hues at dark-mode
 luminance are unreadable on white — so the two palettes are tuned separately.
-The app does **not** publish its palette to the server by default. Nothing here
-needs it to: `Reset` cells resolve against the theme locally. The only consumer
-is the program inside the pane, which watches the terminal's background and
-re-themes itself when it moves — and re-queries on events like focus changes,
-which made panes flip between light and dark as the app was activated and
-deactivated. `HERDX_PUBLISH_THEME=1` restores it for anyone who wants agents to
-match the window.
+The terminal's palette is a setting of its own, separate from the window's
+appearance, and it is what gets published to the server as the host background.
 
-It matters more than it looks because herdr is multi-client. The server keeps a
-host theme per client and applies whichever one is *foreground*, chosen by a
+That separation exists because herdr is multi-client. The server keeps a host
+theme per client and applies whichever client is *foreground*, chosen by a
 monotonic activity stamp. With this app and a herdr TUI attached to the same
-session, each publishing a different background, the pane re-themed every time
-focus moved between them — and switched back as soon as you typed, because
-typing made that client foreground again.
+session, whichever of them you typed in last decides what colour the terminal
+is — so if they disagree, a pane whose program follows the background re-themes
+every time focus moves between them, and switches back as soon as you type.
+
+Not publishing does not avoid this: the server then applies herdr's default for
+this client, which disagrees just as readily. The fix is for the two clients to
+agree, so set **Terminal** to match the other terminal's theme and the pane
+stops moving. Following the window is right when this is the only client.
 
 Cells carrying explicit colours still come from the program in the pane, so an
 agent with a dark theme stays dark inside a light window. That is the program's

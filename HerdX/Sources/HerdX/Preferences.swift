@@ -20,11 +20,22 @@ struct Preferences {
     var fontName: String
     var fontSize: CGFloat
     var appearance: Appearance
+    /// The palette the terminal draws with, and the one published to the
+    /// server as the host background.
+    ///
+    /// Separate from the window's appearance because herdr applies the
+    /// *foreground* client's host theme to every pane. With another client
+    /// attached — a herdr TUI in a terminal — the two must agree or the pane
+    /// re-themes every time focus moves between them. Following the window is
+    /// right when this is the only client; matching the other terminal is right
+    /// when it is not.
+    var terminalAppearance: Appearance
 
     private enum Key {
         static let fontName = "fontName"
         static let fontSize = "fontSize"
         static let appearance = "appearance"
+        static let terminalAppearance = "terminalAppearance"
     }
 
     static var current: Preferences {
@@ -34,6 +45,8 @@ struct Preferences {
                 fontName: defaults.string(forKey: Key.fontName) ?? "",
                 fontSize: defaults.object(forKey: Key.fontSize) as? CGFloat ?? 13,
                 appearance: defaults.string(forKey: Key.appearance)
+                    .flatMap(Appearance.init(rawValue:)) ?? .system,
+                terminalAppearance: defaults.string(forKey: Key.terminalAppearance)
                     .flatMap(Appearance.init(rawValue:)) ?? .system)
         }
         set {
@@ -41,6 +54,7 @@ struct Preferences {
             defaults.set(newValue.fontName, forKey: Key.fontName)
             defaults.set(newValue.fontSize, forKey: Key.fontSize)
             defaults.set(newValue.appearance.rawValue, forKey: Key.appearance)
+            defaults.set(newValue.terminalAppearance.rawValue, forKey: Key.terminalAppearance)
         }
     }
 
@@ -58,6 +72,19 @@ struct Preferences {
     }
 
     func theme(matching systemIsDark: Bool) -> Theme {
+        resolve(appearance, systemIsDark: systemIsDark)
+    }
+
+    /// The palette panes are drawn with, which follows the window unless
+    /// pinned.
+    func terminalTheme(matching systemIsDark: Bool) -> Theme {
+        switch terminalAppearance {
+        case .system: return theme(matching: systemIsDark)
+        default: return resolve(terminalAppearance, systemIsDark: systemIsDark)
+        }
+    }
+
+    private func resolve(_ appearance: Appearance, systemIsDark: Bool) -> Theme {
         switch appearance {
         case .system: return systemIsDark ? .dark : .light
         case .dark: return .dark

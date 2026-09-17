@@ -248,8 +248,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// what the app draws.
     private func applyTheme() {
         appliedSystemIsDark = systemIsDark
-        let theme = preferences.theme(matching: systemIsDark)
-        gridView.theme = theme
+        let chrome = preferences.theme(matching: systemIsDark)
+        let terminal = preferences.terminalTheme(matching: systemIsDark)
+
+        gridView.theme = terminal
         gridView.needsDisplay = true
 
         switch preferences.appearance {
@@ -257,28 +259,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case .dark: window.appearance = NSAppearance(named: .darkAqua)
         case .light: window.appearance = NSAppearance(named: .aqua)
         }
-        sidebar.apply(theme: theme)
-        tabBar.apply(theme: theme)
-        copyModeStatus.apply(theme: theme)
-        publish(theme: theme)
+        sidebar.apply(theme: chrome)
+        tabBar.apply(theme: chrome)
+        copyModeStatus.apply(theme: chrome)
+        publish(theme: terminal)
     }
 
-    /// Tells the server our colours.
+    /// Tells the server our terminal palette.
     ///
-    /// Off by default. Programs inside a pane watch the terminal's background
-    /// and re-theme themselves when it moves, and they re-query it on events
-    /// like focus changes — which made panes flip between light and dark as the
-    /// app was activated and deactivated. Nothing here needs the server to know
-    /// our palette: `Reset` cells resolve against the theme locally, in
-    /// `PackedColor`. So the only effect of publishing is on the pane's own
-    /// program, and stability is worth more than having agents match the
-    /// window.
+    /// herdr applies the *foreground* client's host theme to every pane, and
+    /// picks the foreground client by activity. So with another client attached
+    /// to the same session, whichever of you typed last decides what colour the
+    /// terminal is, and a pane whose program follows the background re-themes
+    /// every time that changes. Publishing is what lets the two agree; the
+    /// Terminal setting is what makes them agree on the same thing.
     ///
-    /// `HERDX_PUBLISH_THEME=1` restores it for anyone who wants that matching.
+    /// Sent only when the colours actually differ from what the server was last
+    /// told, since republishing an unchanged theme still reads as a change to
+    /// the program in the pane.
     private func publish(theme: Theme, force: Bool = false) {
-        guard ProcessInfo.processInfo.environment["HERDX_PUBLISH_THEME"] != nil,
-            let session
-        else { return }
+        guard let session else { return }
 
         let fingerprint =
             [theme.rgbBytes(of: theme.background), theme.rgbBytes(of: theme.foreground)]
@@ -348,7 +348,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         window.subtitle = ""
         publishedTheme = nil
-        publish(theme: preferences.theme(matching: systemIsDark), force: true)
+        publish(theme: preferences.terminalTheme(matching: systemIsDark), force: true)
         // The view is laid out by now, so tell the server the real size; the
         // size used for the handshake was whatever existed before layout.
         gridView.reportGridSize()
