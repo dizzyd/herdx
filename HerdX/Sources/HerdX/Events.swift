@@ -13,6 +13,7 @@ enum ServerEvent: Decodable {
     case windowTitle(String?)
     case bell(Int)
     case error(String)
+    case response(requestID: String, body: String)
 
     struct Notification: Decodable {
         enum Kind: String, Decodable {
@@ -41,6 +42,8 @@ enum ServerEvent: Decodable {
 
     private enum CodingKeys: String, CodingKey {
         case type, text, title, count, message
+        case requestID = "request_id"
+        case body
     }
 
     init(from decoder: Decoder) throws {
@@ -54,6 +57,10 @@ enum ServerEvent: Decodable {
             self = .windowTitle(try container.decodeIfPresent(String.self, forKey: .title))
         case "bell":
             self = .bell(try container.decode(Int.self, forKey: .count))
+        case "response":
+            self = .response(
+                requestID: try container.decode(String.self, forKey: .requestID),
+                body: try container.decode(String.self, forKey: .body))
         default:
             self = .error(try container.decodeIfPresent(String.self, forKey: .message) ?? "")
         }
@@ -100,6 +107,32 @@ final class EventPresenter {
             NSSound.beep()
         case .error(let message):
             NSLog("herdr: %@", message)
+        case .response(_, let body):
+            handle(response: body)
+        }
+    }
+
+    /// Replies we care about presenting.
+    ///
+    /// Selection text has to come back from the server because a selection can
+    /// cover scrollback the client never rendered.
+    private struct Reply: Decodable {
+        struct Result: Decodable {
+            let type: String
+            let text: String?
+        }
+        let result: Result?
+    }
+
+    private func handle(response body: String) {
+        guard let data = body.data(using: .utf8),
+            let reply = try? JSONDecoder().decode(Reply.self, from: data),
+            let result = reply.result
+        else { return }
+
+        if result.type == "pane_selection", let text = result.text, !text.isEmpty {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
         }
     }
 

@@ -40,6 +40,11 @@ final class TerminalGridView: NSView {
 
     fileprivate var scrollAccumulator: CGFloat = 0
 
+    /// The active drag selection, if any.
+    fileprivate var selection: Selection?
+    /// Raised when a selection is copied, with the request to read its text.
+    var onReadSelection: ((String) -> Void)?
+
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
 
@@ -97,7 +102,32 @@ final class TerminalGridView: NSView {
                     drawRegion(grid, pane.rect, in: context)
                 }
             }
+            drawSelection(grid, in: context)
             drawCursor(grid, in: context)
+        }
+    }
+
+    /// Paints the selection as a translucent overlay.
+    ///
+    /// Drawn after the text so it tints rather than hides it; a terminal
+    /// selection has to stay readable.
+    private func drawSelection(_ grid: GridView, in context: CGContext) {
+        guard let selection, !selection.isEmpty,
+            let pane = panes.first(where: { $0.id == selection.paneID })
+        else { return }
+
+        context.setFillColor(NSColor.selectedTextBackgroundColor.withAlphaComponent(0.35).cgColor)
+        for viewportRow in 0..<pane.inner.height {
+            let absolute = pane.viewportTopRow + UInt64(viewportRow)
+            guard let span = selection.span(onRow: absolute, width: pane.inner.width) else {
+                continue
+            }
+            context.fill(
+                CGRect(
+                    x: CGFloat(pane.inner.x + span.lowerBound) * cellSize.width,
+                    y: CGFloat(pane.inner.y + viewportRow) * cellSize.height,
+                    width: CGFloat(span.count) * cellSize.width,
+                    height: cellSize.height))
         }
     }
 
@@ -334,17 +364,82 @@ extension TerminalGridView {
             to: hit.pane.id)
     }
 
+    /// Whether a drag selects text rather than going to the pane's program.
+    ///
+    /// A program that asked for mouse reporting owns the drag, which is what
+    /// makes editors and pagers work. Holding option overrides that, the
+    /// convention every terminal uses for selecting out of such a program.
+    private func dragSelectsText(_ event: NSEvent, pane: PaneView) -> Bool {
+        !pane.mouseReporting || event.modifierFlags.contains(.option)
+    }
+
+    /// Converts a hit into an absolute scrollback point within the pane.
+    private func point(in pane: PaneView, column: Int, row: Int) -> Selection.Point {
+        let localColumn = (column - pane.inner.x).clamped(to: 0...max(pane.inner.width - 1, 0))
+        let localRow = (row - pane.inner.y).clamped(to: 0...max(pane.inner.height - 1, 0))
+        return Selection.Point(
+            row: pane.viewportTopRow + UInt64(localRow), column: localColumn)
+    }
+
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
+        guard let hit = hit(event) else { return }
+
+        if dragSelectsText(event, pane: hit.pane) {
+            let start = point(in: hit.pane, column: hit.column, row: hit.row)
+            selection = Selection(
+                paneID: hit.pane.id,
+                contentRevision: hit.pane.contentRevision,
+                anchor: start,
+                cursor: start)
+            needsDisplay = true
+            if !hit.pane.focused { onFocusPane?(hit.pane.id) }
+            return
+        }
         send(event, kind: UInt16(HX_MOUSE_DOWN), button: UInt8(HX_BUTTON_LEFT))
     }
 
     override func mouseUp(with event: NSEvent) {
+        if selection != nil {
+            // An empty selection is just a click; clear it so a stray highlight
+            // does not linger.
+            if selection?.isEmpty == true { selection = nil; needsDisplay = true }
+            return
+        }
         send(event, kind: UInt16(HX_MOUSE_UP), button: UInt8(HX_BUTTON_LEFT))
     }
 
     override func mouseDragged(with event: NSEvent) {
+        if selection != nil, let hit = hit(event) {
+            selection?.cursor = point(in: hit.pane, column: hit.column, row: hit.row)
+            needsDisplay = true
+            return
+        }
         send(event, kind: UInt16(HX_MOUSE_DRAG), button: UInt8(HX_BUTTON_LEFT))
+    }
+
+    /// Copies the selection by asking the server for its text.
+    ///
+    /// The grid only holds what is on screen, and a selection can cover
+    /// scrollback that was never rendered, so the text has to come from the
+    /// pane rather than from the cells we drew.
+    @objc func copy(_ sender: Any?) {
+        guard let selection, !selection.isEmpty,
+            let request = selection.readRequest(id: "selection-\(UUID().uuidString)")
+        else { return }
+        onReadSelection?(request)
+    }
+
+    override func selectAll(_ sender: Any?) {
+        guard let pane = panes.first(where: { $0.id == focusedPane }) else { return }
+        selection = Selection(
+            paneID: pane.id,
+            contentRevision: pane.contentRevision,
+            anchor: Selection.Point(row: 0, column: 0),
+            cursor: Selection.Point(
+                row: pane.viewportTopRow + UInt64(max(pane.inner.height - 1, 0)),
+                column: max(pane.inner.width - 1, 0)))
+        needsDisplay = true
     }
 
     override func rightMouseDown(with event: NSEvent) {

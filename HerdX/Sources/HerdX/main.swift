@@ -58,6 +58,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 cellWidth: Int(cell.width), cellHeight: Int(cell.height))
             self.session = session
             gridView.session = session
+            gridView.onReadSelection = { [weak self] request in
+                guard let self, let snapshot = session.lastSnapshot else { return }
+                session.request(request, bootID: snapshot.bootID)
+                _ = self
+            }
             gridView.onFocusPane = { [weak self] paneID in
                 guard let self else { return }
                 self.invoke(.focusPane(paneID), session: session)
@@ -151,6 +156,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             withTitle: "Quit HerdX", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appItem.submenu = appMenu
         main.addItem(appItem)
+
+        let editItem = NSMenuItem()
+        let editMenu = NSMenu(title: "Edit")
+        // Routed to the first responder, so the grid view handles them.
+        editMenu.addItem(
+            withTitle: "Copy", action: #selector(TerminalGridView.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(
+            withTitle: "Select All", action: #selector(NSResponder.selectAll(_:)),
+            keyEquivalent: "a")
+        editItem.submenu = editMenu
+        main.addItem(editItem)
 
         let shellItem = NSMenuItem()
         let shellMenu = NSMenu(title: "Shell")

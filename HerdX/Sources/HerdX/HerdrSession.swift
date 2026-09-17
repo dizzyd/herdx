@@ -8,6 +8,21 @@ struct PaneView {
     let inner: CellRect
     let focused: Bool
     let alternateScreen: Bool
+    /// True while the pane's program wants mouse events itself.
+    let mouseReporting: Bool
+    let scrollOffsetFromBottom: UInt64
+    let scrollMaxOffsetFromBottom: UInt64
+    let contentRevision: UInt64
+
+    /// The scrollback row showing at the top of this pane's viewport.
+    ///
+    /// `pane.selection.read` addresses text in absolute scrollback
+    /// coordinates, so a viewport row has to be offset by however far back the
+    /// pane is scrolled.
+    var viewportTopRow: UInt64 {
+        scrollMaxOffsetFromBottom >= scrollOffsetFromBottom
+            ? scrollMaxOffsetFromBottom - scrollOffsetFromBottom : 0
+    }
 }
 
 struct CellRect {
@@ -82,7 +97,11 @@ final class HerdrSession {
                     x: Int(p.inner_x), y: Int(p.inner_y),
                     width: Int(p.inner_width), height: Int(p.inner_height)),
                 focused: p.focused,
-                alternateScreen: p.alternate_screen)
+                alternateScreen: p.alternate_screen,
+                mouseReporting: p.mouse_reporting,
+                scrollOffsetFromBottom: p.scroll_offset_from_bottom,
+                scrollMaxOffsetFromBottom: p.scroll_max_offset_from_bottom,
+                contentRevision: p.content_revision)
         }
 
         return body(

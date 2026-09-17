@@ -23,6 +23,10 @@ typedef struct {
   uint16_t inner_x, inner_y, inner_width, inner_height;
   bool focused;
   bool alternate_screen;
+  bool mouse_reporting;
+  uint64_t scroll_offset_from_bottom;
+  uint64_t scroll_max_offset_from_bottom;
+  uint64_t content_revision;
   uint32_t id_index;  // resolve with hx_pane_id
 } HxPane;
 

@@ -56,6 +56,15 @@ pub struct HxPane {
     pub inner_height: u16,
     pub focused: bool,
     pub alternate_screen: bool,
+    /// True while the pane's program asked for mouse reporting, in which case
+    /// drags belong to it rather than to text selection.
+    pub mouse_reporting: bool,
+    /// Scrollback position, for turning a viewport row into the absolute row
+    /// `pane.selection.read` expects.
+    pub scroll_offset_from_bottom: u64,
+    pub scroll_max_offset_from_bottom: u64,
+    /// Identifies the content a selection was taken against.
+    pub content_revision: u64,
     /// Index into the session's pane-id table; use `hx_pane_id`.
     pub id_index: u32,
 }
@@ -184,6 +193,10 @@ impl Grid {
             inner_height: pane.inner_rect.height,
             focused: pane.focused,
             alternate_screen: pane.alternate_screen_active,
+            mouse_reporting: pane.mouse_reporting,
+            scroll_offset_from_bottom: pane.scroll.map_or(0, |s| s.offset_from_bottom),
+            scroll_max_offset_from_bottom: pane.scroll.map_or(0, |s| s.max_offset_from_bottom),
+            content_revision: pane.content_revision,
             id_index,
         }
     }
@@ -233,6 +246,8 @@ enum Event {
     WindowTitle { title: Option<String> },
     Bell { count: u16 },
     Error { message: String },
+    /// A completed reply to one `hx_endpoint_request`.
+    Response { request_id: String, body: String },
 }
 
 struct Shared {
@@ -241,6 +256,22 @@ struct Shared {
     error: Mutex<Option<String>>,
     events: Mutex<std::collections::VecDeque<String>>,
     connected: AtomicBool,
+}
+
+/// Reassembles endpoint replies, which arrive as ordered chunks per request.
+#[derive(Default)]
+struct PendingResponses(std::collections::HashMap<String, Vec<u8>>);
+
+impl PendingResponses {
+    fn push(&mut self, request_id: String, data: &[u8], final_chunk: bool) -> Option<(String, String)> {
+        let buffer = self.0.entry(request_id.clone()).or_default();
+        buffer.extend_from_slice(data);
+        if !final_chunk {
+            return None;
+        }
+        let bytes = self.0.remove(&request_id)?;
+        Some((request_id, String::from_utf8_lossy(&bytes).into_owned()))
+    }
 }
 
 impl Shared {
@@ -335,7 +366,9 @@ pub unsafe extern "C" fn hx_session_connect(
     }
 
     let loop_shared = Arc::clone(&shared);
-    std::thread::spawn(move || loop {
+    std::thread::spawn(move || {
+        let mut pending = PendingResponses::default();
+        loop {
         match conn.recv() {
             Ok(ServerMessage::PaneSurface(frame)) => {
                 loop_shared.grid.lock().unwrap().replace(&frame);
@@ -396,12 +429,23 @@ pub unsafe extern "C" fn hx_session_connect(
             Ok(ServerMessage::ClientShellError { message }) => {
                 loop_shared.push(Event::Error { message });
             }
+            Ok(ServerMessage::ClientShellEndpointResponseChunk {
+                request_id,
+                final_chunk,
+                data,
+                ..
+            }) => {
+                if let Some((request_id, body)) = pending.push(request_id, &data, final_chunk) {
+                    loop_shared.push(Event::Response { request_id, body });
+                }
+            }
             Ok(_) => {}
             Err(err) => {
                 *loop_shared.error.lock().unwrap() = Some(format!("{err}"));
                 loop_shared.connected.store(false, Ordering::Release);
                 return;
             }
+        }
         }
     });
 

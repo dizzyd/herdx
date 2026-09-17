@@ -80,9 +80,21 @@ complete one — a stitched grid is worse than a slightly stale one.
 - [x] Swift app: cell-grid renderer, native sidebar, ⌘ chords + `ctrl+b` prefix
 - [x] Mouse input: click-to-focus, drag, right-click, scroll
 - [x] Native notifications, clipboard (OSC 52), window title, bell
-- [ ] Selection and copy mode
+- [x] Drag selection and copy (⌘C, ⌘A)
+- [ ] Copy mode (`prefix+[`) and search
 - [ ] Promote panes to real `NSView`s (the patch-routing seam is already in place)
 - [ ] Kitty graphics, ligatures, font configuration
+
+### Selection
+
+Selections are held in absolute scrollback coordinates, not viewport rows, so
+they survive the pane scrolling and new output arriving underneath — which is
+what happens constantly while an agent works. The text itself comes back from
+`pane.selection.read` rather than from the drawn cells, because a selection can
+cover scrollback the client never rendered.
+
+A program that asked for mouse reporting owns its drags, which is what keeps
+editors and pagers usable; hold ⌥ to select out of one anyway.
 
 ### Rendering
 
