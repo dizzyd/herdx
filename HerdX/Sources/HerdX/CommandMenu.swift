@@ -25,6 +25,7 @@ extension Command {
         case .focusTab: return 15
         case .focusWorkspace: return 16
         case .copyMode: return 17
+        case .closeTabWithID: return 18
         }
     }
 

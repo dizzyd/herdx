@@ -118,11 +118,13 @@ final class SidebarRow: NSView {
     }
 }
 
-/// Native chrome driven by `ClientShellSnapshot`.
+/// Machines and their workspaces.
 ///
-/// This is what a full-surface renderer cannot give you: the server sends
-/// workspaces, tabs and agent status as structured JSON, so these are real rows
-/// with real hit-testing and hover, not characters in a grid.
+/// Deliberately two levels deep. Nesting tabs and agents underneath made the
+/// whole chain — workspace, tab, agent — highlight at once, since each is
+/// "focused" in the snapshot, which reads as noise rather than as one
+/// selection. Tabs live in the tab bar; agents show up as the status of the
+/// workspace and tab that contain them.
 final class SidebarView: NSView {
     static let width: CGFloat = 220
 
@@ -167,15 +169,18 @@ final class SidebarView: NSView {
 
     /// Rebuilds the machine list.
     ///
-    /// Only the active machine's workspaces are expanded. The others are
+    /// Only the active machine's workspaces are listed. The others stay
     /// attached and reporting status — that is why they are here — but showing
-    /// every tab of every machine would bury the thing you came to see.
+    /// every project on every machine would bury the one you are working in.
     func update(endpoints: [EndpointInfo], active: Int) {
         // Snapshots are republished constantly and mostly change nothing the
         // sidebar shows; rebuilding every time would throw away hover state
         // mid-gesture.
         let signature = endpoints.map { endpoint in
-            "\(endpoint.id):\(endpoint.status):\(endpoint.snapshot?.revision ?? 0)"
+            let workspaces = endpoint.snapshot?.workspaces
+                .map { "\($0.workspaceID):\($0.label):\($0.branch ?? ""):\($0.focused):\($0.agentStatus)" }
+                .joined(separator: ",") ?? ""
+            return "\(endpoint.id):\(endpoint.status):\(workspaces)"
         }.joined(separator: "|") + "@\(active)"
         guard lastSignature != signature else { return }
         lastSignature = signature
@@ -185,7 +190,15 @@ final class SidebarView: NSView {
         for endpoint in endpoints {
             addMachine(endpoint, isActive: endpoint.index == active)
             guard endpoint.index == active, let snapshot = endpoint.snapshot else { continue }
-            addTree(snapshot)
+            for workspace in snapshot.workspaces {
+                add(
+                    text: workspace.label,
+                    detail: workspace.branch,
+                    status: workspace.agentStatus,
+                    selected: workspace.focused,
+                    indent: 16,
+                    target: .workspace(workspace.workspaceID))
+            }
         }
     }
 
@@ -195,8 +208,7 @@ final class SidebarView: NSView {
         case .connecting: detail = "connecting…"
         case .offline: detail = "offline"
         case .online:
-            // The worst status among its agents, so a machine you are not
-            // looking at can still say it needs you.
+            // A machine you are not looking at can still say it needs you.
             detail = endpoint.snapshot.flatMap { snapshot in
                 snapshot.agents.contains { $0.agentStatus == .blocked }
                     ? "needs attention" : nil
@@ -219,40 +231,6 @@ final class SidebarView: NSView {
         if agents.contains(where: { $0.agentStatus == .blocked }) { return .blocked }
         if agents.contains(where: { $0.agentStatus == .working }) { return .working }
         return .idle
-    }
-
-    private func addTree(_ snapshot: Snapshot) {
-        for workspace in snapshot.workspaces {
-            add(
-                text: "\(workspace.number)  \(workspace.label)",
-                detail: workspace.branch,
-                status: workspace.agentStatus,
-                selected: workspace.focused,
-                indent: 14,
-                target: .workspace(workspace.workspaceID))
-
-            for tab in snapshot.tabs where tab.workspaceID == workspace.workspaceID {
-                add(
-                    text: tab.label.isEmpty ? "tab \(tab.number)" : tab.label,
-                    detail: tab.zoomed ? "zoom" : nil,
-                    status: tab.agentStatus,
-                    selected: tab.focused,
-                    indent: 28,
-                    target: .tab(tab.tabID))
-
-                let panesInTab = Set(
-                    snapshot.panes.filter { $0.tabID == tab.tabID }.map(\.paneID))
-                for agent in snapshot.agents where panesInTab.contains(agent.paneID) {
-                    add(
-                        text: agent.displayAgent ?? agent.title ?? "agent",
-                        detail: nil,
-                        status: agent.agentStatus,
-                        selected: agent.focused,
-                        indent: 42,
-                        target: .pane(agent.paneID))
-                }
-            }
-        }
     }
 
     private func add(

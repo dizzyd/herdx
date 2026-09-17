@@ -107,6 +107,13 @@ terminal is paths, URLs and identifiers.
 Paste is its own protocol event rather than committed text, so the pane can wrap
 it in bracketed-paste markers when the program asked for them.
 
+### Chrome
+
+The sidebar is two levels: machines, and the workspaces of the active one. Tabs
+live in a bar above the terminal instead of nested in the sidebar. Nesting them
+meant workspace, tab and agent all highlighted at once — each is "focused" in
+the snapshot — which read as noise rather than as one selection.
+
 ### Machines
 
 herdr clients are federated: the local server and every saved SSH machine appear
@@ -252,6 +259,11 @@ HERDX_HEADLESS=1 ./build/HerdX.app/Contents/MacOS/HerdX
 ```
 
 `HERDX_CAPTURE` implies it. Always use one of them when testing.
+
+The capture composites the terminal separately from the rest of the window.
+`cacheDisplay` on the whole tree silently omits the grid's layer-backed pane
+views, so a working terminal came out blank — which cost real time chasing a bug
+in the app that was actually a bug in the capture.
 
 ### Looking at the renderer without a window in your face
 

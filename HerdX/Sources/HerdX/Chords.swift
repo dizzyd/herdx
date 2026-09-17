@@ -13,6 +13,7 @@ enum Command {
     case focusPane(String)
     case focusTab(String)
     case focusWorkspace(String)
+    case closeTabWithID(String)
     /// Handled entirely in the client; it has no endpoint method.
     case copyMode
 
@@ -29,6 +30,7 @@ enum Command {
         case .focusPane: return "pane.focus"
         case .focusTab: return "tab.focus"
         case .focusWorkspace: return "workspace.focus"
+        case .closeTabWithID: return "tab.close"
         case .copyMode: return ""
         }
     }
@@ -46,6 +48,7 @@ enum Command {
         case .focusPane(let id): return ["pane_id": id]
         case .focusTab(let id): return ["tab_id": id]
         case .focusWorkspace(let id): return ["workspace_id": id]
+        case .closeTabWithID(let id): return ["tab_id": id]
         default: return [:]
         }
     }

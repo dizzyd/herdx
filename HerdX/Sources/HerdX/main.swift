@@ -34,6 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var preferencesWindow: PreferencesWindowController?
     private var appearanceObserver: NSKeyValueObservation?
     private let copyModeStatus = CopyModeStatusView()
+    private let tabBar = TabBarView()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         preferences = Preferences.current
@@ -47,6 +48,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         sidebar.onSelect = { [weak self] command in
             guard let self, let session = self.session else { return }
             self.invoke(command, session: session)
+            self.window.makeFirstResponder(self.gridView)
+        }
+        tabBar.onSelectTab = { [weak self] tabID in
+            guard let self, let session = self.session else { return }
+            self.invoke(.focusTab(tabID), session: session)
+            self.window.makeFirstResponder(self.gridView)
+        }
+        tabBar.onCloseTab = { [weak self] tabID in
+            guard let self, let session = self.session else { return }
+            self.invoke(.closeTabWithID(tabID), session: session)
+        }
+        tabBar.onNewTab = { [weak self] in
+            guard let self, let session = self.session else { return }
+            self.invoke(.newTab, session: session)
             self.window.makeFirstResponder(self.gridView)
         }
         sidebar.onSelectEndpoint = { [weak self] index in
@@ -73,11 +88,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         copyModeStatus.translatesAutoresizingMaskIntoConstraints = false
 
+        // Tabs sit above the terminal, not in the sidebar: they are the thing
+        // you flick between, and nesting them under a workspace made every
+        // level of the tree highlight at once.
+        let terminalArea = NSView()
+        tabBar.translatesAutoresizingMaskIntoConstraints = false
+        gridView.translatesAutoresizingMaskIntoConstraints = false
+        // Grid first so the tab bar sits above it in z-order.
+        terminalArea.addSubview(gridView)
+        terminalArea.addSubview(tabBar)
+        NSLayoutConstraint.activate([
+            // The window draws content under a transparent title bar, so
+            // anchor to the safe area or the tabs end up beneath it.
+            tabBar.topAnchor.constraint(equalTo: terminalArea.safeAreaLayoutGuide.topAnchor),
+            tabBar.leadingAnchor.constraint(equalTo: terminalArea.leadingAnchor),
+            tabBar.trailingAnchor.constraint(equalTo: terminalArea.trailingAnchor),
+            gridView.topAnchor.constraint(equalTo: tabBar.bottomAnchor),
+            gridView.leadingAnchor.constraint(equalTo: terminalArea.leadingAnchor),
+            gridView.trailingAnchor.constraint(equalTo: terminalArea.trailingAnchor),
+            gridView.bottomAnchor.constraint(equalTo: terminalArea.bottomAnchor),
+        ])
+
         let split = NSSplitView()
         split.isVertical = true
         split.dividerStyle = .thin
         split.addArrangedSubview(sidebar)
-        split.addArrangedSubview(gridView)
+        split.addArrangedSubview(terminalArea)
         // The terminal takes all the slack; the sidebar holds its width.
         split.setHoldingPriority(.init(260), forSubviewAt: 0)
         split.setHoldingPriority(.init(250), forSubviewAt: 1)
@@ -179,6 +215,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case .light: window.appearance = NSAppearance(named: .aqua)
         }
         sidebar.apply(theme: theme)
+        tabBar.apply(theme: theme)
         copyModeStatus.apply(theme: theme)
         publish(theme: theme)
     }
@@ -296,6 +333,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // a machine reading "connecting…" long after it was up. The sidebar
         // compares a signature and returns immediately when nothing moved.
         sidebar.update(endpoints: session.endpoints, active: session.activeEndpoint)
+        tabBar.update(with: session.lastSnapshot)
 
         if snapshotsChanged {
             if let snapshot = session.lastSnapshot {
@@ -433,17 +471,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self.gridView.refreshIfNeeded()
             view.layoutSubtreeIfNeeded()
             self.gridView.displayIfNeeded()
-            guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
-                NSApp.terminate(nil)
-                return
-            }
-            view.cacheDisplay(in: view.bounds, to: rep)
-            if let data = rep.representation(using: .png, properties: [:]) {
+            if let data = self.snapshot(of: view)?
+                .representation(using: .png, properties: [:])
+            {
                 try? data.write(to: URL(fileURLWithPath: path))
             }
             NSApp.terminate(nil)
             }
         }
+    }
+
+    /// Renders the window off-screen, compositing the terminal separately.
+    ///
+    /// `cacheDisplay` on the whole tree silently omits the grid's layer-backed
+    /// pane views, which made a working terminal look blank and sent me hunting
+    /// a bug in the app that was really a bug in here. Each view captures
+    /// correctly on its own, so the terminal is drawn over the rest.
+    private func snapshot(of view: NSView) -> NSBitmapImageRep? {
+        guard let base = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
+            return nil
+        }
+        view.cacheDisplay(in: view.bounds, to: base)
+
+        guard let gridRep = gridView.bitmapImageRepForCachingDisplay(in: gridView.bounds),
+            let composite = NSGraphicsContext(bitmapImageRep: base)
+        else { return base }
+        gridView.cacheDisplay(in: gridView.bounds, to: gridRep)
+
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = composite
+        gridRep.draw(in: gridView.convert(gridView.bounds, to: view))
+        NSGraphicsContext.restoreGraphicsState()
+        return base
     }
 
 
