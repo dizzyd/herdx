@@ -83,7 +83,7 @@ complete one — a stitched grid is worse than a slightly stale one.
 - [x] Drag selection, double-click word, triple-click line, copy and paste
 - [x] Reconnects when the server restarts
 - [x] Real `NSView` per pane, with a native focus ring
-- [ ] Copy mode (`prefix+[`) and search
+- [x] Copy mode (`prefix+[`, ⇧⌘[) with vi motions, search (⌘F), and visual selection
 - [x] Light and dark themes, font and appearance settings (⌘,)
 - [ ] Kitty graphics and ligatures
 
@@ -105,6 +105,22 @@ terminal is paths, URLs and identifiers.
 
 Paste is its own protocol event rather than committed text, so the pane can wrap
 it in bracketed-paste markers when the program asked for them.
+
+### Copy mode
+
+`prefix+[` or ⇧⌘[ enters copy mode; ⌘F enters it searching. Movement that only
+needs coordinates (`hjkl`, arrows, paging, `g`/`G`) is computed locally, while
+anything that depends on what the text says — word and paragraph motions,
+search — is asked of the server, which holds the scrollback. `v` starts a visual
+selection, `y` or Return copies, `q` or Esc leaves; Esc clears a selection before
+it exits, so mashing it cannot lose work.
+
+A note on `content_revision`, which is easy to get wrong: the server rejects a
+revision that no longer matches *or* that is odd, odd meaning the pane is
+mid-update. Pinning it therefore makes an operation fail whenever output is
+flowing, which in an agent session is almost always. Selection reads and motions
+omit it, matching what herdr's own client does for live selections. Search is
+the one call that requires it, so it retries once against a fresher revision.
 
 ### Theme
 

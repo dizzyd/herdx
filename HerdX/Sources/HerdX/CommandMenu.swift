@@ -24,6 +24,7 @@ extension Command {
         case .focusPane: return 14
         case .focusTab: return 15
         case .focusWorkspace: return 16
+        case .copyMode: return 17
         }
     }
 
@@ -31,6 +32,7 @@ extension Command {
         let all: [Command] = [
             .newTab, .closeTab, .nextTab, .previousTab, .splitRight, .splitDown,
             .focusLeft, .focusDown, .focusUp, .focusRight, .closePane, .zoomPane, .newWorkspace,
+            .copyMode,
         ]
         return Dictionary(uniqueKeysWithValues: all.map { ($0.tag, $0) })
     }()
@@ -55,5 +57,7 @@ extension Command {
         ("Previous Tab", Key(equivalent: "[", modifiers: [.command, .shift]), .previousTab),
         ("", Key(equivalent: "", modifiers: []), .newTab),
         ("New Workspace", Key(equivalent: "n", modifiers: [.command, .shift]), .newWorkspace),
+        ("", Key(equivalent: "", modifiers: []), .newTab),
+        ("Copy Mode", Key(equivalent: "[", modifiers: [.command, .shift]), .copyMode),
     ]
 }

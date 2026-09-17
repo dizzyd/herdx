@@ -28,7 +28,8 @@ fn main() -> std::io::Result<()> {
 
     // Always send `params`: Method is an adjacently tagged enum, so the content
     // key is not optional even for methods that take nothing.
-    let request = format!(r#"{{"id":"probe-1","method":"{method}","params":{{}}}}"#);
+    let params = std::env::args().nth(2).unwrap_or_else(|| "{}".into());
+    let request = format!(r#"{{"id":"probe-1","method":"{method}","params":{params}}}"#);
     println!("-> {request}");
     conn.send(&ClientMessage::ClientShellEndpointRequest {
         boot_id: boot_id.clone(),

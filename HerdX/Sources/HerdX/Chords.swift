@@ -13,6 +13,8 @@ enum Command {
     case focusPane(String)
     case focusTab(String)
     case focusWorkspace(String)
+    /// Handled entirely in the client; it has no endpoint method.
+    case copyMode
 
     var method: String {
         switch self {
@@ -27,6 +29,7 @@ enum Command {
         case .focusPane: return "pane.focus"
         case .focusTab: return "tab.focus"
         case .focusWorkspace: return "workspace.focus"
+        case .copyMode: return ""
         }
     }
 
@@ -108,6 +111,7 @@ final class ChordResolver {
         case "p": return .previousTab
         case "x": return shifted ? .closeTab : .closePane
         case "z": return .zoomPane
+        case "[": return .copyMode
         default: return nil
         }
     }

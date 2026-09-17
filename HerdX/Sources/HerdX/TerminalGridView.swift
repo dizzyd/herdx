@@ -25,7 +25,7 @@ final class TerminalGridView: NSView {
     /// Cached because resolving it means crossing the FFI boundary and
     /// allocating a string per pane, which is far too much work to repeat for
     /// every mouse-moved and scroll event.
-    fileprivate var panes: [PaneView] = []
+    private(set) var panes: [PaneView] = []
 
     /// The focused pane, from the snapshot rather than the surface.
     ///
@@ -34,7 +34,7 @@ final class TerminalGridView: NSView {
     /// first paint.
     var focusedPaneFromSnapshot: String?
 
-    fileprivate var focusedPane: String? {
+    var focusedPane: String? {
         focusedPaneFromSnapshot ?? panes.first(where: \.focused)?.id
     }
 
@@ -43,8 +43,15 @@ final class TerminalGridView: NSView {
     /// One child view per pane, keyed by pane id.
     private var paneViews: [String: PaneContentView] = [:]
 
+    /// Active copy mode, if any.
+    var copyMode: CopyMode?
+    /// Raised with the status text when copy mode starts, changes or ends.
+    var onCopyModeChanged: ((String?) -> Void)?
+    /// Raised to run a copy-mode request that needs a reply.
+    var onCopyModeRequest: ((String, String, @escaping (String) -> Void) -> Void)?
+
     /// The active drag selection, if any.
-    fileprivate var selection: Selection?
+    var selection: Selection?
     /// Raised when a selection is copied, with the request to read its text.
     var onReadSelection: ((String) -> Void)?
 
@@ -137,10 +144,32 @@ final class TerminalGridView: NSView {
             if view.isFocusedPane {
                 drawCursor(grid, in: context, within: view.cellFrame)
             }
+            drawCopyModeCursor(in: context, within: view.cellFrame)
             if panes.count > 1 {
                 drawFocusRing(view, in: context)
             }
         }
+    }
+
+    /// The copy-mode cursor, outlined so it reads as a position you are moving
+    /// rather than where output will appear.
+    private func drawCopyModeCursor(in context: CGContext, within region: CellRect) {
+        guard let copyMode,
+            let pane = panes.first(where: { $0.id == copyMode.paneID }),
+            pane.rect.x == region.x, pane.rect.y == region.y
+        else { return }
+
+        let viewportRow = Int(copyMode.cursor.row) - Int(pane.viewportTopRow)
+        guard viewportRow >= 0, viewportRow < pane.inner.height else { return }
+
+        let rect = CGRect(
+            x: CGFloat(pane.inner.x + copyMode.cursor.column) * cellSize.width,
+            y: CGFloat(pane.inner.y + viewportRow) * cellSize.height,
+            width: cellSize.width,
+            height: cellSize.height)
+        context.setStrokeColor(theme.cursor.cgColor)
+        context.setLineWidth(1.5)
+        context.stroke(rect.insetBy(dx: 0.75, dy: 0.75))
     }
 
     /// A focus ring, which is the point of having real pane views: with several
@@ -357,6 +386,9 @@ final class TerminalGridView: NSView {
     // MARK: - Input
 
     override func keyDown(with event: NSEvent) {
+        // Copy mode owns the keyboard while it is up.
+        if copyMode != nil, handleCopyModeKey(event) { return }
+
         guard let session, let pane = focusedPane else { return }
         guard let mapped = KeyMapper.map(event) else {
             // Anything we do not classify travels as committed text, which lets
@@ -450,7 +482,6 @@ extension TerminalGridView {
                 let start = point(in: hit.pane, column: hit.column, row: hit.row)
                 selection = Selection(
                     paneID: hit.pane.id,
-                    contentRevision: hit.pane.contentRevision,
                     anchor: start,
                     cursor: start)
             }
@@ -527,7 +558,6 @@ extension TerminalGridView {
         let absolute = pane.viewportTopRow + UInt64(localRow)
         selection = Selection(
             paneID: pane.id,
-            contentRevision: pane.contentRevision,
             anchor: Selection.Point(row: absolute, column: bounds.start),
             cursor: Selection.Point(row: absolute, column: bounds.end))
     }
@@ -537,7 +567,6 @@ extension TerminalGridView {
         let absolute = pane.viewportTopRow + UInt64(localRow)
         selection = Selection(
             paneID: pane.id,
-            contentRevision: pane.contentRevision,
             anchor: Selection.Point(row: absolute, column: 0),
             cursor: Selection.Point(row: absolute, column: max(pane.inner.width - 1, 0)))
     }
@@ -565,7 +594,6 @@ extension TerminalGridView {
         guard let pane = panes.first(where: { $0.id == focusedPane }) else { return }
         selection = Selection(
             paneID: pane.id,
-            contentRevision: pane.contentRevision,
             anchor: Selection.Point(row: 0, column: 0),
             cursor: Selection.Point(
                 row: pane.viewportTopRow + UInt64(max(pane.inner.height - 1, 0)),

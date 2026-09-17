@@ -16,7 +16,6 @@ struct Selection {
     }
 
     let paneID: String
-    let contentRevision: UInt64
     var anchor: Point
     var cursor: Point
 
@@ -41,6 +40,14 @@ struct Selection {
         return first..<min(last + 1, width)
     }
 
+    /// A request to read this selection's text.
+    ///
+    /// `content_revision` is deliberately omitted. The server rejects a
+    /// revision that no longer matches *or* that is odd, which is how it marks
+    /// a pane mid-update — so pinning it means a copy fails whenever output is
+    /// flowing, which in an agent session is most of the time. herdr's own
+    /// client does the same for live selections: output arriving between the
+    /// frame you selected on and the read must not reject the copy.
     func readRequest(id: String) -> String? {
         let (start, end) = ordered
         let body: [String: Any] = [
@@ -50,7 +57,6 @@ struct Selection {
                 "pane_id": paneID,
                 "anchor": ["row": start.row, "col": start.column],
                 "cursor": ["row": end.row, "col": end.column],
-                "content_revision": contentRevision,
             ],
         ]
         guard let data = try? JSONSerialization.data(withJSONObject: body) else { return nil }

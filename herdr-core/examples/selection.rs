@@ -42,11 +42,11 @@ fn main() -> std::io::Result<()> {
         println!("no focused pane found");
         return Ok(());
     };
-    println!("pane {pane_id}: viewport top row {top}, width {width}, content revision {revision}");
+    println!("pane {pane_id}: viewport top row {top}, width {width} (revision {revision} unused: live reads omit it)");
 
     // The first three viewport rows, in absolute scrollback coordinates.
     let request = format!(
-        r#"{{"id":"sel-1","method":"pane.selection.read","params":{{"pane_id":"{pane_id}","anchor":{{"row":{top},"col":0}},"cursor":{{"row":{},"col":{}}},"content_revision":{revision}}}}}"#,
+        r#"{{"id":"sel-1","method":"pane.selection.read","params":{{"pane_id":"{pane_id}","anchor":{{"row":{top},"col":0}},"cursor":{{"row":{},"col":{}}}}}}}"#,
         top + 2,
         width.saturating_sub(1)
     );

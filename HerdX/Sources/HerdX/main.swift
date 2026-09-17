@@ -19,6 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var preferences = Preferences.current
     private var preferencesWindow: PreferencesWindowController?
     private var appearanceObserver: NSKeyValueObservation?
+    private let copyModeStatus = CopyModeStatusView()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         preferences = Preferences.current
@@ -48,6 +49,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.delegate = self
         window.center()
 
+        copyModeStatus.translatesAutoresizingMaskIntoConstraints = false
+
         let split = NSSplitView()
         split.isVertical = true
         split.dividerStyle = .thin
@@ -56,7 +59,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // The terminal takes all the slack; the sidebar holds its width.
         split.setHoldingPriority(.init(260), forSubviewAt: 0)
         split.setHoldingPriority(.init(250), forSubviewAt: 1)
-        window.contentView = split
+        // The status strip floats over the terminal rather than taking a row
+        // from it; copy mode should not reflow the grid.
+        let container = NSView()
+        split.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(split)
+        container.addSubview(copyModeStatus)
+        NSLayoutConstraint.activate([
+            split.topAnchor.constraint(equalTo: container.topAnchor),
+            split.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            split.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            split.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            copyModeStatus.leadingAnchor.constraint(
+                equalTo: container.leadingAnchor, constant: SidebarView.width + 12),
+            copyModeStatus.bottomAnchor.constraint(
+                equalTo: container.bottomAnchor, constant: -12),
+        ])
+        window.contentView = container
 
         if !connect() {
             // A server that is not running yet is not fatal: herdr sessions
@@ -116,6 +135,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case .light: window.appearance = NSAppearance(named: .aqua)
         }
         sidebar.apply(theme: theme)
+        copyModeStatus.apply(theme: theme)
         publish(theme: theme)
     }
 
@@ -164,6 +184,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         gridView.onReadSelection = { [weak session] request in
             guard let session, let snapshot = session.lastSnapshot else { return }
             session.request(request, bootID: snapshot.bootID)
+        }
+        gridView.onCopyModeChanged = { [weak self] status in
+            self?.copyModeStatus.update(status)
+        }
+        gridView.onCopyModeRequest = { [weak session] request, id, reply in
+            guard let session, let snapshot = session.lastSnapshot else { return }
+            session.request(request, bootID: snapshot.bootID, id: id, onReply: reply)
         }
         gridView.onFocusPane = { [weak self] paneID in
             guard let self, let session = self.session else { return }
@@ -244,10 +271,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func invoke(_ command: Command, session: HerdrSession) {
+        // Copy mode is entirely client-side: herdr has no endpoint method for
+        // it, because the shell that owns the keymap owns the mode.
+        if case .copyMode = command {
+            gridView.enterCopyMode()
+            window.makeFirstResponder(gridView)
+            return
+        }
         guard let snapshot = session.lastSnapshot,
             let json = command.requestJSON(id: UUID().uuidString)
         else { return }
         session.request(json, bootID: snapshot.bootID)
+    }
+
+    @objc private func findInPane(_ sender: Any?) {
+        gridView.enterCopyMode(searching: true)
+        window.makeFirstResponder(gridView)
     }
 
     @objc private func menuCommand(_ sender: NSMenuItem) {
@@ -280,6 +319,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         editMenu.addItem(
             withTitle: "Select All", action: #selector(NSResponder.selectAll(_:)),
             keyEquivalent: "a")
+        editMenu.addItem(.separator())
+        let find = NSMenuItem(
+            title: "Find…", action: #selector(findInPane(_:)), keyEquivalent: "f")
+        find.target = self
+        editMenu.addItem(find)
         editItem.submenu = editMenu
         main.addItem(editItem)
 

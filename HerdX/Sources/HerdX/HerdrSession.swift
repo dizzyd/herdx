@@ -55,6 +55,8 @@ struct GridView {
 final class HerdrSession {
     private var handle: OpaquePointer?
     private(set) var lastSnapshot: Snapshot?
+    /// Callbacks awaiting a reply, keyed by request id.
+    private var pendingReplies: [String: (String) -> Void] = [:]
 
     enum ConnectError: Error, LocalizedError {
         case failed(String)
@@ -127,6 +129,10 @@ final class HerdrSession {
     }
 
     /// Drains queued server events, oldest first.
+    ///
+    /// Replies with a registered callback are delivered to it and left out of
+    /// the returned events, so a caller awaiting one does not have to filter
+    /// every unrelated reply back out.
     func drainEvents() -> [ServerEvent] {
         guard let handle else { return [] }
         var events: [ServerEvent] = []
@@ -135,6 +141,13 @@ final class HerdrSession {
             guard let data = json.data(using: .utf8),
                 let event = try? decoder.decode(ServerEvent.self, from: data)
             else { continue }
+
+            if case .response(let requestID, let body) = event,
+                let reply = pendingReplies.removeValue(forKey: requestID)
+            {
+                reply(body)
+                continue
+            }
             events.append(event)
         }
         return events
@@ -187,8 +200,13 @@ final class HerdrSession {
     }
 
     /// Invokes one of herdr's 38 endpoint methods.
-    func request(_ json: String, bootID: String) {
+    ///
+    /// `onReply` is called once with the raw reply body. A request whose reply
+    /// never arrives — a server that went away mid-flight — simply leaves the
+    /// callback unused; it is dropped when the session is.
+    func request(_ json: String, bootID: String, id: String? = nil, onReply: ((String) -> Void)? = nil) {
         guard let handle else { return }
+        if let id, let onReply { pendingReplies[id] = onReply }
         _ = bootID.withCString { b in json.withCString { r in hx_endpoint_request(handle, b, r) } }
     }
 
