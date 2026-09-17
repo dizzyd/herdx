@@ -77,6 +77,8 @@ bool hx_session_connected(const HxSession *session);
 bool hx_grid_acquire(HxSession *session, HxGrid *out);
 
 char *hx_pane_id(const HxSession *session, uint32_t id_index);
+/// Pops the next queued event as JSON, or NULL when empty.
+char *hx_next_event(const HxSession *session);
 char *hx_take_snapshot_json(const HxSession *session);
 char *hx_last_error(const HxSession *session);
 char *hx_connect_error(void);

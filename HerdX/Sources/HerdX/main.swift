@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var session: HerdrSession?
     private let chords = ChordResolver()
     private var timer: Timer?
+    private let events = EventPresenter()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         gridView = TerminalGridView(pointSize: 13)
@@ -69,6 +70,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         buildMenu()
         installKeyMonitor()
+        events.requestAuthorization()
 
         if capturePath == nil {
             window.makeKeyAndOrderFront(nil)
@@ -99,6 +101,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 window.title = "HerdX — \(focused.label)"
                 window.subtitle = focused.branch ?? ""
             }
+        }
+        for event in session.drainEvents() {
+            events.present(event, window: window)
         }
         gridView.refreshIfNeeded()
         if let error = session.takeError() {

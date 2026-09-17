@@ -107,6 +107,20 @@ final class HerdrSession {
         return true
     }
 
+    /// Drains queued server events, oldest first.
+    func drainEvents() -> [ServerEvent] {
+        guard let handle else { return [] }
+        var events: [ServerEvent] = []
+        let decoder = JSONDecoder()
+        while let json = Self.take(hx_next_event(handle)) {
+            guard let data = json.data(using: .utf8),
+                let event = try? decoder.decode(ServerEvent.self, from: data)
+            else { continue }
+            events.append(event)
+        }
+        return events
+    }
+
     func takeError() -> String? {
         guard let handle else { return nil }
         return Self.take(hx_last_error(handle))

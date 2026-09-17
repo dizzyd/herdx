@@ -14,6 +14,10 @@ if [ "$CONFIG" = release ]; then
 else
   cargo build --manifest-path "$ROOT/Cargo.toml" -p herdr-core
 fi
+# SwiftPM does not know about libherdr_core.a: it arrives through a raw `-L`
+# flag, so it is not a tracked input and a Rust-only change leaves the old
+# code linked in with no warning. Removing the product forces a relink.
+rm -f "$ROOT/HerdX/.build/$CONFIG/HerdX"
 (cd "$ROOT/HerdX" && swift build -c "$CONFIG")
 
 rm -rf "$APP"

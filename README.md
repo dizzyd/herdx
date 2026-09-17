@@ -79,6 +79,7 @@ complete one — a stitched grid is worse than a slightly stale one.
 - [x] C ABI shim
 - [x] Swift app: cell-grid renderer, native sidebar, ⌘ chords + `ctrl+b` prefix
 - [x] Mouse input: click-to-focus, drag, right-click, scroll
+- [x] Native notifications, clipboard (OSC 52), window title, bell
 - [ ] Selection and copy mode
 - [ ] Promote panes to real `NSView`s (the patch-routing seam is already in place)
 - [ ] Kitty graphics, ligatures, font configuration
@@ -95,6 +96,17 @@ cargo run -p herdr-core --example dump     # print the current surface as text
 
 HerdX attaches to a herdr server that is already running; start one with `herdr`
 in a terminal first.
+
+### Notifications
+
+herdr reports *semantic* events — `NeedsAttention`, `Finished` — and leaves
+presentation to each client. HerdX turns those into macOS notifications, with
+`NeedsAttention` raised to a time-sensitive interruption, since an agent waiting
+on you is the one thing worth breaking concentration for.
+
+This needs the bundle: `UNUserNotificationCenter` raises rather than returning an
+error when the process has no bundle identifier, so notifications are disabled
+when running the executable outside `HerdX.app`.
 
 ### Looking at the renderer without a window in your face
 

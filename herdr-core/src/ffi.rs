@@ -208,11 +208,54 @@ impl Grid {
     }
 }
 
+/// A discrete thing the server told us about, for the UI to present.
+///
+/// herdr deliberately reports *semantic* events and leaves presentation to each
+/// client, so these stay close to the wire and let the Mac app decide whether
+/// something becomes a notification, a sound, or nothing.
+#[derive(serde::Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum Event {
+    /// An agent changed state in a way worth surfacing.
+    Notification {
+        kind: String,
+        title: String,
+        body: Option<String>,
+        sound: Option<String>,
+        agent: Option<String>,
+        workspace_id: Option<String>,
+        tab_id: Option<String>,
+        pane_id: Option<String>,
+    },
+    /// OSC 52 from a program inside a pane.
+    Clipboard { text: String },
+    /// `None` restores the default title.
+    WindowTitle { title: Option<String> },
+    Bell { count: u16 },
+    Error { message: String },
+}
+
 struct Shared {
     grid: Mutex<Grid>,
     snapshot_json: Mutex<Option<String>>,
     error: Mutex<Option<String>>,
+    events: Mutex<std::collections::VecDeque<String>>,
     connected: AtomicBool,
+}
+
+impl Shared {
+    fn push(&self, event: Event) {
+        let Ok(json) = serde_json::to_string(&event) else {
+            return;
+        };
+        let mut queue = self.events.lock().unwrap();
+        // A UI that stops draining must not grow this without bound; dropping
+        // the oldest keeps the most recent agent state visible.
+        if queue.len() >= 256 {
+            queue.pop_front();
+        }
+        queue.push_back(json);
+    }
 }
 
 /// The surface geometry last negotiated with the server.
@@ -254,6 +297,7 @@ pub unsafe extern "C" fn hx_session_connect(
         grid: Mutex::new(Grid::default()),
         snapshot_json: Mutex::new(None),
         error: Mutex::new(None),
+        events: Mutex::new(std::collections::VecDeque::new()),
         connected: AtomicBool::new(false),
     });
 
@@ -313,6 +357,44 @@ pub unsafe extern "C" fn hx_session_connect(
                 if kind == herdr_protocol::protocol::endpoint::ENDPOINT_SNAPSHOT_KIND =>
             {
                 *loop_shared.snapshot_json.lock().unwrap() = Some(data);
+            }
+            Ok(ServerMessage::SemanticNotification(notification)) => {
+                loop_shared.push(semantic_event(notification));
+            }
+            Ok(ServerMessage::Notify { kind, message, body }) => {
+                // Only the host-notification kind is ours to present; the toast
+                // kinds are for a client drawing herdr's own TUI chrome.
+                if matches!(kind, herdr_protocol::protocol::NotifyKind::SystemToast) {
+                    loop_shared.push(Event::Notification {
+                        kind: "custom".into(),
+                        title: message,
+                        body,
+                        sound: None,
+                        agent: None,
+                        workspace_id: None,
+                        tab_id: None,
+                        pane_id: None,
+                    });
+                }
+            }
+            Ok(ServerMessage::Clipboard { data }) => {
+                use base64::Engine as _;
+                if let Some(text) = base64::engine::general_purpose::STANDARD
+                    .decode(data.as_bytes())
+                    .ok()
+                    .and_then(|bytes| String::from_utf8(bytes).ok())
+                {
+                    loop_shared.push(Event::Clipboard { text });
+                }
+            }
+            Ok(ServerMessage::WindowTitle { title }) => {
+                loop_shared.push(Event::WindowTitle { title });
+            }
+            Ok(ServerMessage::TerminalBell { count }) => {
+                loop_shared.push(Event::Bell { count });
+            }
+            Ok(ServerMessage::ClientShellError { message }) => {
+                loop_shared.push(Event::Error { message });
             }
             Ok(_) => {}
             Err(err) => {
@@ -444,6 +526,24 @@ pub unsafe extern "C" fn hx_take_snapshot_json(session: *const HxSession) -> *mu
     };
     let taken = session.shared.snapshot_json.lock().unwrap().take();
     match taken.and_then(|s| CString::new(s).ok()) {
+        Some(s) => s.into_raw(),
+        None => std::ptr::null_mut(),
+    }
+}
+
+/// Pops the next queued event as JSON, or null when the queue is empty.
+///
+/// Caller frees with `hx_string_free`.
+///
+/// # Safety
+/// `session` must be live.
+#[no_mangle]
+pub unsafe extern "C" fn hx_next_event(session: *const HxSession) -> *mut c_char {
+    let Some(session) = session.as_ref() else {
+        return std::ptr::null_mut();
+    };
+    let next = session.shared.events.lock().unwrap().pop_front();
+    match next.and_then(|s| CString::new(s).ok()) {
         Some(s) => s.into_raw(),
         None => std::ptr::null_mut(),
     }
@@ -835,6 +935,73 @@ mod tests {
         }
     }
 
+    fn shared() -> Shared {
+        Shared {
+            grid: Mutex::new(Grid::default()),
+            snapshot_json: Mutex::new(None),
+            error: Mutex::new(None),
+            events: Mutex::new(std::collections::VecDeque::new()),
+            connected: AtomicBool::new(false),
+        }
+    }
+
+    fn notification(
+        kind: herdr_protocol::protocol::SemanticNotificationKind,
+    ) -> herdr_protocol::protocol::SemanticNotification {
+        herdr_protocol::protocol::SemanticNotification {
+            kind,
+            title: "claude needs input".into(),
+            body: Some("waiting on approval".into()),
+            sound: Some(herdr_protocol::protocol::SemanticNotificationSound::Request),
+            agent: Some("claude".into()),
+            workspace_id: Some("w1".into()),
+            tab_id: Some("t1".into()),
+            pane_id: Some("p1".into()),
+            position: None,
+        }
+    }
+
+    #[test]
+    fn semantic_notifications_keep_their_kind_and_routing() {
+        use herdr_protocol::protocol::SemanticNotificationKind as K;
+        let event = semantic_event(notification(K::NeedsAttention));
+        let json = serde_json::to_value(&event).unwrap();
+
+        assert_eq!(json["type"], "notification");
+        assert_eq!(json["kind"], "needs_attention");
+        assert_eq!(json["title"], "claude needs input");
+        assert_eq!(json["sound"], "request");
+        // Routing ids let the UI jump to the pane that wants attention.
+        assert_eq!(json["pane_id"], "p1");
+        assert_eq!(json["agent"], "claude");
+
+        for (kind, expected) in [
+            (K::Finished, "finished"),
+            (K::UpdateInstalled, "update_installed"),
+            (K::Custom, "custom"),
+        ] {
+            let json = serde_json::to_value(semantic_event(notification(kind))).unwrap();
+            assert_eq!(json["kind"], expected);
+        }
+    }
+
+    /// A UI that stops draining must not make the receive thread grow memory
+    /// without bound, and the newest agent state is what matters.
+    #[test]
+    fn the_event_queue_drops_the_oldest_when_full() {
+        let shared = shared();
+        for count in 0..300u16 {
+            shared.push(Event::Bell { count });
+        }
+
+        let queue = shared.events.lock().unwrap();
+        assert_eq!(queue.len(), 256);
+        let first: serde_json::Value = serde_json::from_str(queue.front().unwrap()).unwrap();
+        let last: serde_json::Value = serde_json::from_str(queue.back().unwrap()).unwrap();
+        assert_eq!(first["count"], 44, "oldest events should be dropped");
+        assert_eq!(last["count"], 299, "newest event must survive");
+    }
+
     #[test]
     fn mouse_events_map_to_their_protocol_kinds() {
         use herdr_protocol::protocol::{ClientMouseButton as B, ClientMouseKind as K};
@@ -913,6 +1080,32 @@ mod tests {
     }
 }
 
+
+fn semantic_event(notification: herdr_protocol::protocol::SemanticNotification) -> Event {
+    use herdr_protocol::protocol::{SemanticNotificationKind as K, SemanticNotificationSound as S};
+    Event::Notification {
+        kind: match notification.kind {
+            K::NeedsAttention => "needs_attention",
+            K::Finished => "finished",
+            K::UpdateInstalled => "update_installed",
+            K::Custom => "custom",
+        }
+        .into(),
+        title: notification.title,
+        body: notification.body,
+        sound: notification.sound.map(|sound| {
+            match sound {
+                S::Done => "done",
+                S::Request => "request",
+            }
+            .into()
+        }),
+        agent: notification.agent,
+        workspace_id: notification.workspace_id,
+        tab_id: notification.tab_id,
+        pane_id: notification.pane_id,
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Mouse

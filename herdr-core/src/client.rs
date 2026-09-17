@@ -137,14 +137,17 @@ impl EndpointConnection {
     /// incompatibly, so equal versions mean the surface lane is safe. Callers
     /// should surface a mismatch rather than trust rendered output.
     pub fn version_note(&self) -> Option<String> {
-        let vendored = herdr_protocol::build_info::version();
+        let vendored = herdr_protocol::VENDORED_HERDR_VERSION;
         if self.welcome.server_version == vendored {
             return None;
         }
         Some(format!(
-            "server is {} but this client vendored herdr {vendored};              the JSON endpoint lane is stable across versions, but verify the \
-             private protocol version still matches before trusting pane surfaces",
-            self.welcome.server_version
+            "server is herdr {} but these protocol sources are from {vendored} \
+             (private protocol {}); the JSON endpoint lane is stable across \
+             versions, but pane surfaces ride the private protocol, so confirm \
+             the server reports the same number before trusting them",
+            self.welcome.server_version,
+            herdr_protocol::VENDORED_PROTOCOL_VERSION,
         ))
     }
 
