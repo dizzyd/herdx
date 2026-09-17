@@ -21,7 +21,15 @@ fn main() {
             return;
         }
 
-        for tick in 0..12 {
+        // Switch machines part-way, which is what clicking a sidebar row does.
+        let switch_to: Option<usize> = std::env::args().nth(1).and_then(|a| a.parse().ok());
+
+        for tick in 0..16 {
+            if Some(tick) == switch_to.map(|_| 5) {
+                let target = switch_to.unwrap();
+                println!(">> switching to endpoint {target}: {}",
+                    hx_set_active_endpoint(session, target));
+            }
             std::thread::sleep(std::time::Duration::from_secs(1));
 
             let count = hx_endpoint_count(session);
@@ -78,6 +86,17 @@ fn main() {
 
             while let Some(error) = Some(text(hx_last_error(session))).filter(|e| !e.is_empty()) {
                 println!("   error: {error}");
+            }
+            for index in 0..count {
+                loop {
+                    let event = text(hx_next_endpoint_event(session, index));
+                    if event.is_empty() {
+                        break;
+                    }
+                    if event.contains("response") || event.contains("error") {
+                        println!("   [{index}] event: {}", &event[..event.len().min(240)]);
+                    }
+                }
             }
         }
         hx_session_free(session);

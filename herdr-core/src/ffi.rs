@@ -356,8 +356,24 @@ enum Event {
     Response { request_id: String, body: String },
 }
 
+/// Just the field we need out of a snapshot, without parsing the rest.
+#[derive(serde::Deserialize)]
+struct SnapshotBootId {
+    boot_id: String,
+}
+
 struct Shared {
     grid: Mutex<Grid>,
+    /// The endpoint's current server boot.
+    ///
+    /// Endpoint commands carry it, and the server rejects one from an earlier
+    /// boot with `stale_boot` — so it has to be learned from a snapshot before
+    /// any command can be sent, and relearned when a server restarts.
+    boot_id: Mutex<Option<String>>,
+    /// Whether this endpoint should be rendering a surface, and whether the
+    /// server has been told. They differ while a switch waits for a boot id.
+    desired_surface: AtomicBool,
+    applied_surface: AtomicBool,
     snapshot_json: Mutex<Option<String>>,
     error: Mutex<Option<String>>,
     events: Mutex<std::collections::VecDeque<String>>,
@@ -524,6 +540,9 @@ fn spawn_endpoint(
 ) -> EndpointState {
     let shared = Arc::new(Shared {
         grid: Mutex::new(Grid::default()),
+        boot_id: Mutex::new(None),
+        desired_surface: AtomicBool::new(surface_active),
+        applied_surface: AtomicBool::new(surface_active),
         snapshot_json: Mutex::new(None),
         error: Mutex::new(None),
         events: Mutex::new(std::collections::VecDeque::new()),
@@ -557,6 +576,7 @@ fn spawn_endpoint(
     let thread_shared = Arc::clone(&shared);
     let thread_status = Arc::clone(&status);
     let thread_endpoint = endpoint.clone();
+    let thread_outbound = tx.clone();
     std::thread::spawn(move || {
         let socket = default_socket_path();
         let mut backoff = std::time::Duration::from_millis(250);
@@ -577,7 +597,12 @@ fn spawn_endpoint(
                     thread_status.store(HX_ENDPOINT_ONLINE, Ordering::Release);
                     backoff = std::time::Duration::from_millis(250);
 
-                    receive_loop(conn, Arc::clone(&thread_shared), Arc::clone(&thread_status));
+                    receive_loop(
+                        conn,
+                        Arc::clone(&thread_shared),
+                        Arc::clone(&thread_status),
+                        thread_outbound.clone(),
+                    );
                     *outbound.lock().unwrap() = None;
                 }
                 Err(err) => {
@@ -605,10 +630,39 @@ fn spawn_endpoint(
 }
 
 /// Reads from one endpoint until it goes away.
+/// Asks the server to start or stop composing a surface for this connection.
+///
+/// Returns false when the boot id is not known yet; the caller retries when the
+/// next snapshot arrives.
+fn apply_surface_state(
+    shared: &Shared,
+    outbound: &std::sync::mpsc::Sender<ClientMessage>,
+) -> bool {
+    let desired = shared.desired_surface.load(Ordering::Acquire);
+    if desired == shared.applied_surface.load(Ordering::Acquire) {
+        return true;
+    }
+    let Some(boot_id) = shared.boot_id.lock().unwrap().clone() else {
+        return false;
+    };
+    let request = format!(
+        r#"{{"id":"surface.set","method":"client_shell.surface.set","params":{{"active":{desired}}}}}"#
+    );
+    if outbound
+        .send(ClientMessage::ClientShellEndpointRequest { boot_id, request })
+        .is_err()
+    {
+        return false;
+    }
+    shared.applied_surface.store(desired, Ordering::Release);
+    true
+}
+
 fn receive_loop(
     mut conn: crate::client::EndpointConnection,
     loop_shared: Arc<Shared>,
     status: Arc<std::sync::atomic::AtomicU8>,
+    outbound: std::sync::mpsc::Sender<ClientMessage>,
 ) {
     let mut pending = PendingResponses::default();
     loop {
@@ -633,6 +687,20 @@ fn receive_loop(
         Ok(ServerMessage::EndpointControl { kind, data })
             if kind == herdr_protocol::protocol::endpoint::ENDPOINT_SNAPSHOT_KIND =>
         {
+            if let Ok(parsed) = serde_json::from_str::<SnapshotBootId>(&data) {
+                let mut boot_id = loop_shared.boot_id.lock().unwrap();
+                if boot_id.as_deref() != Some(parsed.boot_id.as_str()) {
+                    // A new boot invalidates whatever the old server was told,
+                    // so the surface state has to be asserted again.
+                    *boot_id = Some(parsed.boot_id);
+                    drop(boot_id);
+                    loop_shared.applied_surface.store(
+                        !loop_shared.desired_surface.load(Ordering::Acquire),
+                        Ordering::Release,
+                    );
+                }
+            }
+            apply_surface_state(&loop_shared, &outbound);
             *loop_shared.snapshot_json.lock().unwrap() = Some(data);
         }
         Ok(ServerMessage::SemanticNotification(notification)) => {
@@ -805,17 +873,13 @@ pub unsafe extern "C" fn hx_set_active_endpoint(session: *mut HxSession, index: 
     let geometry = *session.geometry.lock().unwrap();
     for (position, endpoint) in session.endpoints.iter().enumerate() {
         let active = position == index;
-        let request = format!(
-            r#"{{"id":"surface-{position}","method":"client_shell.surface.set","params":{{"active":{active}}}}}"#
-        );
-        // The boot id is the endpoint's own; an empty one lets the server use
-        // the connection it arrived on.
-        let _ = endpoint
-            .outbound
-            .send(ClientMessage::ClientShellEndpointRequest {
-                boot_id: String::new(),
-                request,
-            });
+        endpoint
+            .shared
+            .desired_surface
+            .store(active, Ordering::Release);
+        // Applied here when the boot id is known, and otherwise by the receive
+        // loop as soon as a snapshot brings one.
+        apply_surface_state(&endpoint.shared, &endpoint.outbound);
         if active {
             let _ = endpoint.outbound.send(ClientMessage::ClientShellResize {
                 cell_width_px: geometry.cell_width_px,
@@ -1546,6 +1610,9 @@ mod tests {
     fn shared() -> Shared {
         Shared {
             grid: Mutex::new(Grid::default()),
+            boot_id: Mutex::new(None),
+            desired_surface: AtomicBool::new(false),
+            applied_surface: AtomicBool::new(false),
             snapshot_json: Mutex::new(None),
             error: Mutex::new(None),
             events: Mutex::new(std::collections::VecDeque::new()),
@@ -1609,6 +1676,74 @@ mod tests {
         let last: serde_json::Value = serde_json::from_str(queue.back().unwrap()).unwrap();
         assert_eq!(first["count"], 44, "oldest events should be dropped");
         assert_eq!(last["count"], 299, "newest event must survive");
+    }
+
+    fn surface_request(message: &ClientMessage) -> (String, bool) {
+        let ClientMessage::ClientShellEndpointRequest { boot_id, request } = message else {
+            panic!("expected an endpoint request");
+        };
+        (boot_id.clone(), request.contains(r#""active":true"#))
+    }
+
+    /// The server rejects a command carrying an unknown boot id with
+    /// `stale_boot`, so the request must wait for a snapshot rather than go out
+    /// with a placeholder — which silently left the new machine blank.
+    #[test]
+    fn surface_state_waits_for_a_boot_id() {
+        let shared = shared();
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        shared.desired_surface.store(true, Ordering::Release);
+        assert!(!apply_surface_state(&shared, &tx), "no boot id yet");
+        assert!(rx.try_recv().is_err(), "nothing may be sent without a boot id");
+        assert!(
+            !shared.applied_surface.load(Ordering::Acquire),
+            "an unsent request must not be recorded as applied"
+        );
+
+        *shared.boot_id.lock().unwrap() = Some("boot-1".into());
+        assert!(apply_surface_state(&shared, &tx));
+        assert_eq!(surface_request(&rx.try_recv().unwrap()), ("boot-1".into(), true));
+    }
+
+    #[test]
+    fn surface_state_is_not_resent_once_applied() {
+        let shared = shared();
+        let (tx, rx) = std::sync::mpsc::channel();
+        *shared.boot_id.lock().unwrap() = Some("boot-1".into());
+
+        shared.desired_surface.store(true, Ordering::Release);
+        assert!(apply_surface_state(&shared, &tx));
+        assert!(rx.try_recv().is_ok());
+
+        assert!(apply_surface_state(&shared, &tx));
+        assert!(rx.try_recv().is_err(), "an unchanged state should send nothing");
+    }
+
+    /// A restarted server knows nothing of what the old one was told, so the
+    /// surface state has to be asserted again against the new boot.
+    #[test]
+    fn a_new_boot_reasserts_the_surface_state() {
+        let shared = shared();
+        let (tx, rx) = std::sync::mpsc::channel();
+        *shared.boot_id.lock().unwrap() = Some("boot-1".into());
+        shared.desired_surface.store(true, Ordering::Release);
+        assert!(apply_surface_state(&shared, &tx));
+        assert_eq!(surface_request(&rx.try_recv().unwrap()).0, "boot-1");
+
+        // What the receive loop does when a snapshot carries a different boot.
+        *shared.boot_id.lock().unwrap() = Some("boot-2".into());
+        shared.applied_surface.store(
+            !shared.desired_surface.load(Ordering::Acquire),
+            Ordering::Release,
+        );
+
+        assert!(apply_surface_state(&shared, &tx));
+        assert_eq!(
+            surface_request(&rx.try_recv().unwrap()),
+            ("boot-2".into(), true),
+            "the new boot must be told the surface is wanted"
+        );
     }
 
     #[test]
