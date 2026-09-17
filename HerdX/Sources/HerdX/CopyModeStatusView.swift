@@ -10,6 +10,7 @@ final class CopyModeStatusView: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
+        layerContentsRedrawPolicy = .onSetNeedsDisplay
         layer?.cornerRadius = 6
         isHidden = true
 

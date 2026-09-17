@@ -185,6 +185,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private var workspaceTitle: String?
 
+    /// Explains an empty terminal, rather than leaving it blank.
+    private func updatePlaceholder(session: HerdrSession) {
+        let endpoints = session.endpoints
+        guard let active = endpoints.first(where: { $0.index == session.activeEndpoint }) else {
+            gridView.placeholder = "no machine selected"
+            return
+        }
+        switch active.status {
+        case .connecting:
+            gridView.placeholder = "connecting to \(active.label)…"
+        case .offline:
+            gridView.placeholder = "\(active.label) is offline"
+        case .online:
+            gridView.placeholder =
+                active.snapshot == nil
+                ? "waiting for \(active.label)…"
+                : "waiting for a surface from \(active.label)…"
+        }
+    }
+
     private func applyTitle() {
         if let serverTitle, !serverTitle.isEmpty {
             window.title = serverTitle
@@ -356,6 +376,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             events.present(event, window: window)
         }
+        updatePlaceholder(session: session)
         gridView.refreshIfNeeded()
         if let error = session.takeError() {
             NSLog("herdr: %@", error)
@@ -481,17 +502,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    /// Renders the window off-screen, compositing the terminal separately.
+    /// Renders the window off-screen for development.
     ///
-    /// `cacheDisplay` on the whole tree silently omits the grid's layer-backed
-    /// pane views, which made a working terminal look blank and sent me hunting
-    /// a bug in the app that was really a bug in here. Each view captures
-    /// correctly on its own, so the terminal is drawn over the rest.
+    /// The terminal is composited separately because `cacheDisplay` on the
+    /// whole tree omits the grid's layer-backed pane views. Note this makes the
+    /// screenshot slightly kinder than reality — it forces the grid to draw —
+    /// so it can hide a view that is not being invalidated on screen. Trust it
+    /// for layout, not for "is it repainting".
     private func snapshot(of view: NSView) -> NSBitmapImageRep? {
         guard let base = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
             return nil
         }
         view.cacheDisplay(in: view.bounds, to: base)
+        if ProcessInfo.processInfo.environment["HERDX_CAPTURE_RAW"] != nil { return base }
 
         guard let gridRep = gridView.bitmapImageRepForCachingDisplay(in: gridView.bounds),
             let composite = NSGraphicsContext(bitmapImageRep: base)
@@ -504,8 +527,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSGraphicsContext.restoreGraphicsState()
         return base
     }
-
-
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 }

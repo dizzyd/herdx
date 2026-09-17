@@ -20,6 +20,7 @@ final class TerminalGridView: NSView {
     /// Last grid size we told the server about, so a live drag does not send a
     /// resize per pixel.
     private var reportedGridSize: (cols: Int, rows: Int)?
+    nonisolated(unsafe) static var draws = 0
     /// Pane geometry from the last surface we drew.
     ///
     /// Cached because resolving it means crossing the FFI boundary and
@@ -68,6 +69,10 @@ final class TerminalGridView: NSView {
         glyphs = GlyphRunDrawer(base: font)
         cellSize = glyphs.cellSize
         super.init(frame: .zero)
+        // Layer-backed because its pane views are, and with the redraw policy
+        // that actually redraws on invalidation rather than only on resize.
+        wantsLayer = true
+        layerContentsRedrawPolicy = .onSetNeedsDisplay
     }
 
     /// Swaps the font, which changes the cell size and therefore the grid.
@@ -161,11 +166,37 @@ final class TerminalGridView: NSView {
         }
     }
 
+    /// What to say when there is nothing to draw.
+    ///
+    /// An empty terminal should explain itself. Without this, "still
+    /// connecting", "connected but no surface yet" and "a bug in the renderer"
+    /// all look identical, which is exactly the ambiguity that made this hard
+    /// to diagnose from a screenshot.
+    var placeholder: String?
+
     /// The container paints only the background; panes draw themselves.
     override func draw(_ dirtyRect: NSRect) {
+        if ProcessInfo.processInfo.environment["HERDX_TRACE"] != nil {
+            TerminalGridView.draws += 1
+            if TerminalGridView.draws % 60 == 1 {
+                NSLog("grid draw #%d subviews=%d frame=%@", TerminalGridView.draws,
+                      subviews.count, NSStringFromRect(frame))
+            }
+        }
         guard let context = NSGraphicsContext.current?.cgContext else { return }
         theme.background.setFill()
         context.fill(dirtyRect)
+
+        guard panes.isEmpty, let placeholder else { return }
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 12),
+            .foregroundColor: theme.foreground.withAlphaComponent(0.45),
+        ]
+        let text = NSAttributedString(string: placeholder, attributes: attributes)
+        let size = text.size()
+        text.draw(
+            at: CGPoint(
+                x: (bounds.width - size.width) / 2, y: (bounds.height - size.height) / 2))
     }
 
     /// Draws one pane's slice of the shared surface, in surface coordinates.

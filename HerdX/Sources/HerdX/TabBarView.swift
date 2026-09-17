@@ -28,6 +28,8 @@ final class TabBarView: NSView {
 
     override init(frame: NSRect) {
         super.init(frame: frame)
+        wantsLayer = true
+        layerContentsRedrawPolicy = .onSetNeedsDisplay
 
         stack.orientation = .horizontal
         stack.spacing = 4
