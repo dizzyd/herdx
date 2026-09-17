@@ -29,7 +29,6 @@ final class SidebarRow: NSView {
         subtitle: String?,
         status: Snapshot.AgentStatus,
         symbol: String?,
-        shortcut: String?,
         collapsed: Bool?,
         selected: Bool,
         indent: CGFloat,
@@ -95,16 +94,6 @@ final class SidebarRow: NSView {
         // them rather than floating in the middle of both.
         row.alignment = .top
         row.spacing = 6
-
-        // A keystroke that reaches this row, shown where a menu would show it.
-        if let shortcut {
-            let key = NSTextField(labelWithString: shortcut)
-            key.font = .systemFont(ofSize: 11)
-            key.textColor = chrome.tertiary
-            key.setContentCompressionResistancePriority(.required, for: .horizontal)
-            key.setContentHuggingPriority(.required, for: .horizontal)
-            row.addArrangedSubview(key)
-        }
 
         row.translatesAutoresizingMaskIntoConstraints = false
         addSubview(row)
@@ -187,13 +176,6 @@ final class SidebarView: NSView {
     private var endpoints: [EndpointInfo] = []
     private var active = 0
 
-    /// Workspaces reachable by keystroke, in the order they are listed.
-    ///
-    /// Flat across machines, like the shortcuts herdr's own sidebar shows: the
-    /// number is a position in the list you are looking at, not a per-machine
-    /// index.
-    private(set) var shortcutTargets: [(workspaceID: String, endpoint: Int)] = []
-
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
@@ -242,7 +224,6 @@ final class SidebarView: NSView {
         self.active = active
 
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        shortcutTargets = []
 
         for endpoint in endpoints {
             let isActive = endpoint.index == active
@@ -251,20 +232,12 @@ final class SidebarView: NSView {
                 continue
             }
             for workspace in snapshot.workspaces {
-                // Only the first nine get a keystroke, because that is how many
-                // digits there are.
-                var shortcut: String?
-                if shortcutTargets.count < 9 {
-                    shortcutTargets.append((workspace.workspaceID, endpoint.index))
-                    shortcut = "⌥⌘\(shortcutTargets.count)"
-                }
                 add(
                     title: workspace.label,
                     subtitle: [endpoint.label, workspace.branch]
                         .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "),
                     status: workspace.agentStatus,
                     symbol: nil,
-                    shortcut: shortcut,
                     collapsed: nil,
                     // Only the machine you are looking at has a selected
                     // workspace; the others are focused on their own server,
@@ -300,7 +273,6 @@ final class SidebarView: NSView {
             subtitle: subtitle,
             status: Self.machineStatus(endpoint),
             symbol: endpoint.isRemote ? "server.rack" : "desktopcomputer",
-            shortcut: nil,
             collapsed: collapsed.contains(endpoint.id),
             selected: ownsSelection,
             indent: 0,
@@ -330,7 +302,6 @@ final class SidebarView: NSView {
         subtitle: String?,
         status: Snapshot.AgentStatus,
         symbol: String?,
-        shortcut: String?,
         collapsed: Bool?,
         selected: Bool,
         indent: CGFloat,
@@ -339,7 +310,7 @@ final class SidebarView: NSView {
     ) {
         let row = SidebarRow(
             title: title, subtitle: subtitle, status: status, symbol: symbol,
-            shortcut: shortcut, collapsed: collapsed, selected: selected,
+            collapsed: collapsed, selected: selected,
             indent: indent, chrome: chrome, target: target,
             onSelect: { [weak self] target in
                 switch target {

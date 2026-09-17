@@ -18,6 +18,12 @@ final class TerminalGridView: NSView {
     /// match the sidebar and tabs rather than the system's accent alone.
     var chrome = Chrome(theme: .dark)
     var onResize: ((Int, Int) -> Void)?
+    /// Raised when the colour the panes are actually painted in changes.
+    ///
+    /// The configured background is only a default: a program that sets its own
+    /// is what you are really looking at, and the chrome should follow that
+    /// rather than a preference the screen is not obeying.
+    var onBackgroundChanged: ((NSColor) -> Void)?
     /// Raised when a click lands in a pane that does not have focus.
     var onFocusPane: ((String) -> Void)?
 
@@ -59,6 +65,10 @@ final class TerminalGridView: NSView {
     /// Recomputed only when the surface advances, since counting cells per
     /// frame would be far too much work for something that rarely changes.
     private var paneBackgrounds: [String: NSColor] = [:]
+
+    /// The pane background covering the most cells: what the terminal looks
+    /// like, taken as a whole.
+    private(set) var dominantBackground: NSColor?
 
     /// The focused pane, from the snapshot rather than the surface.
     ///
@@ -219,6 +229,7 @@ final class TerminalGridView: NSView {
             paneBackgrounds = [:]
             return
         }
+        let previous = dominantBackground
         paneBackgrounds =
             session.withGrid { grid in
                 var result: [String: NSColor] = [:]
@@ -242,6 +253,22 @@ final class TerminalGridView: NSView {
                 }
                 return result
             } ?? [:]
+
+        // Weighted by area, so one small pane running a coloured program does
+        // not repaint the whole window.
+        dominantBackground =
+            panes
+            .compactMap { pane in
+                paneBackgrounds[pane.id].map {
+                    (color: $0, cells: pane.inner.width * pane.inner.height)
+                }
+            }
+            .reduce(into: [NSColor: Int]()) { $0[$1.color, default: 0] += $1.cells }
+            .max { $0.value < $1.value }?.key
+
+        if let dominantBackground, dominantBackground != previous {
+            onBackgroundChanged?(dominantBackground)
+        }
     }
 
     /// The colour to lay a pane down on, and to leave showing in its padding.
@@ -266,7 +293,7 @@ final class TerminalGridView: NSView {
         // and cells whose background matches the theme skip their own fill, so
         // clearing only the dirty rect leaves the previous frame's text showing
         // through everywhere else.
-        theme.background.setFill()
+        chrome.content.setFill()
         context.fill(bounds)
 
         if !panes.isEmpty, let session {

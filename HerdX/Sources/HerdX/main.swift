@@ -22,6 +22,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// Held so a theme change can recolour their dividers.
     private var windowSplit: ChromeSplitView?
     private var terminalSplit: ChromeSplitView?
+    /// The terminal palette the chrome was last built from.
+    private var terminalTheme: Theme = .dark
+    /// The colour the panes are actually painted in, when it differs from the
+    /// configured background.
+    private var observedBackground: NSColor?
 
     /// Runs without ever showing a window.
     ///
@@ -51,6 +56,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let cell = gridView.cellSize
         let cols = 120
         let rows = 34
+
+        gridView.onBackgroundChanged = { [weak self] color in
+            guard let self, color != self.observedBackground else { return }
+            self.observedBackground = color
+            self.applyChrome()
+        }
 
         sidebar = SidebarView()
         sidebar.onSelect = { [weak self] command in
@@ -272,19 +283,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // the palette is the chrome derived from the terminal so the window
         // reads as one surface.
         let windowTheme = preferences.theme(matching: systemIsDark)
-        let terminal = preferences.terminalTheme(matching: systemIsDark)
-        let palette = Chrome(theme: terminal)
+        terminalTheme = preferences.terminalTheme(matching: systemIsDark)
 
-        gridView.theme = terminal
-        gridView.chrome = palette
+        gridView.theme = terminalTheme
         gridView.apply(panePadding: preferences.panePadding)
-        gridView.needsDisplay = true
 
         switch preferences.appearance {
         case .system: window.appearance = nil
         case .dark: window.appearance = NSAppearance(named: .darkAqua)
         case .light: window.appearance = NSAppearance(named: .aqua)
         }
+        copyModeStatus.apply(theme: windowTheme)
+        applyChrome()
+        publish(theme: terminalTheme)
+    }
+
+    /// Recolours the chrome from the terminal, without telling the server
+    /// anything.
+    ///
+    /// Separate from `applyTheme` because it also runs when a program inside a
+    /// pane changes colour, and publishing our palette back on that would be
+    /// answering the server with what it just said.
+    private func applyChrome() {
+        let palette = Chrome(theme: terminalTheme, background: observedBackground)
+        gridView.chrome = palette
+        gridView.needsDisplay = true
         // The title bar is transparent, so the window's own colour is what
         // shows above the sidebar and header.
         window.backgroundColor = palette.surface
@@ -293,8 +316,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         header.apply(chrome: palette)
         windowSplit?.apply(chrome: palette)
         terminalSplit?.apply(chrome: palette)
-        copyModeStatus.apply(theme: windowTheme)
-        publish(theme: terminal)
     }
 
     /// Tells the server our terminal palette.
@@ -468,35 +489,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func installKeyMonitor() {
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, let session = self.session else { return event }
-            if self.focusListedWorkspace(event, session: session) { return nil }
             let (command, consumed) = self.chords.resolve(event)
             if let command { self.invoke(command, session: session) }
             return consumed ? nil : event
         }
-    }
-
-    /// ⌥⌘1…9 jumps to a workspace by its place in the sidebar.
-    ///
-    /// The sidebar owns the numbering because it owns the order, and the order
-    /// runs across machines: the digit means "the nth row I can see", which is
-    /// what you are counting when you reach for it.
-    private func focusListedWorkspace(_ event: NSEvent, session: HerdrSession) -> Bool {
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        guard flags == [.command, .option],
-            let digit = event.charactersIgnoringModifiers.flatMap(Int.init), (1...9).contains(digit),
-            digit <= sidebar.shortcutTargets.count
-        else { return false }
-
-        let target = sidebar.shortcutTargets[digit - 1]
-        if target.endpoint != session.activeEndpoint {
-            session.setActiveEndpoint(target.endpoint)
-            gridView.forgetSurface()
-        }
-        invoke(
-            .focusWorkspace(target.workspaceID), session: session,
-            bootID: session.bootID(forEndpoint: target.endpoint))
-        window.makeFirstResponder(gridView)
-        return true
     }
 
     private func invoke(_ command: Command, session: HerdrSession, bootID: String? = nil) {

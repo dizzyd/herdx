@@ -24,9 +24,14 @@ struct Chrome {
     var separator: NSColor
     var isDark: Bool
 
-    init(theme: Theme) {
-        let dark = theme.background.isDarkish
-        let base = theme.background.usingColorSpace(.sRGB) ?? theme.background
+    /// `background` is the colour the terminal is actually painted in, which
+    /// is not always the configured one: a program that sets its own wins on
+    /// screen, and chrome built from the preference instead of from the screen
+    /// left a black sidebar beside blue panes.
+    init(theme: Theme, background: NSColor? = nil) {
+        let resolved = background ?? theme.background
+        let dark = resolved.isDarkish
+        let base = resolved.usingColorSpace(.sRGB) ?? resolved
         let text = theme.foreground.usingColorSpace(.sRGB) ?? theme.foreground
         // sRGB first: `controlAccentColor` is dynamic, and blending a dynamic
         // colour with a static one returns nil rather than a colour.
