@@ -82,6 +82,24 @@ fn main() {
             }
             println!("{line}");
 
+            if grid.width > 0 && std::env::var("SHOW_ROW").is_ok() {
+                let cells = std::slice::from_raw_parts(grid.cells, grid.cell_count);
+                let glyphs = std::slice::from_raw_parts(grid.glyphs, grid.glyph_bytes);
+                let first = (0..grid.height as usize)
+                    .map(|row| {
+                        (0..grid.width as usize)
+                            .map(|col| {
+                                let c = &cells[row * grid.width as usize + col];
+                                let start = c.glyph_off as usize;
+                                std::str::from_utf8(&glyphs[start..start + c.glyph_len as usize])
+                                    .unwrap_or(" ")
+                            })
+                            .collect::<String>()
+                    })
+                    .find(|line| !line.trim().is_empty())
+                    .unwrap_or_default();
+                println!("   first: {}", first.trim().chars().take(90).collect::<String>());
+            }
             if grid.width > 0 && focus_workspace.is_some() {
                 let cells = std::slice::from_raw_parts(grid.cells, grid.cell_count);
                 let glyphs = std::slice::from_raw_parts(grid.glyphs, grid.glyph_bytes);

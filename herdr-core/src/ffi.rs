@@ -694,8 +694,26 @@ fn receive_loop(
     outbound: std::sync::mpsc::Sender<ClientMessage>,
 ) {
     let mut pending = PendingResponses::default();
+    // Every message goes through this, including plain ones: the compact
+    // encodings are expressed against the baseline it maintains.
+    let mut decoder = herdr_protocol::protocol::SurfaceDecoder::new(true);
     loop {
-        match conn.recv() {
+        let received = conn.recv().and_then(|message| {
+            decoder.decode(message).map_err(|error| {
+                // The baseline has diverged from the sender, so nothing further
+                // can be decoded against it. Start again from a full surface.
+                decoder.reset();
+                std::io::Error::other(format!("surface decode failed: {error}"))
+            })
+        });
+        if let Err(error) = &received {
+            if error.to_string().starts_with("surface decode failed") {
+                *loop_shared.error.lock().unwrap() = Some(error.to_string());
+                request_resync(&loop_shared, &outbound);
+                continue;
+            }
+        }
+        match received {
         Ok(ServerMessage::PaneSurface(frame)) => {
             let mut assets = loop_shared.assets.lock().unwrap();
             loop_shared.grid.lock().unwrap().replace(&frame, &mut assets);
