@@ -60,8 +60,8 @@ fn main() -> std::io::Result<()> {
                 );
                 for p in &f.panes {
                     println!(
-                        "  pane {} rect={:?} focused={} alt_screen={}",
-                        p.pane_id, p.rect, p.focused, p.alternate_screen_active
+                        "  pane {} rect={:?} inner={:?} focused={}",
+                        p.pane_id, p.rect, p.inner_rect, p.focused
                     );
                 }
                 let row: String = f

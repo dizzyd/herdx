@@ -15,6 +15,8 @@ final class PreferencesWindowController: NSWindowController {
     private let terminalPopUp = NSPopUpButton()
     private let marginField = NSTextField()
     private let marginStepper = NSStepper()
+    private let paddingField = NSTextField()
+    private let paddingStepper = NSStepper()
     private let backgroundWell = NSColorWell()
     private let foregroundWell = NSColorWell()
 
@@ -26,7 +28,7 @@ final class PreferencesWindowController: NSWindowController {
         self.onChange = onChange
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 440, height: 250),
+            contentRect: NSRect(x: 0, y: 0, width: 440, height: 290),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false)
@@ -92,6 +94,21 @@ final class PreferencesWindowController: NSWindowController {
         margin.orientation = .horizontal
         margin.spacing = 4
 
+        paddingField.alignment = .right
+        paddingField.target = self
+        paddingField.action = #selector(paddingChanged)
+        paddingField.widthAnchor.constraint(equalToConstant: 48).isActive = true
+        paddingStepper.minValue = 0
+        paddingStepper.maxValue = 32
+        paddingStepper.increment = 1
+        paddingStepper.valueWraps = false
+        paddingStepper.target = self
+        paddingStepper.action = #selector(paddingStepped)
+
+        let padding = NSStackView(views: [paddingField, paddingStepper, caption("points")])
+        padding.orientation = .horizontal
+        padding.spacing = 4
+
         for well in [backgroundWell, foregroundWell] {
             well.target = self
             well.action = #selector(colourChanged)
@@ -113,6 +130,7 @@ final class PreferencesWindowController: NSWindowController {
             [label("Terminal:"), terminalPopUp],
             [label("Colours:"), colours],
             [label("Margin:"), margin],
+            [label("Pane padding:"), padding],
         ])
         grid.rowSpacing = 10
         grid.columnSpacing = 10
@@ -174,6 +192,8 @@ final class PreferencesWindowController: NSWindowController {
 
         marginField.stringValue = String(format: "%.0f", preferences.margin)
         marginStepper.doubleValue = Double(preferences.margin)
+        paddingField.stringValue = String(format: "%.0f", preferences.panePadding)
+        paddingStepper.doubleValue = Double(preferences.panePadding)
     }
 
     // MARK: - Actions
@@ -207,6 +227,16 @@ final class PreferencesWindowController: NSWindowController {
 
     @objc private func marginChanged() {
         preferences.margin = CGFloat(marginField.doubleValue).clamped(to: 0...32)
+        apply()
+    }
+
+    @objc private func paddingStepped() {
+        preferences.panePadding = CGFloat(paddingStepper.doubleValue)
+        apply()
+    }
+
+    @objc private func paddingChanged() {
+        preferences.panePadding = CGFloat(paddingField.doubleValue).clamped(to: 0...32)
         apply()
     }
 
