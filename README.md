@@ -200,9 +200,16 @@ is — so if they disagree, a pane whose program follows the background re-theme
 every time focus moves between them, and switches back as soon as you type.
 
 Not publishing does not avoid this: the server then applies herdr's default for
-this client, which disagrees just as readily. The fix is for the two clients to
-agree, so set **Terminal** to match the other terminal's theme and the pane
-stops moving. Following the window is right when this is the only client.
+this client, which disagrees just as readily. The two clients have to agree, and
+herdr compares actual RGB — "dark" is not close enough to match another
+terminal's particular background, only the same colour is. So **Colours** takes
+an exact background and text colour, and the macOS colour panel's eyedropper
+will sample them straight off the other terminal's window. **Use Preset** goes
+back to following the Terminal setting.
+
+Both clients show the flip, not just this one: they render the same
+server-composed surface, so the host theme applies to whatever either of them is
+showing.
 
 Cells carrying explicit colours still come from the program in the pane, so an
 agent with a dark theme stays dark inside a light window. That is the program's

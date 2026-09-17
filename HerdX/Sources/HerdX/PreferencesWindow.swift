@@ -8,11 +8,15 @@ final class PreferencesWindowController: NSWindowController {
     private let sizeField = NSTextField()
     private let appearancePopUp = NSPopUpButton()
     private let terminalPopUp = NSPopUpButton()
+    private let backgroundWell = NSColorWell()
+    private let foregroundWell = NSColorWell()
+    private var customColours: Bool
 
     init(onChange: @escaping (Preferences) -> Void) {
         self.onChange = onChange
+        customColours = Preferences.current.background != nil
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 380, height: 190),
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 230),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false)
@@ -57,11 +61,30 @@ final class PreferencesWindowController: NSWindowController {
         terminalPopUp.target = self
         terminalPopUp.action = #selector(changed)
 
+        // Exact colours, because herdr compares actual RGB when deciding
+        // whether a client's host theme changed: "dark" will not match another
+        // terminal's particular background, only the same colour will.
+        let resolved = preferences.terminalTheme(
+            matching: NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua)
+        backgroundWell.color = preferences.background ?? resolved.background
+        backgroundWell.target = self
+        backgroundWell.action = #selector(colourChanged)
+        foregroundWell.color = preferences.foreground ?? resolved.foreground
+        foregroundWell.target = self
+        foregroundWell.action = #selector(colourChanged)
+
+        let reset = NSButton(title: "Use Preset", target: self, action: #selector(resetColours))
+        reset.bezelStyle = .rounded
+        let colours = NSStackView(views: [backgroundWell, foregroundWell, reset])
+        colours.orientation = .horizontal
+        colours.spacing = 8
+
         let grid = NSGridView(views: [
             [label("Font"), familyPopUp],
             [label("Size"), sizeField],
             [label("Appearance"), appearancePopUp],
             [label("Terminal"), terminalPopUp],
+            [label("Colours"), colours],
         ])
         grid.rowSpacing = 12
         grid.columnSpacing = 12
@@ -84,6 +107,21 @@ final class PreferencesWindowController: NSWindowController {
         NSTextField(labelWithString: text)
     }
 
+    /// Picking a colour switches the terminal off its preset.
+    @objc private func colourChanged() {
+        customColours = true
+        changed()
+    }
+
+    @objc private func resetColours() {
+        customColours = false
+        changed()
+        let resolved = Preferences.current.terminalTheme(
+            matching: NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua)
+        backgroundWell.color = resolved.background
+        foregroundWell.color = resolved.foreground
+    }
+
     @objc private func changed() {
         let family = familyPopUp.titleOfSelectedItem ?? "System Monospace"
         // Sizes outside this range stop being a terminal.
@@ -102,7 +140,9 @@ final class PreferencesWindowController: NSWindowController {
             fontName: family == "System Monospace" ? "" : family,
             fontSize: size,
             appearance: appearance,
-            terminalAppearance: terminal)
+            terminalAppearance: terminal,
+            background: customColours ? backgroundWell.color : nil,
+            foreground: customColours ? foregroundWell.color : nil)
         Preferences.current = preferences
         onChange(preferences)
     }

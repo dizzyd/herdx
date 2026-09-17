@@ -30,12 +30,44 @@ struct Preferences {
     /// right when this is the only client; matching the other terminal is right
     /// when it is not.
     var terminalAppearance: Appearance
+    /// Exact terminal colours, when the built-in palettes are not what the
+    /// session uses.
+    ///
+    /// herdr compares actual RGB when deciding whether a client's host theme
+    /// changed, so "dark" is not close enough to match another terminal's
+    /// particular background — it has to be the same colour.
+    var background: NSColor?
+    var foreground: NSColor?
 
     private enum Key {
         static let fontName = "fontName"
         static let fontSize = "fontSize"
         static let appearance = "appearance"
         static let terminalAppearance = "terminalAppearance"
+        static let background = "terminalBackground"
+        static let foreground = "terminalForeground"
+    }
+
+    /// Colours round-trip through `#rrggbb`, so they stay readable in defaults
+    /// and survive a colour-space change.
+    private static func decode(_ hex: String?) -> NSColor? {
+        guard let hex, hex.count == 7, hex.hasPrefix("#"),
+            let value = Int(hex.dropFirst(), radix: 16)
+        else { return nil }
+        return NSColor(
+            srgbRed: CGFloat((value >> 16) & 0xFF) / 255,
+            green: CGFloat((value >> 8) & 0xFF) / 255,
+            blue: CGFloat(value & 0xFF) / 255,
+            alpha: 1)
+    }
+
+    static func encode(_ color: NSColor?) -> String? {
+        guard let srgb = color?.usingColorSpace(.sRGB) else { return nil }
+        return String(
+            format: "#%02x%02x%02x",
+            Int((srgb.redComponent * 255).rounded()),
+            Int((srgb.greenComponent * 255).rounded()),
+            Int((srgb.blueComponent * 255).rounded()))
     }
 
     static var current: Preferences {
@@ -47,7 +79,9 @@ struct Preferences {
                 appearance: defaults.string(forKey: Key.appearance)
                     .flatMap(Appearance.init(rawValue:)) ?? .system,
                 terminalAppearance: defaults.string(forKey: Key.terminalAppearance)
-                    .flatMap(Appearance.init(rawValue:)) ?? .system)
+                    .flatMap(Appearance.init(rawValue:)) ?? .system,
+                background: decode(defaults.string(forKey: Key.background)),
+                foreground: decode(defaults.string(forKey: Key.foreground)))
         }
         set {
             let defaults = UserDefaults.standard
@@ -55,6 +89,8 @@ struct Preferences {
             defaults.set(newValue.fontSize, forKey: Key.fontSize)
             defaults.set(newValue.appearance.rawValue, forKey: Key.appearance)
             defaults.set(newValue.terminalAppearance.rawValue, forKey: Key.terminalAppearance)
+            defaults.set(encode(newValue.background), forKey: Key.background)
+            defaults.set(encode(newValue.foreground), forKey: Key.foreground)
         }
     }
 
@@ -78,10 +114,23 @@ struct Preferences {
     /// The palette panes are drawn with, which follows the window unless
     /// pinned.
     func terminalTheme(matching systemIsDark: Bool) -> Theme {
+        var theme: Theme
         switch terminalAppearance {
-        case .system: return theme(matching: systemIsDark)
-        default: return resolve(terminalAppearance, systemIsDark: systemIsDark)
+        case .system: theme = self.theme(matching: systemIsDark)
+        default: theme = resolve(terminalAppearance, systemIsDark: systemIsDark)
         }
+        // The palette still comes from the chosen appearance; only the default
+        // colours are overridden, which is what a terminal's "background" and
+        // "text" settings mean.
+        if let background {
+            theme.background = background
+            theme.cursor = foreground ?? theme.cursor
+        }
+        if let foreground {
+            theme.foreground = foreground
+            theme.cursor = foreground
+        }
+        return theme
     }
 
     private func resolve(_ appearance: Appearance, systemIsDark: Bool) -> Theme {
