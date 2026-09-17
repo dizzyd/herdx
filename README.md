@@ -65,13 +65,32 @@ Two lanes, with different guarantees:
 
 - [x] `herdr-core` builds against the vendored protocol, no Zig
 - [x] Generation-1 handshake, snapshot and pane surfaces verified against a live server
-- [ ] C ABI shim
-- [ ] Swift app: cell-grid renderer, native chrome, ⌘ chords + `ctrl+b` prefix
+- [x] C ABI shim
+- [x] Swift app: cell-grid renderer, native sidebar, ⌘ chords + `ctrl+b` prefix
+- [ ] Mouse input, selection and copy mode
+- [ ] Promote panes to real `NSView`s (the patch-routing seam is already in place)
+- [ ] Incremental `PaneSurfacePatch` application (full surfaces only today)
+- [ ] Kitty graphics, ligatures, font configuration
 
 ## Development
 
 ```sh
 git submodule update --init
-cargo test -p herdr-core          # protocol + shim-drift guards
-cargo run -p herdr-core --example probe   # talk to a running herdr server
+cargo test -p herdr-core                   # protocol + shim-drift guards
+cargo run -p herdr-core --example probe    # handshake against a running server
+cargo run -p herdr-core --example dump     # print the current surface as text
+./scripts/bundle.sh                        # build build/HerdX.app
 ```
+
+HerdX attaches to a herdr server that is already running; start one with `herdr`
+in a terminal first.
+
+### Looking at the renderer without a window in your face
+
+```sh
+HERDX_CAPTURE=/tmp/herdx.png ./build/HerdX.app/Contents/MacOS/HerdX
+```
+
+The window is laid out off-screen and never activates, so this does not steal
+focus or appear on any display. It also avoids `screencapture -R`, which picks
+the wrong display on multi-monitor setups.

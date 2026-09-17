@@ -156,6 +156,14 @@ impl EndpointConnection {
         write_message(&mut self.stream, message).map_err(|e| io::Error::other(e.to_string()))
     }
 
+    /// A second handle on the socket, for writing from another thread.
+    ///
+    /// The receive loop blocks in `recv`, so outbound messages need their own
+    /// handle rather than waiting for it to return.
+    pub fn try_clone_writer(&self) -> io::Result<UnixStream> {
+        self.stream.try_clone()
+    }
+
     pub fn recv(&mut self) -> io::Result<ServerMessage> {
         read_message(&mut self.stream, crate::protocol::MAX_FRAME_SIZE)
             .map_err(|e| io::Error::other(e.to_string()))

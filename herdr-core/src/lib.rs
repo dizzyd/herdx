@@ -11,6 +11,7 @@
 
 pub mod api;
 pub mod client;
+pub mod ffi;
 pub mod protocol;
 
 pub mod agent_resume;
