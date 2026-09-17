@@ -9,13 +9,13 @@ import CHerdrCore
 /// later without changing how surfaces or patches are delivered.
 final class TerminalGridView: NSView {
     var session: HerdrSession?
-    var theme: Theme = .default
+    var theme: Theme = .dark
     var onResize: ((Int, Int) -> Void)?
     /// Raised when a click lands in a pane that does not have focus.
     var onFocusPane: ((String) -> Void)?
 
     private(set) var cellSize: CGSize = .zero
-    private let glyphs: GlyphRunDrawer
+    private var glyphs: GlyphRunDrawer
     private var lastRevision: UInt64 = .max
     /// Last grid size we told the server about, so a live drag does not send a
     /// resize per pixel.
@@ -48,10 +48,22 @@ final class TerminalGridView: NSView {
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
 
-    init(pointSize: CGFloat) {
-        glyphs = GlyphRunDrawer(pointSize: pointSize)
+    init(font: NSFont) {
+        glyphs = GlyphRunDrawer(base: font)
         cellSize = glyphs.cellSize
         super.init(frame: .zero)
+    }
+
+    /// Swaps the font, which changes the cell size and therefore the grid.
+    func apply(font: NSFont) {
+        glyphs = GlyphRunDrawer(base: font)
+        cellSize = glyphs.cellSize
+        // The grid size changed under the server; make it re-lay-out.
+        reportedGridSize = nil
+        let size = gridSize
+        reportedGridSize = size
+        onResize?(size.cols, size.rows)
+        needsDisplay = true
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -116,7 +128,7 @@ final class TerminalGridView: NSView {
             let pane = panes.first(where: { $0.id == selection.paneID })
         else { return }
 
-        context.setFillColor(NSColor.selectedTextBackgroundColor.withAlphaComponent(0.35).cgColor)
+        context.setFillColor(theme.selection.withAlphaComponent(0.45).cgColor)
         for viewportRow in 0..<pane.inner.height {
             let absolute = pane.viewportTopRow + UInt64(viewportRow)
             guard let span = selection.span(onRow: absolute, width: pane.inner.width) else {
@@ -284,7 +296,7 @@ final class TerminalGridView: NSView {
             y: CGFloat(grid.cursor.y) * cellSize.height,
             width: cellSize.width,
             height: cellSize.height)
-        theme.foreground.withAlphaComponent(0.75).setFill()
+        theme.cursor.withAlphaComponent(0.75).setFill()
         // DECSCUSR: 3/4 underline, 5/6 bar, everything else block.
         switch grid.cursor.shape {
         case 3, 4:

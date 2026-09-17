@@ -84,7 +84,8 @@ complete one — a stitched grid is worse than a slightly stale one.
 - [x] Reconnects when the server restarts
 - [ ] Copy mode (`prefix+[`) and search
 - [ ] Promote panes to real `NSView`s (the patch-routing seam is already in place)
-- [ ] Kitty graphics, ligatures, font configuration
+- [x] Light and dark themes, font and appearance settings (⌘,)
+- [ ] Kitty graphics and ligatures
 
 ### Selection
 
@@ -104,6 +105,19 @@ terminal is paths, URLs and identifiers.
 
 Paste is its own protocol event rather than committed text, so the pane can wrap
 it in bracketed-paste markers when the program asked for them.
+
+### Theme
+
+Light mode is not the dark palette inverted — the same hues at dark-mode
+luminance are unreadable on white — so the two palettes are tuned separately.
+The app publishes its default colours, ANSI palette and appearance to the
+server, because the server resolves `Reset` colours and its own chrome against
+the host palette; without that, server-composed output drifts from what the app
+draws.
+
+Cells carrying explicit colours still come from the program in the pane, so an
+agent with a dark theme stays dark inside a light window. That is the program's
+choice to make, not the client's.
 
 ### Rendering
 

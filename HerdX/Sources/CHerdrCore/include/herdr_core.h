@@ -121,6 +121,10 @@ bool hx_send_key(const HxSession *session, const char *pane_id, uint16_t kind,
                  uint32_t codepoint, uint8_t modifiers);
 bool hx_send_text(const HxSession *session, const char *pane_id, const char *text);
 bool hx_send_paste(const HxSession *session, const char *pane_id, const char *text);
+bool hx_set_default_color(const HxSession *session, bool foreground, uint8_t r,
+                          uint8_t g, uint8_t b);
+bool hx_set_appearance(const HxSession *session, bool dark);
+bool hx_set_palette(const HxSession *session, const uint8_t *colors, size_t count);
 bool hx_resize(const HxSession *session, uint16_t cols, uint16_t rows,
                uint32_t cell_width_px, uint32_t cell_height_px);
 bool hx_endpoint_request(const HxSession *session, const char *boot_id, const char *request);

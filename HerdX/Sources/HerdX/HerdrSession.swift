@@ -166,6 +166,21 @@ final class HerdrSession {
         _ = pane.withCString { hx_send_mouse(handle, $0, &event) }
     }
 
+    func setDefaultColor(foreground: Bool, rgb: (UInt8, UInt8, UInt8)) {
+        guard let handle else { return }
+        _ = hx_set_default_color(handle, foreground, rgb.0, rgb.1, rgb.2)
+    }
+
+    func setAppearance(dark: Bool) {
+        guard let handle else { return }
+        _ = hx_set_appearance(handle, dark)
+    }
+
+    func setPalette(_ bytes: [UInt8]) {
+        guard let handle, !bytes.isEmpty else { return }
+        _ = bytes.withUnsafeBufferPointer { hx_set_palette(handle, $0.baseAddress, bytes.count / 3) }
+    }
+
     func resize(cols: Int, rows: Int, cellWidth: Int, cellHeight: Int) {
         guard let handle else { return }
         _ = hx_resize(handle, UInt16(cols), UInt16(rows), UInt32(cellWidth), UInt32(cellHeight))

@@ -57,43 +57,49 @@ struct CellStyle: OptionSet {
 struct Theme {
     var background: NSColor
     var foreground: NSColor
+    var cursor: NSColor
+    var selection: NSColor
+    /// The 16 ANSI colours, normal then bright.
     var ansi: [NSColor]
 
-    static let `default` = Theme(
-        background: NSColor(srgbRed: 0.07, green: 0.08, blue: 0.10, alpha: 1),
-        foreground: NSColor(srgbRed: 0.85, green: 0.86, blue: 0.88, alpha: 1),
-        ansi: [
-            // 0-7 normal
-            NSColor(srgbRed: 0.18, green: 0.19, blue: 0.22, alpha: 1),
-            NSColor(srgbRed: 0.90, green: 0.38, blue: 0.42, alpha: 1),
-            NSColor(srgbRed: 0.45, green: 0.78, blue: 0.48, alpha: 1),
-            NSColor(srgbRed: 0.90, green: 0.73, blue: 0.40, alpha: 1),
-            NSColor(srgbRed: 0.40, green: 0.64, blue: 0.92, alpha: 1),
-            NSColor(srgbRed: 0.76, green: 0.55, blue: 0.92, alpha: 1),
-            NSColor(srgbRed: 0.35, green: 0.77, blue: 0.79, alpha: 1),
-            NSColor(srgbRed: 0.78, green: 0.79, blue: 0.82, alpha: 1),
-            // 8-15 bright
-            NSColor(srgbRed: 0.35, green: 0.37, blue: 0.41, alpha: 1),
-            NSColor(srgbRed: 0.97, green: 0.50, blue: 0.53, alpha: 1),
-            NSColor(srgbRed: 0.58, green: 0.87, blue: 0.60, alpha: 1),
-            NSColor(srgbRed: 0.97, green: 0.83, blue: 0.53, alpha: 1),
-            NSColor(srgbRed: 0.53, green: 0.74, blue: 0.97, alpha: 1),
-            NSColor(srgbRed: 0.85, green: 0.67, blue: 0.97, alpha: 1),
-            NSColor(srgbRed: 0.48, green: 0.86, blue: 0.88, alpha: 1),
-            NSColor(srgbRed: 0.94, green: 0.95, blue: 0.96, alpha: 1),
-        ])
-
-    /// ratatui's named colors, in wire order (1...16).
-    func named(_ index: Int) -> NSColor {
-        // 1=Black … 8=Gray, 9=DarkGray, 10=LightRed … 16=White
-        switch index {
-        case 1...8: return ansi[index - 1]
-        case 9...16: return ansi[index - 1]
-        default: return foreground
-        }
+    static func rgb(_ r: Int, _ g: Int, _ b: Int) -> NSColor {
+        NSColor(
+            srgbRed: CGFloat(r) / 255, green: CGFloat(g) / 255, blue: CGFloat(b) / 255, alpha: 1)
     }
 
-    /// xterm 256-color palette.
+    static let dark = Theme(
+        background: rgb(18, 20, 26),
+        foreground: rgb(217, 220, 226),
+        cursor: rgb(217, 220, 226),
+        selection: rgb(60, 82, 122),
+        ansi: [
+            rgb(46, 49, 56), rgb(230, 97, 107), rgb(115, 199, 122), rgb(230, 186, 102),
+            rgb(102, 163, 235), rgb(194, 140, 235), rgb(89, 196, 201), rgb(199, 202, 209),
+            rgb(89, 94, 105), rgb(247, 128, 135), rgb(148, 222, 153), rgb(247, 212, 135),
+            rgb(135, 189, 247), rgb(217, 171, 247), rgb(122, 219, 224), rgb(240, 242, 245),
+        ])
+
+    /// Light mode is not the dark palette inverted: the same hues at dark-mode
+    /// luminance are unreadable on white, so these are darkened to hold
+    /// contrast against a light background.
+    static let light = Theme(
+        background: rgb(252, 252, 253),
+        foreground: rgb(38, 42, 51),
+        cursor: rgb(38, 42, 51),
+        selection: rgb(180, 205, 245),
+        ansi: [
+            rgb(64, 68, 76), rgb(191, 45, 58), rgb(32, 133, 47), rgb(155, 110, 10),
+            rgb(30, 100, 190), rgb(133, 62, 176), rgb(20, 130, 135), rgb(120, 125, 133),
+            rgb(90, 95, 104), rgb(214, 66, 79), rgb(48, 156, 64), rgb(176, 130, 22),
+            rgb(46, 120, 210), rgb(153, 82, 196), rgb(30, 150, 156), rgb(160, 165, 173),
+        ])
+
+    /// ratatui's named colours, in wire order (1...16).
+    func named(_ index: Int) -> NSColor {
+        (1...16).contains(index) ? ansi[index - 1] : foreground
+    }
+
+    /// The xterm 256-colour palette: 16 named, a 6x6x6 cube, then greys.
     func indexed(_ index: Int) -> NSColor {
         if index < 16 { return ansi[index] }
         if index < 232 {
@@ -105,7 +111,39 @@ struct Theme {
                 blue: levels[i % 6] / 255,
                 alpha: 1)
         }
-        let gray = CGFloat(8 + (index - 232) * 10) / 255
-        return NSColor(srgbRed: gray, green: gray, blue: gray, alpha: 1)
+        let grey = CGFloat(8 + (index - 232) * 10) / 255
+        return NSColor(srgbRed: grey, green: grey, blue: grey, alpha: 1)
+    }
+
+    /// The palette as `count * 3` RGB bytes, for publishing to the server.
+    var paletteBytes: [UInt8] {
+        ansi.flatMap { color -> [UInt8] in
+            guard let srgb = color.usingColorSpace(.sRGB) else { return [0, 0, 0] }
+            return [
+                UInt8((srgb.redComponent * 255).rounded()),
+                UInt8((srgb.greenComponent * 255).rounded()),
+                UInt8((srgb.blueComponent * 255).rounded()),
+            ]
+        }
+    }
+
+    func rgbBytes(of color: NSColor) -> (UInt8, UInt8, UInt8) {
+        guard let srgb = color.usingColorSpace(.sRGB) else { return (0, 0, 0) }
+        return (
+            UInt8((srgb.redComponent * 255).rounded()),
+            UInt8((srgb.greenComponent * 255).rounded()),
+            UInt8((srgb.blueComponent * 255).rounded())
+        )
+    }
+}
+
+extension NSColor {
+    /// Whether a colour reads as dark, for picking contrasting chrome.
+    var isDarkish: Bool {
+        guard let srgb = usingColorSpace(.sRGB) else { return true }
+        // Rec. 601 luma: close enough for deciding light-on-dark.
+        let luma =
+            0.299 * srgb.redComponent + 0.587 * srgb.greenComponent + 0.114 * srgb.blueComponent
+        return luma < 0.5
     }
 }

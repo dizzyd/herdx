@@ -804,6 +804,103 @@ pub unsafe extern "C" fn hx_send_paste(
         .is_ok()
 }
 
+/// Publishes the host's default foreground or background colour.
+///
+/// Cells whose colour is `Reset` mean "the terminal's default", and the server
+/// resolves that when composing surfaces. Telling it what our default actually
+/// is keeps server-composed chrome matching the app's theme.
+///
+/// # Safety
+/// `session` must be live.
+#[no_mangle]
+pub unsafe extern "C" fn hx_set_default_color(
+    session: *const HxSession,
+    foreground: bool,
+    r: u8,
+    g: u8,
+    b: u8,
+) -> bool {
+    use herdr_protocol::protocol::{
+        ClientHostColor, ClientHostDefaultColorKind, ClientHostThemeUpdate,
+    };
+    let Some(session) = session.as_ref() else {
+        return false;
+    };
+    session
+        .outbound
+        .send(ClientMessage::ClientShellHostTheme {
+            update: ClientHostThemeUpdate::DefaultColor {
+                kind: if foreground {
+                    ClientHostDefaultColorKind::Foreground
+                } else {
+                    ClientHostDefaultColorKind::Background
+                },
+                color: ClientHostColor { r, g, b },
+            },
+        })
+        .is_ok()
+}
+
+/// Publishes whether the app is currently in light or dark appearance.
+///
+/// # Safety
+/// `session` must be live.
+#[no_mangle]
+pub unsafe extern "C" fn hx_set_appearance(session: *const HxSession, dark: bool) -> bool {
+    use herdr_protocol::protocol::{ClientHostAppearance, ClientHostThemeUpdate};
+    let Some(session) = session.as_ref() else {
+        return false;
+    };
+    session
+        .outbound
+        .send(ClientMessage::ClientShellHostTheme {
+            update: ClientHostThemeUpdate::Appearance(if dark {
+                ClientHostAppearance::Dark
+            } else {
+                ClientHostAppearance::Light
+            }),
+        })
+        .is_ok()
+}
+
+/// Publishes the 16 ANSI palette entries, so `Indexed` colours resolve to the
+/// same values the app draws with.
+///
+/// `colors` is `count * 3` bytes of RGB, starting at palette index 0.
+///
+/// # Safety
+/// `session` must be live and `colors` must point to `count * 3` readable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn hx_set_palette(
+    session: *const HxSession,
+    colors: *const u8,
+    count: usize,
+) -> bool {
+    use herdr_protocol::protocol::{ClientHostColor, ClientHostThemeUpdate};
+    let (Some(session), false) = (session.as_ref(), colors.is_null()) else {
+        return false;
+    };
+    let bytes = std::slice::from_raw_parts(colors, count * 3);
+    let entries = (0..count)
+        .map(|i| {
+            (
+                i as u8,
+                ClientHostColor {
+                    r: bytes[i * 3],
+                    g: bytes[i * 3 + 1],
+                    b: bytes[i * 3 + 2],
+                },
+            )
+        })
+        .collect();
+    session
+        .outbound
+        .send(ClientMessage::ClientShellHostTheme {
+            update: ClientHostThemeUpdate::PaletteColors(entries),
+        })
+        .is_ok()
+}
+
 /// Tells the server the surface size changed.
 ///
 /// # Safety

@@ -18,18 +18,18 @@ struct GlyphRunDrawer {
     let cellSize: CGSize
     let ascent: CGFloat
 
-    init(pointSize: CGFloat) {
-        let base = NSFont.monospacedSystemFont(ofSize: pointSize, weight: .regular)
+    init(base: NSFont) {
+        let pointSize = base.pointSize
+        let manager = NSFontManager.shared
+        let bold = manager.convert(base, toHaveTrait: .boldFontMask)
         font = base
-        boldFont = NSFont.monospacedSystemFont(ofSize: pointSize, weight: .bold)
+        boldFont = bold
         italicFont =
             CTFontCreateCopyWithSymbolicTraits(base, pointSize, nil, .italicTrait, .italicTrait)
             ?? base
         boldItalicFont =
-            CTFontCreateCopyWithSymbolicTraits(
-                NSFont.monospacedSystemFont(ofSize: pointSize, weight: .bold),
-                pointSize, nil, .italicTrait, .italicTrait)
-            ?? boldFont
+            CTFontCreateCopyWithSymbolicTraits(bold, pointSize, nil, .italicTrait, .italicTrait)
+            ?? bold
 
         // Measure a real glyph rather than the font's maximum advance, which
         // in a monospace face can be wider than the actual cell.

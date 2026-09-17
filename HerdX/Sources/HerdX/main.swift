@@ -16,9 +16,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let events = EventPresenter()
     private var reconnecting = false
     private var lastConnectError: String?
+    private var preferences = Preferences.current
+    private var preferencesWindow: PreferencesWindowController?
+    private var appearanceObserver: NSKeyValueObservation?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        gridView = TerminalGridView(pointSize: 13)
+        preferences = Preferences.current
+        gridView = TerminalGridView(font: preferences.font)
 
         let cell = gridView.cellSize
         let cols = 120
@@ -63,6 +67,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         buildMenu()
         installKeyMonitor()
         events.requestAuthorization()
+        applyTheme()
+
+        // Follow the system when the user has not pinned an appearance.
+        appearanceObserver = NSApp.observe(\.effectiveAppearance) { [weak self] _, _ in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self?.applyTheme() }
+            }
+        }
 
         if capturePath == nil {
             window.makeKeyAndOrderFront(nil)
@@ -82,6 +94,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60, repeats: true) { [weak self] _ in
             self?.tick()
         }
+    }
+
+    private var systemIsDark: Bool {
+        NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+    }
+
+    /// Applies the current theme to the views and tells the server about it.
+    ///
+    /// The server resolves `Reset` colours and its own chrome against the
+    /// host's palette, so publishing ours keeps server-composed output matching
+    /// what the app draws.
+    private func applyTheme() {
+        let theme = preferences.theme(matching: systemIsDark)
+        gridView.theme = theme
+        gridView.needsDisplay = true
+
+        switch preferences.appearance {
+        case .system: window.appearance = nil
+        case .dark: window.appearance = NSAppearance(named: .darkAqua)
+        case .light: window.appearance = NSAppearance(named: .aqua)
+        }
+        sidebar.apply(theme: theme)
+        publish(theme: theme)
+    }
+
+    private func publish(theme: Theme) {
+        guard let session else { return }
+        let background = theme.rgbBytes(of: theme.background)
+        let foreground = theme.rgbBytes(of: theme.foreground)
+        session.setDefaultColor(foreground: false, rgb: background)
+        session.setDefaultColor(foreground: true, rgb: foreground)
+        session.setPalette(theme.paletteBytes)
+        session.setAppearance(dark: theme.background.isDarkish)
+    }
+
+    @objc private func showPreferences(_ sender: Any?) {
+        if preferencesWindow == nil {
+            preferencesWindow = PreferencesWindowController { [weak self] updated in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.preferences = updated
+                    self.gridView.apply(font: updated.font)
+                    self.applyTheme()
+                }
+            }
+        }
+        preferencesWindow?.showWindow(nil)
+        preferencesWindow?.window?.makeKeyAndOrderFront(nil)
     }
 
     /// Opens a session and hands it to the views. Returns false if no server.
@@ -117,6 +177,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 cellHeight: Int(self.gridView.cellSize.height))
         }
         window.subtitle = ""
+        publish(theme: preferences.theme(matching: systemIsDark))
         return true
     }
 
@@ -199,6 +260,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         let appItem = NSMenuItem()
         let appMenu = NSMenu()
+        let settings = NSMenuItem(
+            title: "Settings…", action: #selector(showPreferences(_:)), keyEquivalent: ",")
+        settings.target = self
+        appMenu.addItem(settings)
+        appMenu.addItem(.separator())
         appMenu.addItem(
             withTitle: "Quit HerdX", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appItem.submenu = appMenu
