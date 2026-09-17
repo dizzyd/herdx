@@ -30,6 +30,28 @@ typedef struct {
   uint32_t id_index;  // resolve with hx_pane_id
 } HxPane;
 
+/// One image placement, in surface cell coordinates.
+typedef struct {
+  uint64_t asset_id;
+  uint16_t x, y;
+  uint32_t cols, rows;
+  uint32_t source_x, source_y, source_width, source_height;
+  uint32_t x_offset, y_offset;
+  int32_t z;
+} HxPlacement;
+
+#define HX_IMAGE_RGB 0
+#define HX_IMAGE_RGBA 1
+#define HX_IMAGE_PNG 2
+
+typedef struct {
+  uint32_t width;
+  uint32_t height;
+  uint8_t format;
+  const uint8_t *data;
+  size_t len;
+} HxAsset;
+
 /// A flattened pane surface: width * height cells, row-major.
 typedef struct {
   uint16_t width;
@@ -45,6 +67,8 @@ typedef struct {
   uint64_t revision;
   const HxPane *panes;
   size_t pane_count;
+  const HxPlacement *placements;
+  size_t placement_count;
 } HxGrid;
 
 // Key kinds; anything printable uses HX_KEY_CHAR with a codepoint.
@@ -79,6 +103,9 @@ bool hx_session_connected(const HxSession *session);
 
 /// Refreshes the caller's view. Pointers stay valid until the next call.
 bool hx_grid_acquire(HxSession *session, HxGrid *out);
+
+/// Copies image bytes for a placement. Valid until the next call.
+bool hx_asset(HxSession *session, uint64_t asset_id, HxAsset *out);
 
 char *hx_pane_id(const HxSession *session, uint32_t id_index);
 /// Pops the next queued event as JSON, or NULL when empty.

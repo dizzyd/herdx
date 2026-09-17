@@ -69,6 +69,44 @@ pub struct HxPane {
     pub id_index: u32,
 }
 
+/// One image placement, in surface cell coordinates.
+///
+/// The server sends the complete desired scene each frame, already clipped, so
+/// the renderer just draws these; there is no placement state to track.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct HxPlacement {
+    /// Stable id for the image bytes; resolve with `hx_asset`.
+    pub asset_id: u64,
+    pub x: u16,
+    pub y: u16,
+    pub cols: u32,
+    pub rows: u32,
+    /// The crop of the source image this placement shows.
+    pub source_x: u32,
+    pub source_y: u32,
+    pub source_width: u32,
+    pub source_height: u32,
+    /// Sub-cell nudge, in pixels.
+    pub x_offset: u32,
+    pub y_offset: u32,
+    pub z: i32,
+}
+
+pub const HX_IMAGE_RGB: u8 = 0;
+pub const HX_IMAGE_RGBA: u8 = 1;
+pub const HX_IMAGE_PNG: u8 = 2;
+
+/// Decoded image bytes held by the session.
+#[repr(C)]
+pub struct HxAsset {
+    pub width: u32,
+    pub height: u32,
+    pub format: u8,
+    pub data: *const u8,
+    pub len: usize,
+}
+
 /// A flattened pane surface: `width * height` cells in row-major order.
 #[repr(C)]
 pub struct HxGrid {
@@ -86,6 +124,8 @@ pub struct HxGrid {
     pub revision: u64,
     pub panes: *const HxPane,
     pub pane_count: usize,
+    pub placements: *const HxPlacement,
+    pub placement_count: usize,
 }
 
 #[derive(Default, Clone)]
@@ -105,17 +145,82 @@ pub(crate) struct Grid {
     revision: u64,
     panes: Vec<HxPane>,
     pane_ids: Vec<String>,
+    placements: Vec<HxPlacement>,
+}
+
+/// Image bytes the server has sent us, kept until nothing refers to them.
+///
+/// Assets arrive only once per scene — the server tracks what this connection
+/// already has — so dropping them early would leave images blank with no way to
+/// ask for them again.
+#[derive(Default)]
+struct AssetCache {
+    by_key: std::collections::HashMap<
+        herdr_protocol::protocol::SurfaceGraphicsAssetKey,
+        u64,
+    >,
+    assets: std::collections::HashMap<u64, herdr_protocol::protocol::SurfaceGraphicsAsset>,
+    next_id: u64,
+}
+
+impl AssetCache {
+    fn ingest(&mut self, scene: &herdr_protocol::protocol::SurfaceGraphicsScene) -> Vec<HxPlacement> {
+        for asset in &scene.assets {
+            let id = *self.by_key.entry(asset.key.clone()).or_insert_with(|| {
+                self.next_id += 1;
+                self.next_id
+            });
+            self.assets.entry(id).or_insert_with(|| asset.clone());
+        }
+
+        let placements: Vec<HxPlacement> = scene
+            .placements
+            .iter()
+            .filter_map(|placement| {
+                let asset_id = *self.by_key.get(&placement.asset)?;
+                Some(HxPlacement {
+                    asset_id,
+                    x: placement.x,
+                    y: placement.y,
+                    cols: placement.cols,
+                    rows: placement.rows,
+                    source_x: placement.source_x,
+                    source_y: placement.source_y,
+                    source_width: placement.source_width,
+                    source_height: placement.source_height,
+                    x_offset: placement.x_offset,
+                    y_offset: placement.y_offset,
+                    z: placement.z,
+                })
+            })
+            .collect();
+
+        // Keep what the scene still draws plus what the server asked us to
+        // retain; anything else will be resent if it comes back.
+        let mut live: std::collections::HashSet<u64> =
+            placements.iter().map(|p| p.asset_id).collect();
+        for key in &scene.retained_assets {
+            if let Some(id) = self.by_key.get(key) {
+                live.insert(*id);
+            }
+        }
+        self.assets.retain(|id, _| live.contains(id));
+        self.by_key.retain(|_, id| live.contains(id));
+
+        placements
+    }
 }
 
 impl Grid {
     /// Installs a complete surface, replacing whatever came before.
-    fn replace(&mut self, frame: &PaneSurfaceFrame) {
+    fn replace(&mut self, frame: &PaneSurfaceFrame, assets: &mut AssetCache) {
         self.width = frame.frame.width;
         self.height = frame.frame.height;
         self.source = frame.frame.cells.clone();
         self.revision = frame.surface_revision;
         self.set_cursor(frame.frame.cursor.as_ref());
         self.replace_panes(&frame.panes);
+        self.placements = assets.ingest(&frame.graphics);
         self.flatten();
     }
 
@@ -255,6 +360,7 @@ struct Shared {
     snapshot_json: Mutex<Option<String>>,
     error: Mutex<Option<String>>,
     events: Mutex<std::collections::VecDeque<String>>,
+    assets: Mutex<AssetCache>,
     connected: AtomicBool,
 }
 
@@ -308,6 +414,8 @@ pub struct HxSession {
     /// receive thread's buffer, so pointers handed to the caller stay valid
     /// without holding a lock across the FFI boundary.
     front: Grid,
+    /// Image bytes copied out for the caller, for the same reason.
+    front_asset: Vec<u8>,
     outbound: std::sync::mpsc::Sender<ClientMessage>,
 }
 
@@ -329,6 +437,7 @@ pub unsafe extern "C" fn hx_session_connect(
         snapshot_json: Mutex::new(None),
         error: Mutex::new(None),
         events: Mutex::new(std::collections::VecDeque::new()),
+        assets: Mutex::new(AssetCache::default()),
         connected: AtomicBool::new(false),
     });
 
@@ -371,7 +480,8 @@ pub unsafe extern "C" fn hx_session_connect(
         loop {
         match conn.recv() {
             Ok(ServerMessage::PaneSurface(frame)) => {
-                loop_shared.grid.lock().unwrap().replace(&frame);
+                let mut assets = loop_shared.assets.lock().unwrap();
+                loop_shared.grid.lock().unwrap().replace(&frame, &mut assets);
             }
             Ok(ServerMessage::PaneSurfacePatch(patch)) => {
                 let mut grid = loop_shared.grid.lock().unwrap();
@@ -458,6 +568,7 @@ pub unsafe extern "C" fn hx_session_connect(
             cell_height_px,
         }),
         front: Grid::default(),
+        front_asset: Vec::new(),
         outbound: tx,
     }))
 }
@@ -534,6 +645,53 @@ pub unsafe extern "C" fn hx_grid_acquire(session: *mut HxSession, out: *mut HxGr
             revision: front.revision,
             panes: front.panes.as_ptr(),
             pane_count: front.panes.len(),
+            placements: front.placements.as_ptr(),
+            placement_count: front.placements.len(),
+        },
+    );
+    true
+}
+
+/// Looks up image bytes by the id a placement carries.
+///
+/// The bytes are copied into session-owned storage, so the pointer stays valid
+/// until the next `hx_asset` call rather than only while the receive thread
+/// happens not to be touching its cache.
+///
+/// # Safety
+/// `session` must be a live session pointer, used from one thread at a time,
+/// and `out` must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn hx_asset(
+    session: *mut HxSession,
+    asset_id: u64,
+    out: *mut HxAsset,
+) -> bool {
+    use herdr_protocol::protocol::SurfaceGraphicsFormat as F;
+    let (Some(session), false) = (session.as_mut(), out.is_null()) else {
+        return false;
+    };
+    let (width, height, format) = {
+        let assets = session.shared.assets.lock().unwrap();
+        let Some(asset) = assets.assets.get(&asset_id) else {
+            return false;
+        };
+        session.front_asset.clear();
+        session.front_asset.extend_from_slice(&asset.data);
+        (asset.key.image_width, asset.key.image_height, asset.key.format)
+    };
+    std::ptr::write(
+        out,
+        HxAsset {
+            width,
+            height,
+            format: match format {
+                F::Rgb => HX_IMAGE_RGB,
+                F::Rgba => HX_IMAGE_RGBA,
+                F::Png => HX_IMAGE_PNG,
+            },
+            data: session.front_asset.as_ptr(),
+            len: session.front_asset.len(),
         },
     );
     true
@@ -1116,6 +1274,7 @@ mod tests {
             snapshot_json: Mutex::new(None),
             error: Mutex::new(None),
             events: Mutex::new(std::collections::VecDeque::new()),
+            assets: Mutex::new(AssetCache::default()),
             connected: AtomicBool::new(false),
         }
     }

@@ -43,6 +43,12 @@ final class TerminalGridView: NSView {
     /// One child view per pane, keyed by pane id.
     private var paneViews: [String: PaneContentView] = [:]
 
+    /// Decoded images, keyed by asset id.
+    ///
+    /// Decoding is far too expensive to redo per frame, and the server only
+    /// sends an asset's bytes once, so results are kept until the asset is gone.
+    private var imageCache: [UInt64: CGImage] = [:]
+
     /// Active copy mode, if any.
     var copyMode: CopyMode?
     /// Raised with the status text when copy mode starts, changes or ends.
@@ -100,10 +106,13 @@ final class TerminalGridView: NSView {
     /// Called each tick; only repaints when the surface actually advanced.
     func refreshIfNeeded() {
         guard let session else { return }
-        let latest = session.withGrid { (revision: $0.revision, panes: $0.panes) }
+        let latest = session.withGrid {
+            (revision: $0.revision, panes: $0.panes, placements: $0.placements)
+        }
         guard let latest, latest.revision != lastRevision else { return }
         lastRevision = latest.revision
         panes = latest.panes
+        pruneImageCache(keeping: latest.placements)
         syncPaneViews()
         for view in paneViews.values { view.needsDisplay = true }
         needsDisplay = true
@@ -140,6 +149,7 @@ final class TerminalGridView: NSView {
         guard let session else { return }
         session.withGrid { grid in
             drawRegion(grid, view.cellFrame, in: context)
+            drawImages(grid, in: context, within: view.cellFrame)
             drawSelection(grid, in: context, clippedTo: view.cellFrame)
             if view.isFocusedPane {
                 drawCursor(grid, in: context, within: view.cellFrame)
@@ -148,6 +158,70 @@ final class TerminalGridView: NSView {
             if panes.count > 1 {
                 drawFocusRing(view, in: context)
             }
+        }
+    }
+
+    /// Drops images the scene no longer refers to.
+    ///
+    /// Done on every surface rather than while drawing, because a scene that
+    /// has lost all its placements never draws and would otherwise hold its
+    /// images for the life of the session.
+    private func pruneImageCache(keeping placements: [Placement]) {
+        guard !imageCache.isEmpty else { return }
+        let live = Set(placements.map(\.assetID))
+        imageCache = imageCache.filter { live.contains($0.key) }
+    }
+
+    /// Draws the images the server placed in this pane.
+    ///
+    /// Placements come already clipped and in surface cell coordinates, and the
+    /// server sends the complete desired scene each frame, so there is no
+    /// placement state to reconcile — just draw what is there, back to front.
+    private func drawImages(_ grid: GridView, in context: CGContext, within region: CellRect) {
+        let inRegion = grid.placements.filter { placement in
+            placement.x >= region.x && placement.x < region.x + region.width
+                && placement.y >= region.y && placement.y < region.y + region.height
+        }
+        guard !inRegion.isEmpty else { return }
+
+        for placement in inRegion.sorted(by: { $0.z < $1.z }) {
+            let image: CGImage?
+            if let cached = imageCache[placement.assetID] {
+                image = cached
+            } else {
+                image = session?.image(for: placement.assetID)
+                if let image { imageCache[placement.assetID] = image }
+            }
+            guard let image else { continue }
+
+            let cropped: CGImage
+            if placement.sourceWidth > 0, placement.sourceHeight > 0,
+                placement.sourceX + placement.sourceWidth <= image.width,
+                placement.sourceY + placement.sourceHeight <= image.height,
+                let crop = image.cropping(
+                    to: CGRect(
+                        x: placement.sourceX, y: placement.sourceY,
+                        width: placement.sourceWidth, height: placement.sourceHeight))
+            {
+                cropped = crop
+            } else {
+                cropped = image
+            }
+
+            let rect = CGRect(
+                x: CGFloat(placement.x) * cellSize.width + CGFloat(placement.xOffset),
+                y: CGFloat(placement.y) * cellSize.height + CGFloat(placement.yOffset),
+                width: CGFloat(placement.cols) * cellSize.width,
+                height: CGFloat(placement.rows) * cellSize.height)
+
+            // The view is flipped; images are not, so flip back around the
+            // placement or they draw upside down.
+            context.saveGState()
+            context.translateBy(x: 0, y: rect.midY)
+            context.scaleBy(x: 1, y: -1)
+            context.translateBy(x: 0, y: -rect.midY)
+            context.draw(cropped, in: rect)
+            context.restoreGState()
         }
     }
 

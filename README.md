@@ -85,7 +85,7 @@ complete one — a stitched grid is worse than a slightly stale one.
 - [x] Real `NSView` per pane, with a native focus ring
 - [x] Copy mode (`prefix+[`, ⇧⌘[) with vi motions, search (⌘F), and visual selection
 - [x] Light and dark themes, font and appearance settings (⌘,)
-- [ ] Kitty graphics and ligatures
+- [x] Kitty graphics (images in panes)
 
 ### Selection
 
@@ -105,6 +105,24 @@ terminal is paths, URLs and identifiers.
 
 Paste is its own protocol event rather than committed text, so the pane can wrap
 it in bracketed-paste markers when the program asked for them.
+
+### Images
+
+Panes carry a graphics scene alongside their cells: image assets keyed by
+fingerprint, sent once, plus the complete desired set of placements each frame,
+already clipped and in surface cell coordinates. So there is no placement state
+to reconcile — decode, cache, and draw back to front.
+
+Decoded images are cached by asset id and pruned when a scene stops referring to
+them. Pruning happens on every surface rather than while drawing, because a
+scene that has lost all its placements never draws and would otherwise hold its
+images for the life of the session.
+
+**Ligatures are deliberately not supported.** The renderer positions every glyph
+at its own cell origin, which is what keeps long runs aligned to their columns;
+a ligature spans cells by definition and cannot coexist with that. Choosing
+alignment over ligatures is the right trade for a terminal, but it is a choice,
+not an oversight.
 
 ### Copy mode
 

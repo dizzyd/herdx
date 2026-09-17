@@ -1,5 +1,7 @@
 import CHerdrCore
+import CoreGraphics
 import Foundation
+import ImageIO
 
 /// Everything the UI knows about one pane in the current surface.
 struct PaneView {
@@ -30,6 +32,16 @@ struct CellRect {
 }
 
 /// A borrowed view of the current surface. Only valid inside `withGrid`.
+/// An image the server placed in a pane.
+struct Placement {
+    let assetID: UInt64
+    let x: Int, y: Int
+    let cols: Int, rows: Int
+    let sourceX: Int, sourceY: Int, sourceWidth: Int, sourceHeight: Int
+    let xOffset: Int, yOffset: Int
+    let z: Int
+}
+
 struct GridView {
     let width: Int
     let height: Int
@@ -38,6 +50,7 @@ struct GridView {
     let cursor: (x: Int, y: Int, visible: Bool, shape: UInt8)
     let revision: UInt64
     let panes: [PaneView]
+    let placements: [Placement]
 
     /// The grapheme cluster for a cell, decoded from the side buffer.
     func glyph(_ cell: HxCell) -> String {
@@ -114,7 +127,33 @@ final class HerdrSession {
                 glyphs: UnsafeBufferPointer(start: raw.glyphs, count: raw.glyph_bytes),
                 cursor: (Int(raw.cursor_x), Int(raw.cursor_y), raw.cursor_visible, raw.cursor_shape),
                 revision: raw.revision,
-                panes: panes))
+                panes: panes,
+                placements: (0..<raw.placement_count).map { i in
+                    let p = raw.placements[i]
+                    return Placement(
+                        assetID: p.asset_id,
+                        x: Int(p.x), y: Int(p.y),
+                        cols: Int(p.cols), rows: Int(p.rows),
+                        sourceX: Int(p.source_x), sourceY: Int(p.source_y),
+                        sourceWidth: Int(p.source_width), sourceHeight: Int(p.source_height),
+                        xOffset: Int(p.x_offset), yOffset: Int(p.y_offset),
+                        z: Int(p.z))
+                }))
+    }
+
+    /// Decodes an image asset, or nil if the server has retired it.
+    func image(for assetID: UInt64) -> CGImage? {
+        guard let handle else { return nil }
+        var asset = HxAsset()
+        guard hx_asset(handle, assetID, &asset), let bytes = asset.data, asset.len > 0 else {
+            return nil
+        }
+        let data = Data(bytes: bytes, count: asset.len)
+        return ImageDecoder.decode(
+            data: data,
+            width: Int(asset.width),
+            height: Int(asset.height),
+            format: asset.format)
     }
 
     /// Picks up a new snapshot if one arrived. Returns true when it changed.
