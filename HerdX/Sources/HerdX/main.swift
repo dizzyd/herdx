@@ -531,7 +531,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             .flatMap(Double.init) ?? 3
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             MainActor.assumeIsolated {
-            guard let self, let view = self.window.contentView else { NSApp.terminate(nil); return }
+            guard let self else { NSApp.terminate(nil); return }
+
+            // `HERDX_CAPTURE_SETTINGS` shoots the Settings window instead of
+            // the main one, which is otherwise impossible to see headlessly.
+            let settings = ProcessInfo.processInfo.environment["HERDX_CAPTURE_SETTINGS"] != nil
+            if settings { self.showPreferences(nil) }
+            guard let view = settings
+                ? self.preferencesWindow?.window?.contentView : self.window.contentView
+            else {
+                NSApp.terminate(nil)
+                return
+            }
             self.gridView.refreshIfNeeded()
             view.layoutSubtreeIfNeeded()
             self.gridView.displayIfNeeded()

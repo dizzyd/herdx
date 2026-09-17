@@ -311,6 +311,7 @@ HERDX_CAPTURE=/tmp/herdx.png ./build/HerdX.app/Contents/MacOS/HerdX
 
 `HERDX_CAPTURE_DELAY` sets how long to wait first, which is how reconnection
 gets checked: capture late enough to land after a server restart.
+`HERDX_CAPTURE_SETTINGS=1` shoots the Settings window instead of the main one.
 
 The window is laid out off-screen and never activates, so this does not steal
 focus or appear on any display. It also avoids `screencapture -R`, which picks

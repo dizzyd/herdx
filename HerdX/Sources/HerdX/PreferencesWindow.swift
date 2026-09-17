@@ -1,53 +1,70 @@
 import AppKit
 
-/// A small settings sheet for the font and appearance.
+/// The Settings window.
+///
+/// Standard macOS shape: opened from the app menu with ⌘,, one non-resizable
+/// pane, changes applied immediately rather than behind an OK button, and the
+/// font chosen through the system font panel rather than a bespoke picker.
 @MainActor
 final class PreferencesWindowController: NSWindowController {
-    private var onChange: (Preferences) -> Void
-    private let familyPopUp = NSPopUpButton()
-    private let sizeField = NSTextField()
+    private let onChange: (Preferences) -> Void
+
+    private let fontLabel = NSTextField(labelWithString: "")
+    private let fontNote = NSTextField(labelWithString: "")
     private let appearancePopUp = NSPopUpButton()
     private let terminalPopUp = NSPopUpButton()
     private let backgroundWell = NSColorWell()
     private let foregroundWell = NSColorWell()
-    private var customColours: Bool
+
+    private var preferences = Preferences.current
+    /// Hidden unless there is something to say, so it leaves no gap.
+    private var noteRow: NSGridRow?
 
     init(onChange: @escaping (Preferences) -> Void) {
         self.onChange = onChange
-        customColours = Preferences.current.background != nil
+
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 230),
+            contentRect: NSRect(x: 0, y: 0, width: 440, height: 210),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false)
         window.title = "HerdX Settings"
+        // Settings windows are kept, not rebuilt, so ⌘, reopens the same one.
+        window.isReleasedWhenClosed = false
+        window.setFrameAutosaveName("SettingsWindow")
         super.init(window: window)
 
-        let preferences = Preferences.current
+        window.contentView = buildContent()
+        refresh()
+        window.center()
+    }
 
-        familyPopUp.addItem(withTitle: "System Monospace")
-        familyPopUp.addItems(withTitles: Preferences.monospacedFamilies)
-        familyPopUp.selectItem(withTitle: preferences.fontName.isEmpty
-            ? "System Monospace" : preferences.fontName)
-        familyPopUp.target = self
-        familyPopUp.action = #selector(changed)
+    required init?(coder: NSCoder) { fatalError("not used") }
 
-        sizeField.stringValue = String(format: "%.0f", preferences.fontSize)
-        sizeField.target = self
-        sizeField.action = #selector(changed)
-        sizeField.widthAnchor.constraint(equalToConstant: 60).isActive = true
+    // MARK: - Layout
+
+    private func buildContent() -> NSView {
+        let change = NSButton(title: "Change…", target: self, action: #selector(chooseFont))
+        change.bezelStyle = .rounded
+
+        fontLabel.font = .systemFont(ofSize: 12)
+        fontNote.font = .systemFont(ofSize: 10)
+        fontNote.textColor = .secondaryLabelColor
+
+        let font = NSStackView(views: [fontLabel, change])
+        font.orientation = .horizontal
+        font.spacing = 8
 
         for option in Preferences.Appearance.allCases {
             appearancePopUp.addItem(withTitle: option.title)
             appearancePopUp.lastItem?.representedObject = option.rawValue
         }
-        appearancePopUp.selectItem(withTitle: preferences.appearance.title)
         appearancePopUp.target = self
         appearancePopUp.action = #selector(changed)
 
         // Separate from the window's appearance: herdr applies the foreground
-        // client's host theme to every pane, so when a herdr TUI is attached to
-        // the same session the two have to agree, or the pane re-themes each
+        // client's host theme to every pane, so when another client is attached
+        // to the same session the two have to agree, or the pane re-themes each
         // time focus moves between them.
         terminalPopUp.addItem(withTitle: "Match Window")
         terminalPopUp.lastItem?.representedObject = Preferences.Appearance.system.rawValue
@@ -55,95 +72,138 @@ final class PreferencesWindowController: NSWindowController {
             terminalPopUp.addItem(withTitle: option.title)
             terminalPopUp.lastItem?.representedObject = option.rawValue
         }
-        terminalPopUp.selectItem(
-            withTitle: preferences.terminalAppearance == .system
-                ? "Match Window" : preferences.terminalAppearance.title)
         terminalPopUp.target = self
         terminalPopUp.action = #selector(changed)
 
-        // Exact colours, because herdr compares actual RGB when deciding
-        // whether a client's host theme changed: "dark" will not match another
-        // terminal's particular background, only the same colour will.
-        let resolved = preferences.terminalTheme(
-            matching: NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua)
-        backgroundWell.color = preferences.background ?? resolved.background
-        backgroundWell.target = self
-        backgroundWell.action = #selector(colourChanged)
-        foregroundWell.color = preferences.foreground ?? resolved.foreground
-        foregroundWell.target = self
-        foregroundWell.action = #selector(colourChanged)
+        for well in [backgroundWell, foregroundWell] {
+            well.target = self
+            well.action = #selector(colourChanged)
+            well.widthAnchor.constraint(equalToConstant: 44).isActive = true
+        }
+        let preset = NSButton(title: "Use Preset", target: self, action: #selector(usePreset))
+        preset.bezelStyle = .rounded
 
-        let reset = NSButton(title: "Use Preset", target: self, action: #selector(resetColours))
-        reset.bezelStyle = .rounded
-        let colours = NSStackView(views: [backgroundWell, foregroundWell, reset])
+        let colours = NSStackView(views: [
+            backgroundWell, caption("background"), foregroundWell, caption("text"), preset,
+        ])
         colours.orientation = .horizontal
-        colours.spacing = 8
+        colours.spacing = 6
 
         let grid = NSGridView(views: [
-            [label("Font"), familyPopUp],
-            [label("Size"), sizeField],
-            [label("Appearance"), appearancePopUp],
-            [label("Terminal"), terminalPopUp],
-            [label("Colours"), colours],
+            [label("Font:"), font],
+            [NSGridCell.emptyContentView, fontNote],
+            [label("Appearance:"), appearancePopUp],
+            [label("Terminal:"), terminalPopUp],
+            [label("Colours:"), colours],
         ])
-        grid.rowSpacing = 12
-        grid.columnSpacing = 12
+        grid.rowSpacing = 10
+        grid.columnSpacing = 10
         grid.column(at: 0).xPlacement = .trailing
         grid.translatesAutoresizingMaskIntoConstraints = false
+        noteRow = grid.row(at: 1)
 
         let content = NSView()
         content.addSubview(grid)
         NSLayoutConstraint.activate([
-            grid.centerXAnchor.constraint(equalTo: content.centerXAnchor),
-            grid.centerYAnchor.constraint(equalTo: content.centerYAnchor),
+            grid.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
+            grid.trailingAnchor.constraint(
+                lessThanOrEqualTo: content.trailingAnchor, constant: -20),
+            grid.topAnchor.constraint(equalTo: content.topAnchor, constant: 20),
         ])
-        window.contentView = content
-        window.center()
+        return content
     }
-
-    required init?(coder: NSCoder) { fatalError("not used") }
 
     private func label(_ text: String) -> NSTextField {
         NSTextField(labelWithString: text)
     }
 
-    /// Picking a colour switches the terminal off its preset.
-    @objc private func colourChanged() {
-        customColours = true
-        changed()
+    private func caption(_ text: String) -> NSTextField {
+        let field = NSTextField(labelWithString: text)
+        field.font = .systemFont(ofSize: 10)
+        field.textColor = .secondaryLabelColor
+        return field
     }
 
-    @objc private func resetColours() {
-        customColours = false
-        changed()
-        let resolved = Preferences.current.terminalTheme(
-            matching: NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua)
-        backgroundWell.color = resolved.background
-        foregroundWell.color = resolved.foreground
+    /// Reflects the stored preferences in the controls.
+    private func refresh() {
+        let font = preferences.font
+        // The system monospace face reports an internal name like
+        // ".SF NS Mono Light Regular", which is not what to show someone.
+        let name =
+            preferences.fontName.isEmpty
+            ? "System Monospace" : (font.familyName ?? font.fontName)
+        fontLabel.stringValue = "\(name)  \(Int(font.pointSize))"
+
+        // A proportional font would break the grid, so it is refused rather
+        // than silently drawn into overlapping columns.
+        let chosenIsProportional =
+            !preferences.fontName.isEmpty
+            && NSFont(name: preferences.fontName, size: preferences.fontSize)?.isFixedPitch != true
+        fontNote.stringValue =
+            chosenIsProportional
+            ? "Not a fixed-width font; using the system monospace face." : ""
+        noteRow?.isHidden = fontNote.stringValue.isEmpty
+
+        appearancePopUp.selectItem(withTitle: preferences.appearance.title)
+        terminalPopUp.selectItem(
+            withTitle: preferences.terminalAppearance == .system
+                ? "Match Window" : preferences.terminalAppearance.title)
+
+        let dark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let resolved = preferences.terminalTheme(matching: dark)
+        backgroundWell.color = preferences.background ?? resolved.background
+        foregroundWell.color = preferences.foreground ?? resolved.foreground
+    }
+
+    // MARK: - Actions
+
+    /// Opens the system font panel, which is where a Mac user expects to pick a
+    /// font, instead of a list of families that cannot show weights or preview.
+    @objc private func chooseFont() {
+        let manager = NSFontManager.shared
+        manager.target = self
+        manager.setSelectedFont(preferences.font, isMultiple: false)
+        manager.orderFrontFontPanel(self)
+    }
+
+    @objc func changeFont(_ sender: NSFontManager?) {
+        guard let chosen = sender?.convert(preferences.font) else { return }
+        preferences.fontName = chosen.fontName
+        preferences.fontSize = chosen.pointSize.clamped(to: 6...48)
+        apply()
+    }
+
+    /// Only the size and family are ours to change; the rest of the font panel
+    /// does not apply to a terminal grid.
+    @objc func validModesForFontPanel(_ panel: NSFontPanel) -> NSFontPanel.ModeMask {
+        [.collection, .face, .size]
+    }
+
+    @objc private func colourChanged() {
+        preferences.background = backgroundWell.color
+        preferences.foreground = foregroundWell.color
+        apply()
+    }
+
+    @objc private func usePreset() {
+        preferences.background = nil
+        preferences.foreground = nil
+        apply()
     }
 
     @objc private func changed() {
-        let family = familyPopUp.titleOfSelectedItem ?? "System Monospace"
-        // Sizes outside this range stop being a terminal.
-        let size = max(6, min(CGFloat(sizeField.doubleValue), 48))
-        sizeField.stringValue = String(format: "%.0f", size)
-
-        let appearance =
+        preferences.appearance =
             (appearancePopUp.selectedItem?.representedObject as? String)
             .flatMap(Preferences.Appearance.init(rawValue:)) ?? .system
-
-        let terminal =
+        preferences.terminalAppearance =
             (terminalPopUp.selectedItem?.representedObject as? String)
             .flatMap(Preferences.Appearance.init(rawValue:)) ?? .system
+        apply()
+    }
 
-        let preferences = Preferences(
-            fontName: family == "System Monospace" ? "" : family,
-            fontSize: size,
-            appearance: appearance,
-            terminalAppearance: terminal,
-            background: customColours ? backgroundWell.color : nil,
-            foreground: customColours ? foregroundWell.color : nil)
+    private func apply() {
         Preferences.current = preferences
+        refresh()
         onChange(preferences)
     }
 }
