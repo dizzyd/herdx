@@ -14,13 +14,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let chords = ChordResolver()
     private var timer: Timer?
     private let events = EventPresenter()
+    private var reconnecting = false
+    private var lastConnectError: String?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         gridView = TerminalGridView(pointSize: 13)
 
+        let cell = gridView.cellSize
         let cols = 120
         let rows = 34
-        let cell = gridView.cellSize
 
         sidebar = SidebarView()
         sidebar.onSelect = { [weak self] command in
@@ -52,30 +54,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         split.setHoldingPriority(.init(250), forSubviewAt: 1)
         window.contentView = split
 
-        do {
-            let session = try HerdrSession(
-                cols: cols, rows: rows,
-                cellWidth: Int(cell.width), cellHeight: Int(cell.height))
-            self.session = session
-            gridView.session = session
-            gridView.onReadSelection = { [weak self] request in
-                guard let self, let snapshot = session.lastSnapshot else { return }
-                session.request(request, bootID: snapshot.bootID)
-                _ = self
-            }
-            gridView.onFocusPane = { [weak self] paneID in
-                guard let self else { return }
-                self.invoke(.focusPane(paneID), session: session)
-            }
-            gridView.onResize = { [weak self] cols, rows in
-                guard let self, let cell = self.gridView?.cellSize else { return }
-                session.resize(
-                    cols: cols, rows: rows,
-                    cellWidth: Int(cell.width), cellHeight: Int(cell.height))
-            }
-        } catch {
-            presentFatal(error)
-            return
+        if !connect() {
+            // A server that is not running yet is not fatal: herdr sessions
+            // outlive their clients, so wait for one instead of giving up.
+            window.subtitle = "waiting for herdr…"
         }
 
         buildMenu()
@@ -102,6 +84,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
+    /// Opens a session and hands it to the views. Returns false if no server.
+    @discardableResult
+    private func connect() -> Bool {
+        let size = gridView.gridSize
+        let cell = gridView.cellSize
+        let session: HerdrSession
+        do {
+            session = try HerdrSession(
+                cols: size.cols, rows: size.rows,
+                cellWidth: Int(cell.width), cellHeight: Int(cell.height))
+        } catch {
+            lastConnectError = error.localizedDescription
+            return false
+        }
+
+        self.session = session
+        gridView.session = session
+        gridView.onReadSelection = { [weak session] request in
+            guard let session, let snapshot = session.lastSnapshot else { return }
+            session.request(request, bootID: snapshot.bootID)
+        }
+        gridView.onFocusPane = { [weak self] paneID in
+            guard let self, let session = self.session else { return }
+            self.invoke(.focusPane(paneID), session: session)
+        }
+        gridView.onResize = { [weak self] cols, rows in
+            guard let self, let session = self.session else { return }
+            session.resize(
+                cols: cols, rows: rows,
+                cellWidth: Int(self.gridView.cellSize.width),
+                cellHeight: Int(self.gridView.cellSize.height))
+        }
+        window.subtitle = ""
+        return true
+    }
+
+    /// Reattaches after the server goes away.
+    ///
+    /// herdr keeps terminals running when a client disconnects, so dropping the
+    /// connection is a normal event — a server restart or an update — not a
+    /// reason to make the user relaunch.
+    private func reconnect() {
+        guard !reconnecting else { return }
+        reconnecting = true
+        session = nil
+        gridView.session = nil
+        window.subtitle = "reconnecting…"
+
+        // Back off so a server that is down does not get hammered, but stay
+        // responsive enough that a restart feels instant.
+        func attempt(delay: TimeInterval) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    if self.connect() {
+                        self.reconnecting = false
+                        self.window.makeFirstResponder(self.gridView)
+                        return
+                    }
+                    attempt(delay: min(delay * 2, 5))
+                }
+            }
+        }
+        attempt(delay: 0.25)
+    }
+
     private func tick() {
         guard let session else { return }
         if session.pollSnapshot(), let snapshot = session.lastSnapshot {
@@ -120,8 +168,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             NSLog("herdr: %@", error)
         }
         if !session.isConnected {
-            timer?.invalidate()
-            window.subtitle = "disconnected"
+            reconnect()
         }
     }
 
@@ -201,7 +248,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func installCaptureHookIfRequested() {
         guard let path = capturePath else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+        let delay = ProcessInfo.processInfo.environment["HERDX_CAPTURE_DELAY"]
+            .flatMap(Double.init) ?? 3
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             MainActor.assumeIsolated {
             guard let self, let view = self.window.contentView else { NSApp.terminate(nil); return }
             self.gridView.refreshIfNeeded()
@@ -220,20 +269,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    private func presentFatal(_ error: Error) {
-        let alert = NSAlert()
-        alert.messageText = "Could not connect to herdr"
-        alert.informativeText =
-            """
-            \(error.localizedDescription)
 
-            HerdX attaches to a running herdr server. Start one with `herdr` in \
-            a terminal, then reopen this app.
-            """
-        alert.alertStyle = .critical
-        alert.runModal()
-        NSApp.terminate(nil)
-    }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 }

@@ -81,6 +81,7 @@ complete one — a stitched grid is worse than a slightly stale one.
 - [x] Mouse input: click-to-focus, drag, right-click, scroll
 - [x] Native notifications, clipboard (OSC 52), window title, bell
 - [x] Drag selection, double-click word, triple-click line, copy and paste
+- [x] Reconnects when the server restarts
 - [ ] Copy mode (`prefix+[`) and search
 - [ ] Promote panes to real `NSView`s (the patch-routing seam is already in place)
 - [ ] Kitty graphics, ligatures, font configuration
@@ -137,11 +138,31 @@ This needs the bundle: `UNUserNotificationCenter` raises rather than returning a
 error when the process has no bundle identifier, so notifications are disabled
 when running the executable outside `HerdX.app`.
 
+### Testing against a throwaway session
+
+Never test disconnects against the session you are working in. herdr runs
+isolated named sessions with their own sockets, so use one of those:
+
+```sh
+herdr --session hxtest server &                     # real server, headless
+export SOCK=~/.config/herdr/sessions/hxtest/herdr-client.sock
+HERDR_CLIENT_SOCKET_PATH=$SOCK ./build/HerdX.app/Contents/MacOS/HerdX
+herdr --session hxtest server stop                  # exercise reconnect
+herdr session delete hxtest
+```
+
+Note that `HERDR_SOCKET_PATH` takes precedence over `HERDR_CLIENT_SOCKET_PATH`,
+and herdr sets it for processes running inside a pane — so from a herdr pane,
+`env -u HERDR_SOCKET_PATH` is needed or you will talk to your own session.
+
 ### Looking at the renderer without a window in your face
 
 ```sh
 HERDX_CAPTURE=/tmp/herdx.png ./build/HerdX.app/Contents/MacOS/HerdX
 ```
+
+`HERDX_CAPTURE_DELAY` sets how long to wait first, which is how reconnection
+gets checked: capture late enough to land after a server restart.
 
 The window is laid out off-screen and never activates, so this does not steal
 focus or appear on any display. It also avoids `screencapture -R`, which picks
