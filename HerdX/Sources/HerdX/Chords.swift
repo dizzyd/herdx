@@ -11,6 +11,8 @@ enum Command {
     case closePane, zoomPane
     case newWorkspace
     case focusPane(String)
+    case focusTab(String)
+    case focusWorkspace(String)
 
     var method: String {
         switch self {
@@ -23,6 +25,8 @@ enum Command {
         case .zoomPane: return "pane.zoom"
         case .newWorkspace: return "workspace.create"
         case .focusPane: return "pane.focus"
+        case .focusTab: return "tab.focus"
+        case .focusWorkspace: return "workspace.focus"
         }
     }
 
@@ -37,13 +41,16 @@ enum Command {
         case .nextTab: return ["relative": 1]
         case .previousTab: return ["relative": -1]
         case .focusPane(let id): return ["pane_id": id]
+        case .focusTab(let id): return ["tab_id": id]
+        case .focusWorkspace(let id): return ["workspace_id": id]
         default: return [:]
         }
     }
 
+    /// herdr's `Method` is an adjacently tagged enum, so `params` is required
+    /// even for methods that take nothing. Omitting it fails to parse.
     func requestJSON(id: String) -> String? {
-        var body: [String: Any] = ["id": id, "method": method]
-        if !params.isEmpty { body["params"] = params }
+        let body: [String: Any] = ["id": id, "method": method, "params": params]
         guard let data = try? JSONSerialization.data(withJSONObject: body) else { return nil }
         return String(decoding: data, as: UTF8.self)
     }

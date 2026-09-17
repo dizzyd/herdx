@@ -22,6 +22,8 @@ extension Command {
         case .zoomPane: return 12
         case .newWorkspace: return 13
         case .focusPane: return 14
+        case .focusTab: return 15
+        case .focusWorkspace: return 16
         }
     }
 

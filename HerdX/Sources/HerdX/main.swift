@@ -23,6 +23,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let cell = gridView.cellSize
 
         sidebar = SidebarView()
+        sidebar.onSelect = { [weak self] command in
+            guard let self, let session = self.session else { return }
+            self.invoke(command, session: session)
+            self.window.makeFirstResponder(self.gridView)
+        }
 
         window = NSWindow(
             contentRect: NSRect(
