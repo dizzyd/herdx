@@ -78,42 +78,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 x: 0, y: 0,
                 width: CGFloat(cols) * cell.width + SidebarView.width,
                 height: CGFloat(rows) * cell.height),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            // Not `.fullSizeContentView`: drawing under the title bar means
+            // every pane below it needs safe-area insets, and that inset was
+            // shifting the terminal's dirty rect by exactly the title bar's
+            // height so it never painted.
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false)
         window.title = "HerdX"
-        window.titlebarAppearsTransparent = true
         window.delegate = self
         window.center()
 
-        copyModeStatus.translatesAutoresizingMaskIntoConstraints = false
+        // Tabs go in a title-bar accessory, the native place for them, rather
+        // than as a sibling of the terminal. Sharing a container with the grid
+        // meant one of the two never drew, depending on their order.
+        let tabs = NSTitlebarAccessoryViewController()
+        tabs.view = tabBar
+        tabs.layoutAttribute = .bottom
+        window.addTitlebarAccessoryViewController(tabs)
 
-        // Tabs sit above the terminal, not in the sidebar: they are the thing
-        // you flick between, and nesting them under a workspace made every
-        // level of the tree highlight at once.
-        let terminalArea = NSView()
-        tabBar.translatesAutoresizingMaskIntoConstraints = false
-        gridView.translatesAutoresizingMaskIntoConstraints = false
-        // Grid first so the tab bar sits above it in z-order.
-        terminalArea.addSubview(gridView)
-        terminalArea.addSubview(tabBar)
-        NSLayoutConstraint.activate([
-            // The window draws content under a transparent title bar, so
-            // anchor to the safe area or the tabs end up beneath it.
-            tabBar.topAnchor.constraint(equalTo: terminalArea.safeAreaLayoutGuide.topAnchor),
-            tabBar.leadingAnchor.constraint(equalTo: terminalArea.leadingAnchor),
-            tabBar.trailingAnchor.constraint(equalTo: terminalArea.trailingAnchor),
-            gridView.topAnchor.constraint(equalTo: tabBar.bottomAnchor),
-            gridView.leadingAnchor.constraint(equalTo: terminalArea.leadingAnchor),
-            gridView.trailingAnchor.constraint(equalTo: terminalArea.trailingAnchor),
-            gridView.bottomAnchor.constraint(equalTo: terminalArea.bottomAnchor),
-        ])
+        copyModeStatus.translatesAutoresizingMaskIntoConstraints = false
 
         let split = NSSplitView()
         split.isVertical = true
         split.dividerStyle = .thin
         split.addArrangedSubview(sidebar)
-        split.addArrangedSubview(terminalArea)
+        split.addArrangedSubview(gridView)
         // The terminal takes all the slack; the sidebar holds its width.
         split.setHoldingPriority(.init(260), forSubviewAt: 0)
         split.setHoldingPriority(.init(250), forSubviewAt: 1)
@@ -504,28 +494,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     /// Renders the window off-screen for development.
     ///
-    /// The terminal is composited separately because `cacheDisplay` on the
-    /// whole tree omits the grid's layer-backed pane views. Note this makes the
-    /// screenshot slightly kinder than reality — it forces the grid to draw —
-    /// so it can hide a view that is not being invalidated on screen. Trust it
-    /// for layout, not for "is it repainting".
+    /// A plain `cacheDisplay` of the content view, which is truthful as long as
+    /// nothing in the tree is layer-backed. It briefly was not: an earlier
+    /// version composited the terminal separately to work around a view that
+    /// was not drawing, which produced correct-looking screenshots of a broken
+    /// window and cost hours. If this starts coming back blank, fix the view,
+    /// not the screenshot.
     private func snapshot(of view: NSView) -> NSBitmapImageRep? {
-        guard let base = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
+        guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
             return nil
         }
-        view.cacheDisplay(in: view.bounds, to: base)
-        if ProcessInfo.processInfo.environment["HERDX_CAPTURE_RAW"] != nil { return base }
-
-        guard let gridRep = gridView.bitmapImageRepForCachingDisplay(in: gridView.bounds),
-            let composite = NSGraphicsContext(bitmapImageRep: base)
-        else { return base }
-        gridView.cacheDisplay(in: gridView.bounds, to: gridRep)
-
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = composite
-        gridRep.draw(in: gridView.convert(gridView.bounds, to: view))
-        NSGraphicsContext.restoreGraphicsState()
-        return base
+        view.cacheDisplay(in: view.bounds, to: rep)
+        return rep
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }

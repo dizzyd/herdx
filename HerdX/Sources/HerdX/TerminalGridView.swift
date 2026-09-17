@@ -20,7 +20,6 @@ final class TerminalGridView: NSView {
     /// Last grid size we told the server about, so a live drag does not send a
     /// resize per pixel.
     private var reportedGridSize: (cols: Int, rows: Int)?
-    nonisolated(unsafe) static var draws = 0
     /// Pane geometry from the last surface we drew.
     ///
     /// Cached because resolving it means crossing the FFI boundary and
@@ -71,8 +70,6 @@ final class TerminalGridView: NSView {
         super.init(frame: .zero)
         // Layer-backed because its pane views are, and with the redraw policy
         // that actually redraws on invalidation rather than only on resize.
-        wantsLayer = true
-        layerContentsRedrawPolicy = .onSetNeedsDisplay
     }
 
     /// Swaps the font, which changes the cell size and therefore the grid.
@@ -143,7 +140,6 @@ final class TerminalGridView: NSView {
         panes = latest.panes
         pruneImageCache(keeping: latest.placements)
         syncPaneViews()
-        for view in paneViews.values { view.needsDisplay = true }
         needsDisplay = true
     }
 
@@ -176,18 +172,29 @@ final class TerminalGridView: NSView {
 
     /// The container paints only the background; panes draw themselves.
     override func draw(_ dirtyRect: NSRect) {
-        if ProcessInfo.processInfo.environment["HERDX_TRACE"] != nil {
-            TerminalGridView.draws += 1
-            if TerminalGridView.draws % 60 == 1 {
-                NSLog("grid draw #%d subviews=%d frame=%@", TerminalGridView.draws,
-                      subviews.count, NSStringFromRect(frame))
-            }
-        }
         guard let context = NSGraphicsContext.current?.cgContext else { return }
         theme.background.setFill()
         context.fill(dirtyRect)
 
-        guard panes.isEmpty, let placeholder else { return }
+        if !panes.isEmpty, let session {
+            session.withGrid { grid in
+                for pane in panes {
+                    drawRegion(grid, pane.rect, in: context)
+                    drawImages(grid, in: context, within: pane.rect)
+                }
+                drawSelection(grid, in: context)
+                drawCopyModeCursor(in: context)
+                drawCursor(grid, in: context)
+                if panes.count > 1 {
+                    for pane in panes where pane.focused {
+                        drawFocusRing(pane.rect, in: context)
+                    }
+                }
+            }
+            return
+        }
+
+        guard let placeholder else { return }
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 12),
             .foregroundColor: theme.foreground.withAlphaComponent(0.45),
@@ -197,23 +204,6 @@ final class TerminalGridView: NSView {
         text.draw(
             at: CGPoint(
                 x: (bounds.width - size.width) / 2, y: (bounds.height - size.height) / 2))
-    }
-
-    /// Draws one pane's slice of the shared surface, in surface coordinates.
-    func drawPane(_ view: PaneContentView, in context: CGContext) {
-        guard let session else { return }
-        session.withGrid { grid in
-            drawRegion(grid, view.cellFrame, in: context)
-            drawImages(grid, in: context, within: view.cellFrame)
-            drawSelection(grid, in: context, clippedTo: view.cellFrame)
-            if view.isFocusedPane {
-                drawCursor(grid, in: context, within: view.cellFrame)
-            }
-            drawCopyModeCursor(in: context, within: view.cellFrame)
-            if panes.count > 1 {
-                drawFocusRing(view, in: context)
-            }
-        }
     }
 
     /// Drops images the scene no longer refers to.
@@ -282,10 +272,9 @@ final class TerminalGridView: NSView {
 
     /// The copy-mode cursor, outlined so it reads as a position you are moving
     /// rather than where output will appear.
-    private func drawCopyModeCursor(in context: CGContext, within region: CellRect) {
+    private func drawCopyModeCursor(in context: CGContext) {
         guard let copyMode,
-            let pane = panes.first(where: { $0.id == copyMode.paneID }),
-            pane.rect.x == region.x, pane.rect.y == region.y
+            let pane = panes.first(where: { $0.id == copyMode.paneID })
         else { return }
 
         let viewportRow = Int(copyMode.cursor.row) - Int(pane.viewportTopRow)
@@ -303,13 +292,12 @@ final class TerminalGridView: NSView {
 
     /// A focus ring, which is the point of having real pane views: with several
     /// panes open you have to be able to see which one takes your keystrokes.
-    private func drawFocusRing(_ view: PaneContentView, in context: CGContext) {
-        guard view.isFocusedPane else { return }
+    private func drawFocusRing(_ region: CellRect, in context: CGContext) {
         let rect = CGRect(
-            x: CGFloat(view.cellFrame.x) * cellSize.width,
-            y: CGFloat(view.cellFrame.y) * cellSize.height,
-            width: CGFloat(view.cellFrame.width) * cellSize.width,
-            height: CGFloat(view.cellFrame.height) * cellSize.height)
+            x: CGFloat(region.x) * cellSize.width,
+            y: CGFloat(region.y) * cellSize.height,
+            width: CGFloat(region.width) * cellSize.width,
+            height: CGFloat(region.height) * cellSize.height)
         context.setStrokeColor(NSColor.controlAccentColor.withAlphaComponent(0.65).cgColor)
         context.setLineWidth(2)
         context.stroke(rect.insetBy(dx: 1, dy: 1))
@@ -319,12 +307,9 @@ final class TerminalGridView: NSView {
     ///
     /// Drawn after the text so it tints rather than hides it; a terminal
     /// selection has to stay readable.
-    private func drawSelection(
-        _ grid: GridView, in context: CGContext, clippedTo region: CellRect
-    ) {
+    private func drawSelection(_ grid: GridView, in context: CGContext) {
         guard let selection, !selection.isEmpty,
-            let pane = panes.first(where: { $0.id == selection.paneID }),
-            pane.rect.x == region.x, pane.rect.y == region.y
+            let pane = panes.first(where: { $0.id == selection.paneID })
         else { return }
 
         context.setFillColor(theme.selection.withAlphaComponent(0.45).cgColor)
@@ -488,12 +473,8 @@ final class TerminalGridView: NSView {
         }
     }
 
-    private func drawCursor(_ grid: GridView, in context: CGContext, within region: CellRect) {
+    private func drawCursor(_ grid: GridView, in context: CGContext) {
         guard grid.cursor.visible, window?.isKeyWindow == true else { return }
-        // The surface reports one cursor; only the pane containing it draws.
-        guard grid.cursor.x >= region.x, grid.cursor.x < region.x + region.width,
-            grid.cursor.y >= region.y, grid.cursor.y < region.y + region.height
-        else { return }
         let rect = CGRect(
             x: CGFloat(grid.cursor.x) * cellSize.width,
             y: CGFloat(grid.cursor.y) * cellSize.height,

@@ -14,7 +14,6 @@ final class PaneContentView: NSView {
     private(set) var isFocusedPane: Bool
 
     private unowned let owner: TerminalGridView
-    nonisolated(unsafe) static var draws = 0
 
     override var isFlipped: Bool { true }
     /// Input stays with the container, which owns the keymap and selection.
@@ -26,13 +25,6 @@ final class PaneContentView: NSView {
         cellFrame = CellRect(x: 0, y: 0, width: 0, height: 0)
         isFocusedPane = false
         super.init(frame: .zero)
-        wantsLayer = true
-        // A layer-backed view defaults to `.duringViewResize`, which caches the
-        // layer's contents and only re-renders them when the view's size
-        // changes. For a terminal that is exactly wrong: the pane would keep
-        // showing whatever it drew first, and only update when the window was
-        // resized.
-        layerContentsRedrawPolicy = .onSetNeedsDisplay
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -53,25 +45,12 @@ final class PaneContentView: NSView {
         return moved
     }
 
-    override func draw(_ dirtyRect: NSRect) {
-        if ProcessInfo.processInfo.environment["HERDX_TRACE"] != nil {
-            PaneContentView.draws += 1
-            if PaneContentView.draws % 60 == 1 {
-                NSLog("pane draw #%d %@ dirty=%@ frame=%@", PaneContentView.draws, paneID,
-                      NSStringFromRect(dirtyRect), NSStringFromRect(frame))
-            }
-        }
-        guard let context = NSGraphicsContext.current?.cgContext else { return }
-
-        // The drawing helpers work in surface coordinates, so shift into them
-        // rather than duplicating every offset calculation per pane.
-        context.saveGState()
-        context.translateBy(
-            x: -CGFloat(cellFrame.x) * owner.cellSize.width,
-            y: -CGFloat(cellFrame.y) * owner.cellSize.height)
-        owner.drawPane(self, in: context)
-        context.restoreGState()
-    }
+    // Deliberately no `draw`. Pane content is drawn by the grid view in one
+    // pass, because relying on each child view to draw itself put the terminal
+    // at the mercy of per-view invalidation and left panes blank. These views
+    // exist for hit-testing and as somewhere for per-pane scrollers, context
+    // menus and accessibility to live.
+    override var isOpaque: Bool { false }
 
     // Mouse handling stays in the container: selection, click-to-focus and
     // scroll all need the surface as a whole, and splitting them across views

@@ -144,7 +144,7 @@ final class SidebarView: NSView {
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 1
-        stack.edgeInsets = NSEdgeInsets(top: 34, left: 6, bottom: 12, right: 6)
+        stack.edgeInsets = NSEdgeInsets(top: 10, left: 6, bottom: 12, right: 6)
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
         NSLayoutConstraint.activate([
