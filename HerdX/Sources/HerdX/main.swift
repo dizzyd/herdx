@@ -33,6 +33,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var preferences = Preferences.current
     private var preferencesWindow: PreferencesWindowController?
     private var appearanceObserver: NSKeyValueObservation?
+    /// What was last sent to the server, so an unchanged theme is not resent.
+    private var publishedTheme: [UInt8]?
+    /// The appearance the current theme was resolved from.
+    private var appliedSystemIsDark: Bool?
     private let copyModeStatus = CopyModeStatusView()
     private let tabBar = TabBarView()
 
@@ -164,9 +168,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         applyTheme()
 
         // Follow the system when the user has not pinned an appearance.
+        //
+        // This fires whenever the effective appearance is re-evaluated, which
+        // includes the app being activated and deactivated, so act only when
+        // light/dark has genuinely flipped.
         appearanceObserver = NSApp.observe(\.effectiveAppearance) { [weak self] _, _ in
             DispatchQueue.main.async {
-                MainActor.assumeIsolated { self?.applyTheme() }
+                MainActor.assumeIsolated {
+                    guard let self, self.systemIsDark != self.appliedSystemIsDark else { return }
+                    self.applyTheme()
+                }
             }
         }
 
@@ -236,6 +247,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// host's palette, so publishing ours keeps server-composed output matching
     /// what the app draws.
     private func applyTheme() {
+        appliedSystemIsDark = systemIsDark
         let theme = preferences.theme(matching: systemIsDark)
         gridView.theme = theme
         gridView.needsDisplay = true
@@ -251,12 +263,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         publish(theme: theme)
     }
 
-    private func publish(theme: Theme) {
+    /// Tells the server our colours, but only when they actually change.
+    ///
+    /// Programs inside a pane watch the terminal's background and re-theme
+    /// themselves when it moves. Republishing an unchanged theme still counts
+    /// as a change to them, so doing it on every appearance re-evaluation —
+    /// which includes activating and deactivating the app — made panes flip
+    /// between light and dark as you switched windows.
+    private func publish(theme: Theme, force: Bool = false) {
         guard let session else { return }
-        let background = theme.rgbBytes(of: theme.background)
-        let foreground = theme.rgbBytes(of: theme.foreground)
-        session.setDefaultColor(foreground: false, rgb: background)
-        session.setDefaultColor(foreground: true, rgb: foreground)
+        let fingerprint =
+            [theme.rgbBytes(of: theme.background), theme.rgbBytes(of: theme.foreground)]
+            .flatMap { [$0.0, $0.1, $0.2] } + theme.paletteBytes
+        guard force || fingerprint != publishedTheme else { return }
+        publishedTheme = fingerprint
+
+        session.setDefaultColor(foreground: false, rgb: theme.rgbBytes(of: theme.background))
+        session.setDefaultColor(foreground: true, rgb: theme.rgbBytes(of: theme.foreground))
         session.setPalette(theme.paletteBytes)
         session.setAppearance(dark: theme.background.isDarkish)
     }
@@ -316,7 +339,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 cellHeight: Int(self.gridView.cellSize.height))
         }
         window.subtitle = ""
-        publish(theme: preferences.theme(matching: systemIsDark))
+        publishedTheme = nil
+        publish(theme: preferences.theme(matching: systemIsDark), force: true)
         // The view is laid out by now, so tell the server the real size; the
         // size used for the handshake was whatever existed before layout.
         gridView.reportGridSize()
