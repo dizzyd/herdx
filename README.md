@@ -189,10 +189,20 @@ the one call that requires it, so it retries once against a fresher revision.
 
 Light mode is not the dark palette inverted — the same hues at dark-mode
 luminance are unreadable on white — so the two palettes are tuned separately.
-The app publishes its default colours, ANSI palette and appearance to the
-server, because the server resolves `Reset` colours and its own chrome against
-the host palette; without that, server-composed output drifts from what the app
-draws.
+The app does **not** publish its palette to the server by default. Nothing here
+needs it to: `Reset` cells resolve against the theme locally. The only consumer
+is the program inside the pane, which watches the terminal's background and
+re-themes itself when it moves — and re-queries on events like focus changes,
+which made panes flip between light and dark as the app was activated and
+deactivated. `HERDX_PUBLISH_THEME=1` restores it for anyone who wants agents to
+match the window.
+
+It matters more than it looks because herdr is multi-client. The server keeps a
+host theme per client and applies whichever one is *foreground*, chosen by a
+monotonic activity stamp. With this app and a herdr TUI attached to the same
+session, each publishing a different background, the pane re-themed every time
+focus moved between them — and switched back as soon as you typed, because
+typing made that client foreground again.
 
 Cells carrying explicit colours still come from the program in the pane, so an
 agent with a dark theme stays dark inside a light window. That is the program's

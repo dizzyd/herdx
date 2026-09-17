@@ -263,15 +263,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         publish(theme: theme)
     }
 
-    /// Tells the server our colours, but only when they actually change.
+    /// Tells the server our colours.
     ///
-    /// Programs inside a pane watch the terminal's background and re-theme
-    /// themselves when it moves. Republishing an unchanged theme still counts
-    /// as a change to them, so doing it on every appearance re-evaluation —
-    /// which includes activating and deactivating the app — made panes flip
-    /// between light and dark as you switched windows.
+    /// Off by default. Programs inside a pane watch the terminal's background
+    /// and re-theme themselves when it moves, and they re-query it on events
+    /// like focus changes — which made panes flip between light and dark as the
+    /// app was activated and deactivated. Nothing here needs the server to know
+    /// our palette: `Reset` cells resolve against the theme locally, in
+    /// `PackedColor`. So the only effect of publishing is on the pane's own
+    /// program, and stability is worth more than having agents match the
+    /// window.
+    ///
+    /// `HERDX_PUBLISH_THEME=1` restores it for anyone who wants that matching.
     private func publish(theme: Theme, force: Bool = false) {
-        guard let session else { return }
+        guard ProcessInfo.processInfo.environment["HERDX_PUBLISH_THEME"] != nil,
+            let session
+        else { return }
+
         let fingerprint =
             [theme.rgbBytes(of: theme.background), theme.rgbBytes(of: theme.foreground)]
             .flatMap { [$0.0, $0.1, $0.2] } + theme.paletteBytes
