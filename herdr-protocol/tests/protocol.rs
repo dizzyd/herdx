@@ -5,11 +5,11 @@
 //! contract this client actually depends on, using herdr's own frozen
 //! generation-1 fixtures from the pinned submodule.
 
-use herdr_core::protocol::endpoint::{
+use herdr_protocol::protocol::endpoint::{
     EndpointClientHello, EndpointServerWelcome, ENDPOINT_PROTOCOL_GENERATION, INPUT_CODEC_V1,
     SNAPSHOT_CODEC_V1, SURFACE_CODEC_V1,
 };
-use herdr_core::protocol::{
+use herdr_protocol::protocol::{
     read_message, write_message, ClientMessage, ClientShellSnapshot, MAX_FRAME_SIZE,
 };
 
@@ -120,7 +120,7 @@ fn oversized_frames_are_rejected() {
 // ---------------------------------------------------------------------------
 
 mod shim_parity {
-    use herdr_core::detect::{agent_label, Agent};
+    use herdr_protocol::detect::{agent_label, Agent};
 
     /// The vendored module our `detect` shim mirrors.
     const UPSTREAM: &str = include_str!("upstream/detect_mod.rs");

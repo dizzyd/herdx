@@ -33,19 +33,24 @@ Two consequences worth stating plainly:
   as JSON in `ClientShellSnapshot`, so the sidebar and tab bar are real AppKit
   views, not a picture of a TUI.
 
-## `herdr-core`
+## Crates
 
-Rather than hand-writing a bincode implementation in Swift, `herdr-core` reuses
-herdr's own protocol sources directly from the pinned `vendor/herdr` submodule.
-`herdr-core/src` mirrors herdr's module layout with symlinks, so the wire codec
-is bit-identical to the server's and tracks the submodule automatically.
+| Crate | What it is |
+| --- | --- |
+| `herdr-protocol` | herdr's own protocol sources, vendored. Carries `test = false`, because herdr's `#[cfg(test)]` modules reach into subsystems omitted here. |
+| `herdr-core` | Everything we write: connection, handshake, surface model, C ABI. Ordinary unit tests. |
+
+Rather than hand-writing a bincode implementation in Swift, `herdr-protocol`
+reuses herdr's own sources directly from the pinned `vendor/herdr` submodule.
+`herdr-protocol/src` mirrors herdr's module layout with symlinks, so the wire
+codec is bit-identical to the server's and tracks the submodule automatically.
 
 Only what a *client* needs is included. Deliberately omitted:
 
 | Omitted | Why |
 | --- | --- |
 | `protocol::render_ansi` | Server-side ANSI encoder, and the only file under `protocol/` that needs `libghostty-vt` — which would pull a **Zig toolchain** into this build. |
-| `detect`, `platform`, `sound` | Replaced by small local shims (`src/detect.rs`, `src/platform.rs`, `src/sound.rs`). The real ones reach into PTY spawning, `interprocess` and embedded MP3 assets for a handful of types. None are wire-visible; `tests/protocol.rs` fails loudly if upstream's definitions drift. |
+| `detect`, `platform`, `sound` | Replaced by small local shims. The real ones reach into PTY spawning, `interprocess` and embedded MP3 assets for a handful of types. None are wire-visible; `tests/protocol.rs` fails loudly if upstream's definitions drift. |
 
 The result builds with a plain `cargo build` — no Zig, no tokio, no PTY.
 
@@ -58,8 +63,14 @@ Two lanes, with different guarantees:
   ignored by design.
 - **Private bincode variants** (`PaneSurface`, `PaneSurfacePatch`) — positional
   tags. Safe only while the vendored `PROTOCOL_VERSION` matches the server's
-  `private_protocol`. `EndpointConnection::version_note()` reports a mismatch so
-  it surfaces as an error instead of a mis-decoded frame.
+  `private_protocol`. `herdr-protocol`'s build script reads the pinned herdr
+  version out of the submodule so `EndpointConnection::version_note()` can
+  report a mismatch, instead of silently mis-decoding a frame.
+
+Surfaces arrive either complete or as sparse row spans against the last
+committed revision. A patch that does not build on the surface we hold is
+refused and the last coherent frame stays on screen until the server sends a
+complete one — a stitched grid is worse than a slightly stale one.
 
 ## Status
 
@@ -69,14 +80,13 @@ Two lanes, with different guarantees:
 - [x] Swift app: cell-grid renderer, native sidebar, ⌘ chords + `ctrl+b` prefix
 - [ ] Mouse input, selection and copy mode
 - [ ] Promote panes to real `NSView`s (the patch-routing seam is already in place)
-- [ ] Incremental `PaneSurfacePatch` application (full surfaces only today)
 - [ ] Kitty graphics, ligatures, font configuration
 
 ## Development
 
 ```sh
 git submodule update --init
-cargo test -p herdr-core                   # protocol + shim-drift guards
+cargo test                                 # protocol guards, shim drift, surface model
 cargo run -p herdr-core --example probe    # handshake against a running server
 cargo run -p herdr-core --example dump     # print the current surface as text
 ./scripts/bundle.sh                        # build build/HerdX.app

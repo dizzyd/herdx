@@ -7,11 +7,11 @@ use std::io;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
-use crate::protocol::endpoint::{
+use herdr_protocol::protocol::endpoint::{
     EndpointClientHello, EndpointServerWelcome, ENDPOINT_HELLO_KIND, ENDPOINT_PROTOCOL_GENERATION,
     ENDPOINT_WELCOME_KIND, BLOB_CODEC_V1, INPUT_CODEC_V1, SNAPSHOT_CODEC_V1, SURFACE_CODEC_V1,
 };
-use crate::protocol::{
+use herdr_protocol::protocol::{
     read_message, write_message, ClientMessage, ClientSurfaceSize, ServerMessage,
 };
 
@@ -98,7 +98,7 @@ impl EndpointConnection {
         )
         .map_err(|e| io::Error::other(e.to_string()))?;
 
-        let reply: ServerMessage = read_message(&mut stream, crate::protocol::MAX_FRAME_SIZE)
+        let reply: ServerMessage = read_message(&mut stream, herdr_protocol::protocol::MAX_FRAME_SIZE)
             .map_err(|e| io::Error::other(e.to_string()))?;
 
         let ServerMessage::EndpointControl { kind, data } = reply else {
@@ -137,7 +137,7 @@ impl EndpointConnection {
     /// incompatibly, so equal versions mean the surface lane is safe. Callers
     /// should surface a mismatch rather than trust rendered output.
     pub fn version_note(&self) -> Option<String> {
-        let vendored = crate::build_info::version();
+        let vendored = herdr_protocol::build_info::version();
         if self.welcome.server_version == vendored {
             return None;
         }
@@ -165,7 +165,7 @@ impl EndpointConnection {
     }
 
     pub fn recv(&mut self) -> io::Result<ServerMessage> {
-        read_message(&mut self.stream, crate::protocol::MAX_FRAME_SIZE)
+        read_message(&mut self.stream, herdr_protocol::protocol::MAX_FRAME_SIZE)
             .map_err(|e| io::Error::other(e.to_string()))
     }
 }

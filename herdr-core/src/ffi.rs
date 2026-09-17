@@ -17,7 +17,9 @@ fn LAST_CONNECT_ERROR() -> &'static Mutex<Option<String>> {
 }
 
 use crate::client::{default_socket_path, hello, EndpointConnection};
-use crate::protocol::{CellData, ClientMessage, ServerMessage};
+use herdr_protocol::protocol::{
+    CellData, ClientMessage, PaneSurfaceFrame, PaneSurfacePatch, ServerMessage,
+};
 
 /// One terminal cell, laid out for direct consumption by the renderer.
 ///
@@ -78,9 +80,13 @@ pub struct HxGrid {
 }
 
 #[derive(Default, Clone)]
-struct Grid {
+pub(crate) struct Grid {
     width: u16,
     height: u16,
+    /// The authoritative cells. Patches arrive as sparse row spans against the
+    /// last committed surface, so the full grid has to be kept to apply them;
+    /// `cells`/`glyphs` below are just a flattened view of this.
+    source: Vec<CellData>,
     cells: Vec<HxCell>,
     glyphs: Vec<u8>,
     cursor_x: u16,
@@ -93,34 +99,101 @@ struct Grid {
 }
 
 impl Grid {
-    fn ingest_panes(&mut self, panes: &[crate::protocol::PaneSurfacePane]) {
-        self.panes.clear();
-        self.pane_ids.clear();
-        for pane in panes {
-            self.panes.push(HxPane {
-                x: pane.rect.x,
-                y: pane.rect.y,
-                width: pane.rect.width,
-                height: pane.rect.height,
-                inner_x: pane.inner_rect.x,
-                inner_y: pane.inner_rect.y,
-                inner_width: pane.inner_rect.width,
-                inner_height: pane.inner_rect.height,
-                focused: pane.focused,
-                alternate_screen: pane.alternate_screen_active,
-                id_index: self.pane_ids.len() as u32,
-            });
-            self.pane_ids.push(pane.pane_id.clone());
+    /// Installs a complete surface, replacing whatever came before.
+    fn replace(&mut self, frame: &PaneSurfaceFrame) {
+        self.width = frame.frame.width;
+        self.height = frame.frame.height;
+        self.source = frame.frame.cells.clone();
+        self.revision = frame.surface_revision;
+        self.set_cursor(frame.frame.cursor.as_ref());
+        self.replace_panes(&frame.panes);
+        self.flatten();
+    }
+
+    /// Applies one incremental patch.
+    ///
+    /// Returns false when the patch does not build on the surface we hold. That
+    /// happens after a dropped or reordered frame; the caller leaves the last
+    /// good surface on screen until the server sends a complete one, which is
+    /// better than rendering a grid stitched from mismatched revisions.
+    fn apply_patch(&mut self, patch: &PaneSurfacePatch) -> bool {
+        if self.source.is_empty() || patch.base_surface_revision != self.revision {
+            return false;
+        }
+        let width = usize::from(self.width);
+        for row in &patch.rows {
+            let start = usize::from(row.y) * width + usize::from(row.x);
+            let Some(slice) = self.source.get_mut(start..start + row.cells.len()) else {
+                // A span outside the grid means we are out of sync with the
+                // server's idea of the surface size; force a full redraw.
+                return false;
+            };
+            slice.clone_from_slice(&row.cells);
+        }
+        self.merge_panes(&patch.panes);
+        if patch.cursor.is_some() {
+            self.set_cursor(patch.cursor.as_ref());
+        }
+        self.revision = patch.surface_revision;
+        self.flatten();
+        true
+    }
+
+    fn set_cursor(&mut self, cursor: Option<&herdr_protocol::protocol::CursorState>) {
+        match cursor {
+            Some(cursor) => {
+                self.cursor_x = cursor.x;
+                self.cursor_y = cursor.y;
+                self.cursor_visible = cursor.visible;
+                self.cursor_shape = cursor.shape;
+            }
+            None => self.cursor_visible = false,
         }
     }
 
-    fn ingest(&mut self, width: u16, height: u16, cells: &[CellData], revision: u64) {
-        self.width = width;
-        self.height = height;
-        self.revision = revision;
+    fn replace_panes(&mut self, panes: &[herdr_protocol::protocol::PaneSurfacePane]) {
+        self.panes.clear();
+        self.pane_ids.clear();
+        for pane in panes {
+            let id_index = self.pane_ids.len() as u32;
+            self.pane_ids.push(pane.pane_id.clone());
+            self.panes.push(Self::pane(pane, id_index));
+        }
+    }
+
+    /// A patch carries metadata only for panes whose content changed, so these
+    /// update matching entries in place rather than replacing the set.
+    fn merge_panes(&mut self, panes: &[herdr_protocol::protocol::PaneSurfacePane]) {
+        for pane in panes {
+            if let Some(index) = self.pane_ids.iter().position(|id| *id == pane.pane_id) {
+                let id_index = self.panes[index].id_index;
+                self.panes[index] = Self::pane(pane, id_index);
+            }
+        }
+    }
+
+    fn pane(pane: &herdr_protocol::protocol::PaneSurfacePane, id_index: u32) -> HxPane {
+        HxPane {
+            x: pane.rect.x,
+            y: pane.rect.y,
+            width: pane.rect.width,
+            height: pane.rect.height,
+            inner_x: pane.inner_rect.x,
+            inner_y: pane.inner_rect.y,
+            inner_width: pane.inner_rect.width,
+            inner_height: pane.inner_rect.height,
+            focused: pane.focused,
+            alternate_screen: pane.alternate_screen_active,
+            id_index,
+        }
+    }
+
+    /// Packs the cells into the flat form the renderer reads.
+    fn flatten(&mut self) {
         self.cells.clear();
         self.glyphs.clear();
-        for cell in cells {
+        self.cells.reserve(self.source.len());
+        for cell in &self.source {
             let bytes = cell.symbol.as_bytes();
             let off = self.glyphs.len() as u32;
             self.glyphs.extend_from_slice(bytes);
@@ -192,7 +265,7 @@ pub unsafe extern "C" fn hx_session_connect(
         Ok(mut writer) => {
             std::thread::spawn(move || {
                 for message in rx {
-                    if crate::protocol::write_message(&mut writer, &message).is_err() {
+                    if herdr_protocol::protocol::write_message(&mut writer, &message).is_err() {
                         return;
                     }
                 }
@@ -208,25 +281,23 @@ pub unsafe extern "C" fn hx_session_connect(
     std::thread::spawn(move || loop {
         match conn.recv() {
             Ok(ServerMessage::PaneSurface(frame)) => {
+                loop_shared.grid.lock().unwrap().replace(&frame);
+            }
+            Ok(ServerMessage::PaneSurfacePatch(patch)) => {
                 let mut grid = loop_shared.grid.lock().unwrap();
-                grid.ingest(
-                    frame.frame.width,
-                    frame.frame.height,
-                    &frame.frame.cells,
-                    frame.surface_revision,
-                );
-                grid.ingest_panes(&frame.panes);
-                if let Some(cursor) = &frame.frame.cursor {
-                    grid.cursor_x = cursor.x;
-                    grid.cursor_y = cursor.y;
-                    grid.cursor_visible = cursor.visible;
-                    grid.cursor_shape = cursor.shape;
-                } else {
-                    grid.cursor_visible = false;
+                if !grid.apply_patch(&patch) {
+                    // Keep the last coherent surface rather than a stitched
+                    // one, and wait for the server's next complete frame.
+                    let held = grid.revision;
+                    drop(grid);
+                    *loop_shared.error.lock().unwrap() = Some(format!(
+                        "ignored surface patch {} built on revision {}; holding revision {held}",
+                        patch.surface_revision, patch.base_surface_revision
+                    ));
                 }
             }
             Ok(ServerMessage::EndpointControl { kind, data })
-                if kind == crate::protocol::endpoint::ENDPOINT_SNAPSHOT_KIND =>
+                if kind == herdr_protocol::protocol::endpoint::ENDPOINT_SNAPSHOT_KIND =>
             {
                 *loop_shared.snapshot_json.lock().unwrap() = Some(data);
             }
@@ -438,8 +509,8 @@ pub const HX_KEY_INSERT: u16 = 14;
 pub const HX_KEY_ESC: u16 = 15;
 pub const HX_KEY_F1: u16 = 16;
 
-fn key_code(kind: u16, codepoint: u32) -> Option<crate::protocol::ClientKeyCode> {
-    use crate::protocol::ClientKeyCode as K;
+fn key_code(kind: u16, codepoint: u32) -> Option<herdr_protocol::protocol::ClientKeyCode> {
+    use herdr_protocol::protocol::ClientKeyCode as K;
     Some(match kind {
         HX_KEY_CHAR => K::Char(char::from_u32(codepoint)?),
         HX_KEY_BACKSPACE => K::Backspace,
@@ -489,10 +560,10 @@ pub unsafe extern "C" fn hx_send_key(
         .outbound
         .send(ClientMessage::ClientShellPaneInput {
             pane_id: pane_id.to_owned(),
-            events: vec![crate::protocol::ClientPaneInputEvent::Key {
+            events: vec![herdr_protocol::protocol::ClientPaneInputEvent::Key {
                 code,
                 modifiers,
-                kind: crate::protocol::ClientKeyKind::Press,
+                kind: herdr_protocol::protocol::ClientKeyKind::Press,
                 repeat_count: 1,
                 shifted_codepoint: None,
                 generated_text: None,
@@ -529,7 +600,7 @@ pub unsafe extern "C" fn hx_send_text(
         .outbound
         .send(ClientMessage::ClientShellPaneInput {
             pane_id: pane_id.to_owned(),
-            events: vec![crate::protocol::ClientPaneInputEvent::TextCommit(
+            events: vec![herdr_protocol::protocol::ClientPaneInputEvent::TextCommit(
                 text.to_owned(),
             )],
         })
@@ -556,8 +627,187 @@ pub unsafe extern "C" fn hx_resize(
         .send(ClientMessage::ClientShellResize {
             cell_width_px,
             cell_height_px,
-            surface_size: crate::protocol::ClientSurfaceSize { cols, rows },
+            surface_size: herdr_protocol::protocol::ClientSurfaceSize { cols, rows },
             pixel_mouse: true,
         })
         .is_ok()
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use herdr_protocol::protocol::{
+        CursorState, FrameData, PaneSurfacePatchRow, PaneSurfaceScrollMetrics, SurfaceRect,
+    };
+
+    fn cell(symbol: &str) -> CellData {
+        CellData {
+            symbol: symbol.to_owned(),
+            fg: 0x0200_0000,
+            bg: 0,
+            modifier: 0,
+            skip: false,
+            hyperlink: None,
+        }
+    }
+
+    fn pane(id: &str) -> herdr_protocol::protocol::PaneSurfacePane {
+        herdr_protocol::protocol::PaneSurfacePane {
+            pane_id: id.to_owned(),
+            content_revision: 1,
+            rect: SurfaceRect { x: 0, y: 0, width: 3, height: 2 },
+            inner_rect: SurfaceRect { x: 0, y: 0, width: 3, height: 2 },
+            scrollbar_rect: None,
+            scroll: Some(PaneSurfaceScrollMetrics {
+                offset_from_bottom: 0,
+                max_offset_from_bottom: 0,
+                viewport_rows: 2,
+            }),
+            focused: true,
+            mouse_reporting: false,
+            sgr_pixel_mouse: false,
+            alternate_screen_active: false,
+            pixel_width: 24,
+            pixel_height: 32,
+        }
+    }
+
+    /// A 3x2 surface reading "abc" / "def".
+    fn surface(revision: u64) -> PaneSurfaceFrame {
+        PaneSurfaceFrame {
+            boot_id: "boot".into(),
+            projection_revision: 1,
+            surface_revision: revision,
+            frame: FrameData {
+                cells: ["a", "b", "c", "d", "e", "f"].iter().map(|s| cell(s)).collect(),
+                width: 3,
+                height: 2,
+                cursor: Some(CursorState { x: 1, y: 0, visible: true, shape: 2 }),
+                hyperlinks: Vec::new(),
+                graphics: Vec::new(),
+            },
+            panes: vec![pane("p1")],
+            splits: Vec::new(),
+            popup: None,
+            graphics: Default::default(),
+        }
+    }
+
+    fn patch(base: u64, revision: u64, rows: Vec<PaneSurfacePatchRow>) -> PaneSurfacePatch {
+        PaneSurfacePatch {
+            boot_id: "boot".into(),
+            projection_revision: 1,
+            base_surface_revision: base,
+            surface_revision: revision,
+            rows,
+            panes: Vec::new(),
+            cursor: None,
+        }
+    }
+
+    fn text(grid: &Grid) -> String {
+        grid.source.iter().map(|c| c.symbol.as_str()).collect()
+    }
+
+    #[test]
+    fn full_surface_populates_the_flattened_view() {
+        let mut grid = Grid::default();
+        grid.replace(&surface(1));
+
+        assert_eq!(text(&grid), "abcdef");
+        assert_eq!(grid.cells.len(), 6);
+        assert_eq!(grid.pane_ids, vec!["p1".to_string()]);
+        assert!(grid.cursor_visible);
+        assert_eq!((grid.cursor_x, grid.cursor_y, grid.cursor_shape), (1, 0, 2));
+    }
+
+    #[test]
+    fn patch_updates_only_the_spans_it_carries() {
+        let mut grid = Grid::default();
+        grid.replace(&surface(1));
+
+        let applied = grid.apply_patch(&patch(
+            1,
+            2,
+            vec![PaneSurfacePatchRow { x: 1, y: 1, cells: vec![cell("X"), cell("Y")] }],
+        ));
+
+        assert!(applied);
+        assert_eq!(text(&grid), "abcdXY");
+        assert_eq!(grid.revision, 2);
+    }
+
+    /// The flattened glyph buffer has to be rebuilt after a patch, or the
+    /// renderer keeps drawing the old text from stale offsets.
+    #[test]
+    fn patch_rebuilds_the_flattened_glyphs() {
+        let mut grid = Grid::default();
+        grid.replace(&surface(1));
+        grid.apply_patch(&patch(
+            1,
+            2,
+            vec![PaneSurfacePatchRow { x: 0, y: 0, cells: vec![cell("Z")] }],
+        ));
+
+        let first = &grid.cells[0];
+        let bytes = &grid.glyphs
+            [first.glyph_off as usize..first.glyph_off as usize + first.glyph_len as usize];
+        assert_eq!(std::str::from_utf8(bytes).unwrap(), "Z");
+    }
+
+    #[test]
+    fn patch_against_a_different_revision_is_refused() {
+        let mut grid = Grid::default();
+        grid.replace(&surface(1));
+
+        let applied = grid.apply_patch(&patch(
+            7,
+            8,
+            vec![PaneSurfacePatchRow { x: 0, y: 0, cells: vec![cell("X")] }],
+        ));
+
+        assert!(!applied, "a patch built on another surface must not be applied");
+        assert_eq!(text(&grid), "abcdef", "the last good surface must survive");
+        assert_eq!(grid.revision, 1);
+    }
+
+    /// A span reaching past the grid means we disagree with the server about
+    /// the surface size; better to hold than to panic or corrupt the view.
+    #[test]
+    fn out_of_bounds_span_is_refused_without_panicking() {
+        let mut grid = Grid::default();
+        grid.replace(&surface(1));
+
+        let applied = grid.apply_patch(&patch(
+            1,
+            2,
+            vec![PaneSurfacePatchRow {
+                x: 2,
+                y: 1,
+                cells: vec![cell("X"), cell("Y"), cell("Z")],
+            }],
+        ));
+
+        assert!(!applied);
+        assert_eq!(grid.revision, 1);
+    }
+
+    #[test]
+    fn patch_pane_metadata_merges_in_place() {
+        let mut grid = Grid::default();
+        grid.replace(&surface(1));
+
+        let mut updated = pane("p1");
+        updated.focused = false;
+        updated.alternate_screen_active = true;
+        let mut p = patch(1, 2, Vec::new());
+        p.panes = vec![updated];
+        assert!(grid.apply_patch(&p));
+
+        assert_eq!(grid.panes.len(), 1, "a patch must not duplicate panes");
+        assert!(!grid.panes[0].focused);
+        assert!(grid.panes[0].alternate_screen);
+        assert_eq!(grid.pane_ids, vec!["p1".to_string()]);
+    }
 }
