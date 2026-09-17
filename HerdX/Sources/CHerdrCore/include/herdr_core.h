@@ -82,6 +82,35 @@ char *hx_last_error(const HxSession *session);
 char *hx_connect_error(void);
 void hx_string_free(char *s);
 
+// Mouse kinds.
+#define HX_MOUSE_DOWN 0
+#define HX_MOUSE_UP 1
+#define HX_MOUSE_DRAG 2
+#define HX_MOUSE_MOVED 3
+#define HX_MOUSE_SCROLL_UP 4
+#define HX_MOUSE_SCROLL_DOWN 5
+#define HX_MOUSE_SCROLL_LEFT 6
+#define HX_MOUSE_SCROLL_RIGHT 7
+
+#define HX_BUTTON_LEFT 0
+#define HX_BUTTON_RIGHT 1
+#define HX_BUTTON_MIDDLE 2
+
+/// One mouse event in surface coordinates.
+typedef struct {
+  uint16_t kind;
+  uint8_t button;
+  uint16_t column;
+  uint16_t row;
+  uint32_t pixel_x;
+  uint32_t pixel_y;
+  uint8_t modifiers;
+  uint16_t lines;
+} HxMouseEvent;
+
+bool hx_send_mouse(const HxSession *session, const char *pane_id,
+                   const HxMouseEvent *event);
+
 bool hx_send_key(const HxSession *session, const char *pane_id, uint16_t kind,
                  uint32_t codepoint, uint8_t modifiers);
 bool hx_send_text(const HxSession *session, const char *pane_id, const char *text);

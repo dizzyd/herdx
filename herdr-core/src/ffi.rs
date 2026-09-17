@@ -215,8 +215,21 @@ struct Shared {
     connected: AtomicBool,
 }
 
+/// The surface geometry last negotiated with the server.
+///
+/// Mouse events carry it so panes running SGR pixel mouse (mode 1016) get exact
+/// coordinates rather than cell-rounded ones.
+#[derive(Clone, Copy)]
+struct Geometry {
+    cols: u16,
+    rows: u16,
+    cell_width_px: u32,
+    cell_height_px: u32,
+}
+
 pub struct HxSession {
     shared: Arc<Shared>,
+    geometry: Mutex<Geometry>,
     /// Render-thread-private copy. `hx_grid_acquire` refreshes it from the
     /// receive thread's buffer, so pointers handed to the caller stay valid
     /// without holding a lock across the FFI boundary.
@@ -312,6 +325,12 @@ pub unsafe extern "C" fn hx_session_connect(
 
     Box::into_raw(Box::new(HxSession {
         shared,
+        geometry: Mutex::new(Geometry {
+            cols,
+            rows,
+            cell_width_px,
+            cell_height_px,
+        }),
         front: Grid::default(),
         outbound: tx,
     }))
@@ -622,6 +641,12 @@ pub unsafe extern "C" fn hx_resize(
     let Some(session) = session.as_ref() else {
         return false;
     };
+    *session.geometry.lock().unwrap() = Geometry {
+        cols,
+        rows,
+        cell_width_px,
+        cell_height_px,
+    };
     session
         .outbound
         .send(ClientMessage::ClientShellResize {
@@ -793,6 +818,82 @@ mod tests {
         assert_eq!(grid.revision, 1);
     }
 
+    fn geometry() -> Geometry {
+        Geometry { cols: 80, rows: 24, cell_width_px: 9, cell_height_px: 16 }
+    }
+
+    fn mouse(kind: u16, button: u8, lines: u16) -> HxMouseEvent {
+        HxMouseEvent {
+            kind,
+            button,
+            column: 4,
+            row: 3,
+            pixel_x: 40,
+            pixel_y: 52,
+            modifiers: 0,
+            lines,
+        }
+    }
+
+    #[test]
+    fn mouse_events_map_to_their_protocol_kinds() {
+        use herdr_protocol::protocol::{ClientMouseButton as B, ClientMouseKind as K};
+        let cases = [
+            (HX_MOUSE_DOWN, HX_BUTTON_LEFT, K::Down(B::Left)),
+            (HX_MOUSE_UP, HX_BUTTON_RIGHT, K::Up(B::Right)),
+            (HX_MOUSE_DRAG, HX_BUTTON_MIDDLE, K::Drag(B::Middle)),
+            (HX_MOUSE_SCROLL_UP, HX_BUTTON_LEFT, K::ScrollUp),
+            (HX_MOUSE_SCROLL_DOWN, HX_BUTTON_LEFT, K::ScrollDown),
+        ];
+        for (kind, button, expected) in cases {
+            assert_eq!(mouse_kind(kind, button), Some(expected), "kind {kind}");
+        }
+        assert_eq!(mouse_kind(999, HX_BUTTON_LEFT), None);
+        assert_eq!(mouse_kind(HX_MOUSE_DOWN, 42), None);
+    }
+
+    /// Panes running SGR pixel mouse need exact pixel geometry, so the message
+    /// must carry the real surface size rather than a cell-rounded guess.
+    #[test]
+    fn mouse_message_carries_exact_pixel_geometry() {
+        use herdr_protocol::protocol::{ClientMouseGeometry, ClientMousePosition, ClientPaneInputEvent};
+        let kind = mouse_kind(HX_MOUSE_DOWN, HX_BUTTON_LEFT).unwrap();
+        let message = mouse_message("p1", &mouse(HX_MOUSE_DOWN, HX_BUTTON_LEFT, 0), kind, geometry());
+
+        let ClientMessage::ClientShellPaneInput { pane_id, events } = message else {
+            panic!("mouse input must target a pane");
+        };
+        assert_eq!(pane_id, "p1");
+        let ClientPaneInputEvent::Mouse { position, geometry: g, lines, .. } = &events[0] else {
+            panic!("expected a mouse event");
+        };
+        assert_eq!(
+            *position,
+            ClientMousePosition::Pixels { x: 40, y: 52, column: 4, row: 3 }
+        );
+        assert_eq!(
+            *g,
+            Some(ClientMouseGeometry { cols: 80, rows: 24, width_px: 720, height_px: 384 })
+        );
+        assert_eq!(*lines, 1, "a zero-row scroll should still move one row");
+    }
+
+    #[test]
+    fn scroll_rows_are_preserved() {
+        let kind = mouse_kind(HX_MOUSE_SCROLL_DOWN, HX_BUTTON_LEFT).unwrap();
+        let message = mouse_message(
+            "p1",
+            &mouse(HX_MOUSE_SCROLL_DOWN, HX_BUTTON_LEFT, 5),
+            kind,
+            geometry(),
+        );
+        let ClientMessage::ClientShellPaneInput { events, .. } = message else { unreachable!() };
+        let herdr_protocol::protocol::ClientPaneInputEvent::Mouse { lines, .. } = &events[0] else {
+            unreachable!()
+        };
+        assert_eq!(*lines, 5);
+    }
+
     #[test]
     fn patch_pane_metadata_merges_in_place() {
         let mut grid = Grid::default();
@@ -809,5 +910,125 @@ mod tests {
         assert!(!grid.panes[0].focused);
         assert!(grid.panes[0].alternate_screen);
         assert_eq!(grid.pane_ids, vec!["p1".to_string()]);
+    }
+}
+
+
+// ---------------------------------------------------------------------------
+// Mouse
+// ---------------------------------------------------------------------------
+
+pub const HX_MOUSE_DOWN: u16 = 0;
+pub const HX_MOUSE_UP: u16 = 1;
+pub const HX_MOUSE_DRAG: u16 = 2;
+pub const HX_MOUSE_MOVED: u16 = 3;
+pub const HX_MOUSE_SCROLL_UP: u16 = 4;
+pub const HX_MOUSE_SCROLL_DOWN: u16 = 5;
+pub const HX_MOUSE_SCROLL_LEFT: u16 = 6;
+pub const HX_MOUSE_SCROLL_RIGHT: u16 = 7;
+
+pub const HX_BUTTON_LEFT: u8 = 0;
+pub const HX_BUTTON_RIGHT: u8 = 1;
+pub const HX_BUTTON_MIDDLE: u8 = 2;
+
+/// One mouse event in surface coordinates.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct HxMouseEvent {
+    pub kind: u16,
+    pub button: u8,
+    /// Cell coordinates, relative to the surface origin.
+    pub column: u16,
+    pub row: u16,
+    /// Pixel coordinates within the surface, for SGR pixel mouse.
+    pub pixel_x: u32,
+    pub pixel_y: u32,
+    pub modifiers: u8,
+    /// Rows to move for a scroll event.
+    pub lines: u16,
+}
+
+fn mouse_kind(kind: u16, button: u8) -> Option<herdr_protocol::protocol::ClientMouseKind> {
+    use herdr_protocol::protocol::{ClientMouseButton as B, ClientMouseKind as K};
+    let button = match button {
+        HX_BUTTON_LEFT => B::Left,
+        HX_BUTTON_RIGHT => B::Right,
+        HX_BUTTON_MIDDLE => B::Middle,
+        _ => return None,
+    };
+    Some(match kind {
+        HX_MOUSE_DOWN => K::Down(button),
+        HX_MOUSE_UP => K::Up(button),
+        HX_MOUSE_DRAG => K::Drag(button),
+        HX_MOUSE_MOVED => K::Moved,
+        HX_MOUSE_SCROLL_UP => K::ScrollUp,
+        HX_MOUSE_SCROLL_DOWN => K::ScrollDown,
+        HX_MOUSE_SCROLL_LEFT => K::ScrollLeft,
+        HX_MOUSE_SCROLL_RIGHT => K::ScrollRight,
+        _ => return None,
+    })
+}
+
+/// Delivers one mouse event to a pane.
+///
+/// The server decides what it means: a pane whose program requested mouse
+/// reporting gets the event encoded for it, and otherwise herdr treats scrolls
+/// as history navigation. That policy is deliberately not duplicated here.
+///
+/// # Safety
+/// `session` must be live, `pane_id` valid NUL-terminated UTF-8, and `event`
+/// must point to a readable `HxMouseEvent`.
+#[no_mangle]
+pub unsafe extern "C" fn hx_send_mouse(
+    session: *const HxSession,
+    pane_id: *const c_char,
+    event: *const HxMouseEvent,
+) -> bool {
+    let (Some(session), false, false) = (session.as_ref(), pane_id.is_null(), event.is_null())
+    else {
+        return false;
+    };
+    let Ok(pane_id) = CStr::from_ptr(pane_id).to_str() else {
+        return false;
+    };
+    let event = *event;
+    let Some(kind) = mouse_kind(event.kind, event.button) else {
+        return false;
+    };
+
+    let geometry = *session.geometry.lock().unwrap();
+    session
+        .outbound
+        .send(mouse_message(pane_id, &event, kind, geometry))
+        .is_ok()
+}
+
+fn mouse_message(
+    pane_id: &str,
+    event: &HxMouseEvent,
+    kind: herdr_protocol::protocol::ClientMouseKind,
+    geometry: Geometry,
+) -> ClientMessage {
+    ClientMessage::ClientShellPaneInput {
+        pane_id: pane_id.to_owned(),
+        events: vec![herdr_protocol::protocol::ClientPaneInputEvent::Mouse {
+            kind,
+            position: herdr_protocol::protocol::ClientMousePosition::Pixels {
+                x: event.pixel_x,
+                y: event.pixel_y,
+                column: event.column,
+                row: event.row,
+            },
+            geometry: Some(herdr_protocol::protocol::ClientMouseGeometry {
+                cols: geometry.cols,
+                rows: geometry.rows,
+                width_px: u32::from(geometry.cols) * geometry.cell_width_px,
+                height_px: u32::from(geometry.rows) * geometry.cell_height_px,
+            }),
+            modifiers: event.modifiers,
+            // A scroll of zero rows would be a no-op the server still has to
+            // process; treat it as the single row the gesture implied.
+            lines: event.lines.max(1),
+        }],
     }
 }

@@ -78,7 +78,8 @@ complete one — a stitched grid is worse than a slightly stale one.
 - [x] Generation-1 handshake, snapshot and pane surfaces verified against a live server
 - [x] C ABI shim
 - [x] Swift app: cell-grid renderer, native sidebar, ⌘ chords + `ctrl+b` prefix
-- [ ] Mouse input, selection and copy mode
+- [x] Mouse input: click-to-focus, drag, right-click, scroll
+- [ ] Selection and copy mode
 - [ ] Promote panes to real `NSView`s (the patch-routing seam is already in place)
 - [ ] Kitty graphics, ligatures, font configuration
 

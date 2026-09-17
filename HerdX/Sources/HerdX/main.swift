@@ -52,6 +52,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 cellWidth: Int(cell.width), cellHeight: Int(cell.height))
             self.session = session
             gridView.session = session
+            gridView.onFocusPane = { [weak self] paneID in
+                guard let self else { return }
+                self.invoke(.focusPane(paneID), session: session)
+            }
             gridView.onResize = { [weak self] cols, rows in
                 guard let self, let cell = self.gridView?.cellSize else { return }
                 session.resize(
@@ -90,6 +94,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard let session else { return }
         if session.pollSnapshot(), let snapshot = session.lastSnapshot {
             sidebar.update(with: snapshot)
+            gridView.focusedPaneFromSnapshot = snapshot.focusedPaneID
             if let focused = snapshot.workspaces.first(where: \.focused) {
                 window.title = "HerdX — \(focused.label)"
                 window.subtitle = focused.branch ?? ""

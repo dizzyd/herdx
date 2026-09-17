@@ -11,12 +11,32 @@ final class TerminalGridView: NSView {
     var session: HerdrSession?
     var theme: Theme = .default
     var onResize: ((Int, Int) -> Void)?
+    /// Raised when a click lands in a pane that does not have focus.
+    var onFocusPane: ((String) -> Void)?
 
     private(set) var cellSize: CGSize = .zero
     private var font: NSFont
     private var boldFont: NSFont
     private var lastRevision: UInt64 = .max
-    private var focusedPaneID: String?
+    /// Pane geometry from the last surface we drew.
+    ///
+    /// Cached because resolving it means crossing the FFI boundary and
+    /// allocating a string per pane, which is far too much work to repeat for
+    /// every mouse-moved and scroll event.
+    fileprivate var panes: [PaneView] = []
+
+    /// The focused pane, from the snapshot rather than the surface.
+    ///
+    /// The snapshot is the authority and arrives before the first surface, so
+    /// relying on the surface alone would drop keystrokes typed before the
+    /// first paint.
+    var focusedPaneFromSnapshot: String?
+
+    fileprivate var focusedPane: String? {
+        focusedPaneFromSnapshot ?? panes.first(where: \.focused)?.id
+    }
+
+    fileprivate var scrollAccumulator: CGFloat = 0
 
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
@@ -55,9 +75,10 @@ final class TerminalGridView: NSView {
     /// Called each tick; only repaints when the surface actually advanced.
     func refreshIfNeeded() {
         guard let session else { return }
-        let revision = session.withGrid { $0.revision }
-        guard let revision, revision != lastRevision else { return }
-        lastRevision = revision
+        let latest = session.withGrid { (revision: $0.revision, panes: $0.panes) }
+        guard let latest, latest.revision != lastRevision else { return }
+        lastRevision = latest.revision
+        panes = latest.panes
         needsDisplay = true
     }
 
@@ -68,7 +89,7 @@ final class TerminalGridView: NSView {
 
         guard let session else { return }
         session.withGrid { grid in
-            focusedPaneID = grid.panes.first(where: \.focused)?.id
+            panes = grid.panes
 
             // Route by pane so the per-pane seam stays real even with one view.
             if grid.panes.isEmpty {
@@ -194,7 +215,7 @@ final class TerminalGridView: NSView {
     // MARK: - Input
 
     override func keyDown(with event: NSEvent) {
-        guard let session, let pane = focusedPaneID else { return }
+        guard let session, let pane = focusedPane else { return }
         guard let mapped = KeyMapper.map(event) else {
             // Anything we do not classify travels as committed text, which lets
             // IME and dead keys work without us re-implementing composition.
@@ -210,5 +231,106 @@ final class TerminalGridView: NSView {
     override func becomeFirstResponder() -> Bool {
         needsDisplay = true
         return true
+    }
+}
+
+// MARK: - Mouse
+
+extension TerminalGridView {
+    /// Which pane covers a point, and where inside the surface it landed.
+    private func hit(_ event: NSEvent) -> (pane: PaneView, column: Int, row: Int)? {
+        guard cellSize.width > 0, cellSize.height > 0 else { return nil }
+        let point = convert(event.locationInWindow, from: nil)
+        let column = Int(point.x / cellSize.width)
+        let row = Int(point.y / cellSize.height)
+
+        let pane = panes.first {
+            column >= $0.rect.x && column < $0.rect.x + $0.rect.width
+                && row >= $0.rect.y && row < $0.rect.y + $0.rect.height
+        }
+        guard let pane else { return nil }
+        return (pane, column, row)
+    }
+
+    private func mouseEvent(
+        _ event: NSEvent, kind: UInt16, button: UInt8, column: Int, row: Int, lines: Int = 0
+    ) -> HxMouseEvent {
+        let point = convert(event.locationInWindow, from: nil)
+        return HxMouseEvent(
+            kind: kind,
+            button: button,
+            column: UInt16(max(column, 0)),
+            row: UInt16(max(row, 0)),
+            pixel_x: UInt32(max(point.x, 0)),
+            pixel_y: UInt32(max(point.y, 0)),
+            modifiers: KeyMapper.modifiers(event.modifierFlags),
+            lines: UInt16(max(lines, 0)))
+    }
+
+    private func send(_ event: NSEvent, kind: UInt16, button: UInt8) {
+        guard let session, let hit = hit(event) else { return }
+        // Clicking an unfocused pane focuses it. herdr leaves this to the
+        // client shell, which is us.
+        if kind == UInt16(HX_MOUSE_DOWN), !hit.pane.focused {
+            onFocusPane?(hit.pane.id)
+        }
+        session.send(
+            mouse: mouseEvent(event, kind: kind, button: button, column: hit.column, row: hit.row),
+            to: hit.pane.id)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+        send(event, kind: UInt16(HX_MOUSE_DOWN), button: UInt8(HX_BUTTON_LEFT))
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        send(event, kind: UInt16(HX_MOUSE_UP), button: UInt8(HX_BUTTON_LEFT))
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        send(event, kind: UInt16(HX_MOUSE_DRAG), button: UInt8(HX_BUTTON_LEFT))
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        send(event, kind: UInt16(HX_MOUSE_DOWN), button: UInt8(HX_BUTTON_RIGHT))
+    }
+
+    override func rightMouseUp(with event: NSEvent) {
+        send(event, kind: UInt16(HX_MOUSE_UP), button: UInt8(HX_BUTTON_RIGHT))
+    }
+
+    override func otherMouseDown(with event: NSEvent) {
+        send(event, kind: UInt16(HX_MOUSE_DOWN), button: UInt8(HX_BUTTON_MIDDLE))
+    }
+
+    override func otherMouseUp(with event: NSEvent) {
+        send(event, kind: UInt16(HX_MOUSE_UP), button: UInt8(HX_BUTTON_MIDDLE))
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        guard let session, let hit = hit(event) else { return }
+
+        // Trackpads report fractional pixel deltas; the protocol counts rows, so
+        // accumulate and only send whole ones. Otherwise a slow drag scrolls
+        // nothing at all, or a fast one scrolls wildly.
+        let delta: CGFloat
+        if event.hasPreciseScrollingDeltas {
+            scrollAccumulator += event.scrollingDeltaY
+            delta = (scrollAccumulator / cellSize.height).rounded(.towardZero)
+            scrollAccumulator -= delta * cellSize.height
+        } else {
+            delta = event.scrollingDeltaY
+        }
+        guard delta != 0 else { return }
+
+        // A natural-scrolling gesture reports positive deltaY when content
+        // should move down, which is a scroll *up* through history.
+        let kind = delta > 0 ? HX_MOUSE_SCROLL_UP : HX_MOUSE_SCROLL_DOWN
+        session.send(
+            mouse: mouseEvent(
+                event, kind: UInt16(kind), button: UInt8(HX_BUTTON_LEFT),
+                column: hit.column, row: hit.row, lines: Int(abs(delta))),
+            to: hit.pane.id)
     }
 }

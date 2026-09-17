@@ -122,6 +122,12 @@ final class HerdrSession {
         _ = pane.withCString { p in text.withCString { t in hx_send_text(handle, p, t) } }
     }
 
+    func send(mouse: HxMouseEvent, to pane: String) {
+        guard let handle else { return }
+        var event = mouse
+        _ = pane.withCString { hx_send_mouse(handle, $0, &event) }
+    }
+
     func resize(cols: Int, rows: Int, cellWidth: Int, cellHeight: Int) {
         guard let handle else { return }
         _ = hx_resize(handle, UInt16(cols), UInt16(rows), UInt32(cellWidth), UInt32(cellHeight))

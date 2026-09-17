@@ -10,6 +10,7 @@ enum Command {
     case focusLeft, focusDown, focusUp, focusRight
     case closePane, zoomPane
     case newWorkspace
+    case focusPane(String)
 
     var method: String {
         switch self {
@@ -21,6 +22,7 @@ enum Command {
         case .closePane: return "pane.close"
         case .zoomPane: return "pane.zoom"
         case .newWorkspace: return "workspace.create"
+        case .focusPane: return "pane.focus"
         }
     }
 
@@ -34,6 +36,7 @@ enum Command {
         case .focusRight: return ["direction": "right"]
         case .nextTab: return ["relative": 1]
         case .previousTab: return ["relative": -1]
+        case .focusPane(let id): return ["pane_id": id]
         default: return [:]
         }
     }
