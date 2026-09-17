@@ -1,0 +1,1 @@
+../../vendor/herdr/src/build_info.rs

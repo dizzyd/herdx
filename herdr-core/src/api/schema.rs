@@ -1,0 +1,1 @@
+../../../vendor/herdr/src/api/schema.rs
