@@ -20,7 +20,7 @@ final class TerminalGridView: NSView {
     /// Applied once as a translation when drawing, and subtracted again when
     /// hit-testing, so every cell-to-point conversion stays in plain cell
     /// coordinates.
-    private let contentInset: CGFloat = 8
+    private let contentInset: CGFloat = 4
     private var glyphs: GlyphRunDrawer
     private var lastRevision: UInt64 = .max
     /// Last grid size we told the server about, so a live drag does not send a
