@@ -82,8 +82,8 @@ complete one — a stitched grid is worse than a slightly stale one.
 - [x] Native notifications, clipboard (OSC 52), window title, bell
 - [x] Drag selection, double-click word, triple-click line, copy and paste
 - [x] Reconnects when the server restarts
+- [x] Real `NSView` per pane, with a native focus ring
 - [ ] Copy mode (`prefix+[`) and search
-- [ ] Promote panes to real `NSView`s (the patch-routing seam is already in place)
 - [x] Light and dark themes, font and appearance settings (⌘,)
 - [ ] Kitty graphics and ligatures
 
