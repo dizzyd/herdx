@@ -770,6 +770,40 @@ pub unsafe extern "C" fn hx_send_text(
         .is_ok()
 }
 
+/// Pastes text into a pane.
+///
+/// This is distinct from `hx_send_text`: herdr models a paste separately so the
+/// pane can wrap it in bracketed-paste markers when the program asked for them,
+/// which is what stops an editor from interpreting pasted text as commands.
+///
+/// # Safety
+/// `session` must be live and both strings valid NUL-terminated UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn hx_send_paste(
+    session: *const HxSession,
+    pane_id: *const c_char,
+    text: *const c_char,
+) -> bool {
+    let (Some(session), false, false) = (session.as_ref(), pane_id.is_null(), text.is_null()) else {
+        return false;
+    };
+    let (Ok(pane_id), Ok(text)) = (
+        CStr::from_ptr(pane_id).to_str(),
+        CStr::from_ptr(text).to_str(),
+    ) else {
+        return false;
+    };
+    session
+        .outbound
+        .send(ClientMessage::ClientShellPaneInput {
+            pane_id: pane_id.to_owned(),
+            events: vec![herdr_protocol::protocol::ClientPaneInputEvent::Paste(
+                text.to_owned(),
+            )],
+        })
+        .is_ok()
+}
+
 /// Tells the server the surface size changed.
 ///
 /// # Safety

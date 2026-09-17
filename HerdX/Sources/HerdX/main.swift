@@ -163,6 +163,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         editMenu.addItem(
             withTitle: "Copy", action: #selector(TerminalGridView.copy(_:)), keyEquivalent: "c")
         editMenu.addItem(
+            withTitle: "Paste", action: #selector(TerminalGridView.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(
             withTitle: "Select All", action: #selector(NSResponder.selectAll(_:)),
             keyEquivalent: "a")
         editItem.submenu = editMenu

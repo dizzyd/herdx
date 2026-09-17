@@ -155,6 +155,11 @@ final class HerdrSession {
         _ = pane.withCString { p in text.withCString { t in hx_send_text(handle, p, t) } }
     }
 
+    func send(paste text: String, to pane: String) {
+        guard let handle else { return }
+        _ = pane.withCString { p in text.withCString { t in hx_send_paste(handle, p, t) } }
+    }
+
     func send(mouse: HxMouseEvent, to pane: String) {
         guard let handle else { return }
         var event = mouse

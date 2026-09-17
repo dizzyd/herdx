@@ -80,7 +80,7 @@ complete one — a stitched grid is worse than a slightly stale one.
 - [x] Swift app: cell-grid renderer, native sidebar, ⌘ chords + `ctrl+b` prefix
 - [x] Mouse input: click-to-focus, drag, right-click, scroll
 - [x] Native notifications, clipboard (OSC 52), window title, bell
-- [x] Drag selection and copy (⌘C, ⌘A)
+- [x] Drag selection, double-click word, triple-click line, copy and paste
 - [ ] Copy mode (`prefix+[`) and search
 - [ ] Promote panes to real `NSView`s (the patch-routing seam is already in place)
 - [ ] Kitty graphics, ligatures, font configuration
@@ -95,6 +95,14 @@ cover scrollback the client never rendered.
 
 A program that asked for mouse reporting owns its drags, which is what keeps
 editors and pagers usable; hold ⌥ to select out of one anyway.
+
+Double-click reads the drawn cells rather than asking the server: a double-click
+targets something visible, so the rendered row is the right source. Word
+characters lean inclusive (`_-./~:@+=%#?&`) because what people double-click in a
+terminal is paths, URLs and identifiers.
+
+Paste is its own protocol event rather than committed text, so the pane can wrap
+it in bracketed-paste markers when the program asked for them.
 
 ### Rendering
 

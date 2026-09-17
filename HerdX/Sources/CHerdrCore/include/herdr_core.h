@@ -120,6 +120,7 @@ bool hx_send_mouse(const HxSession *session, const char *pane_id,
 bool hx_send_key(const HxSession *session, const char *pane_id, uint16_t kind,
                  uint32_t codepoint, uint8_t modifiers);
 bool hx_send_text(const HxSession *session, const char *pane_id, const char *text);
+bool hx_send_paste(const HxSession *session, const char *pane_id, const char *text);
 bool hx_resize(const HxSession *session, uint16_t cols, uint16_t rows,
                uint32_t cell_width_px, uint32_t cell_height_px);
 bool hx_endpoint_request(const HxSession *session, const char *boot_id, const char *request);

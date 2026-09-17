@@ -386,12 +386,17 @@ extension TerminalGridView {
         guard let hit = hit(event) else { return }
 
         if dragSelectsText(event, pane: hit.pane) {
-            let start = point(in: hit.pane, column: hit.column, row: hit.row)
-            selection = Selection(
-                paneID: hit.pane.id,
-                contentRevision: hit.pane.contentRevision,
-                anchor: start,
-                cursor: start)
+            switch event.clickCount {
+            case 2: selectWord(in: hit.pane, column: hit.column, row: hit.row)
+            case 3...: selectLine(in: hit.pane, row: hit.row)
+            default:
+                let start = point(in: hit.pane, column: hit.column, row: hit.row)
+                selection = Selection(
+                    paneID: hit.pane.id,
+                    contentRevision: hit.pane.contentRevision,
+                    anchor: start,
+                    cursor: start)
+            }
             needsDisplay = true
             if !hit.pane.focused { onFocusPane?(hit.pane.id) }
             return
@@ -418,6 +423,68 @@ extension TerminalGridView {
         send(event, kind: UInt16(HX_MOUSE_DRAG), button: UInt8(HX_BUTTON_LEFT))
     }
 
+    /// Characters a double-click treats as part of a word.
+    ///
+    /// Terminals lean inclusive here because the things worth double-clicking
+    /// are paths, URLs and identifiers rather than prose.
+    private static let wordCharacters = CharacterSet.alphanumerics
+        .union(CharacterSet(charactersIn: "_-./~:@+=%#?&"))
+
+    private func isWordCharacter(_ text: String) -> Bool {
+        guard let scalar = text.unicodeScalars.first, text.unicodeScalars.count >= 1 else {
+            return false
+        }
+        return Self.wordCharacters.contains(scalar)
+    }
+
+    /// Selects the word under a double-click.
+    ///
+    /// Only the visible row is inspected: a double-click targets something the
+    /// user can see, so the drawn cells are the right source and no round trip
+    /// to the server is needed.
+    private func selectWord(in pane: PaneView, column: Int, row: Int) {
+        guard let session else { return }
+        let localRow = row - pane.inner.y
+        let localColumn = column - pane.inner.x
+        guard localRow >= 0, localRow < pane.inner.height,
+            localColumn >= 0, localColumn < pane.inner.width
+        else { return }
+
+        let bounds: (start: Int, end: Int)? = session.withGrid { grid in
+            func text(at localColumn: Int) -> String {
+                let x = pane.inner.x + localColumn
+                let y = pane.inner.y + localRow
+                guard x < grid.width, y < grid.height else { return " " }
+                return grid.glyph(grid.cells[y * grid.width + x])
+            }
+            guard isWordCharacter(text(at: localColumn)) else { return nil }
+
+            var start = localColumn
+            while start > 0, isWordCharacter(text(at: start - 1)) { start -= 1 }
+            var end = localColumn
+            while end + 1 < pane.inner.width, isWordCharacter(text(at: end + 1)) { end += 1 }
+            return (start, end)
+        } ?? nil
+
+        guard let bounds else { return }
+        let absolute = pane.viewportTopRow + UInt64(localRow)
+        selection = Selection(
+            paneID: pane.id,
+            contentRevision: pane.contentRevision,
+            anchor: Selection.Point(row: absolute, column: bounds.start),
+            cursor: Selection.Point(row: absolute, column: bounds.end))
+    }
+
+    private func selectLine(in pane: PaneView, row: Int) {
+        let localRow = (row - pane.inner.y).clamped(to: 0...max(pane.inner.height - 1, 0))
+        let absolute = pane.viewportTopRow + UInt64(localRow)
+        selection = Selection(
+            paneID: pane.id,
+            contentRevision: pane.contentRevision,
+            anchor: Selection.Point(row: absolute, column: 0),
+            cursor: Selection.Point(row: absolute, column: max(pane.inner.width - 1, 0)))
+    }
+
     /// Copies the selection by asking the server for its text.
     ///
     /// The grid only holds what is on screen, and a selection can cover
@@ -428,6 +495,13 @@ extension TerminalGridView {
             let request = selection.readRequest(id: "selection-\(UUID().uuidString)")
         else { return }
         onReadSelection?(request)
+    }
+
+    @objc func paste(_ sender: Any?) {
+        guard let session, let pane = focusedPane,
+            let text = NSPasteboard.general.string(forType: .string), !text.isEmpty
+        else { return }
+        session.send(paste: text, to: pane)
     }
 
     override func selectAll(_ sender: Any?) {
