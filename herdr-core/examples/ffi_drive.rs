@@ -23,8 +23,22 @@ fn main() {
 
         // Switch machines part-way, which is what clicking a sidebar row does.
         let switch_to: Option<usize> = std::env::args().nth(1).and_then(|a| a.parse().ok());
+        // Or focus a workspace, which is the other thing a sidebar row does.
+        let focus_workspace = std::env::var("FOCUS_WORKSPACE").ok();
+        let mut boot_id = String::new();
 
         for tick in 0..16 {
+            if tick == 4 {
+                if let Some(workspace) = &focus_workspace {
+                    let request = format!(
+                        r#"{{"id":"ws","method":"workspace.focus","params":{{"workspace_id":"{workspace}"}}}}"#
+                    );
+                    let ok = std::ffi::CString::new(request).unwrap();
+                    let boot = std::ffi::CString::new(boot_id.clone()).unwrap();
+                    println!(">> focusing workspace {workspace} (boot {boot_id}): {}",
+                        hx_endpoint_request(session, boot.as_ptr(), ok.as_ptr()));
+                }
+            }
             if Some(tick) == switch_to.map(|_| 5) {
                 let target = switch_to.unwrap();
                 println!(">> switching to endpoint {target}: {}",
@@ -45,6 +59,15 @@ fn main() {
                 let snapshot = text(hx_endpoint_snapshot_json(session, index));
                 if !snapshot.is_empty() {
                     line.push_str(&format!(" snapshot={}b", snapshot.len()));
+                    if index == active {
+                        if let Some(id) = snapshot
+                            .split(r#""boot_id":""#)
+                            .nth(1)
+                            .and_then(|rest| rest.split('"').next())
+                        {
+                            boot_id = id.to_owned();
+                        }
+                    }
                 }
             }
 
@@ -59,7 +82,27 @@ fn main() {
             }
             println!("{line}");
 
-            if tick == 5 && grid.width > 0 {
+            if grid.width > 0 && focus_workspace.is_some() {
+                let cells = std::slice::from_raw_parts(grid.cells, grid.cell_count);
+                let glyphs = std::slice::from_raw_parts(grid.glyphs, grid.glyph_bytes);
+                let all: String = cells
+                    .iter()
+                    .map(|c| {
+                        let start = c.glyph_off as usize;
+                        std::str::from_utf8(&glyphs[start..start + c.glyph_len as usize])
+                            .unwrap_or(" ")
+                    })
+                    .collect();
+                let marker = if all.contains("AAAA-WORKSPACE-ONE") {
+                    "shows W1"
+                } else if all.contains("BBBB-WORKSPACE-TWO") {
+                    "shows W2"
+                } else {
+                    "shows neither"
+                };
+                println!("   {marker}");
+            }
+            if tick == 5 && grid.width > 0 && focus_workspace.is_none() {
                 let cells = std::slice::from_raw_parts(grid.cells, grid.cell_count);
                 let glyphs = std::slice::from_raw_parts(grid.glyphs, grid.glyph_bytes);
                 let non_blank = cells

@@ -83,8 +83,11 @@ pub fn hello(cols: u16, rows: u16, cell_width_px: u32, cell_height_px: u32) -> E
         endpoint_keybindings: false,
         mouse_capture: true,
         surface_active: true,
-        surface_reuse: true,
-        surface_delta: true,
+        // Only advertised once decoded: a server that supports these stops
+        // sending plain surfaces entirely, so claiming them without handling
+        // them leaves the view frozen on whatever arrived first.
+        surface_reuse: false,
+        surface_delta: false,
         snapshot_codecs: vec![SNAPSHOT_CODEC_V1.into()],
         surface_codecs: vec![SURFACE_CODEC_V1.into()],
         input_codecs: vec![INPUT_CODEC_V1.into()],

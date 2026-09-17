@@ -374,6 +374,11 @@ struct Shared {
     /// server has been told. They differ while a switch waits for a boot id.
     desired_surface: AtomicBool,
     applied_surface: AtomicBool,
+    /// The surface size, so a resync can ask for the size we already have.
+    geometry: Mutex<Geometry>,
+    /// Set while a resync request is outstanding, so one refused patch does not
+    /// produce a resize per frame.
+    resync_pending: AtomicBool,
     snapshot_json: Mutex<Option<String>>,
     error: Mutex<Option<String>>,
     events: Mutex<std::collections::VecDeque<String>>,
@@ -543,6 +548,8 @@ fn spawn_endpoint(
         boot_id: Mutex::new(None),
         desired_surface: AtomicBool::new(surface_active),
         applied_surface: AtomicBool::new(surface_active),
+        geometry: Mutex::new(geometry),
+        resync_pending: AtomicBool::new(false),
         snapshot_json: Mutex::new(None),
         error: Mutex::new(None),
         events: Mutex::new(std::collections::VecDeque::new()),
@@ -630,6 +637,28 @@ fn spawn_endpoint(
 }
 
 /// Reads from one endpoint until it goes away.
+/// Asks the server for a complete surface after we had to refuse a patch.
+///
+/// The server tracks surface revisions per connection and has no idea a patch
+/// was rejected, so it keeps sending patches built on a revision we no longer
+/// hold and every one is refused — the view freezes until something forces a
+/// recompute. A resize does, even at the size we already have.
+fn request_resync(shared: &Shared, outbound: &std::sync::mpsc::Sender<ClientMessage>) {
+    if shared.resync_pending.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let geometry = *shared.geometry.lock().unwrap();
+    let _ = outbound.send(ClientMessage::ClientShellResize {
+        cell_width_px: geometry.cell_width_px,
+        cell_height_px: geometry.cell_height_px,
+        surface_size: herdr_protocol::protocol::ClientSurfaceSize {
+            cols: geometry.cols,
+            rows: geometry.rows,
+        },
+        pixel_mouse: true,
+    });
+}
+
 /// Asks the server to start or stop composing a surface for this connection.
 ///
 /// Returns false when the boot id is not known yet; the caller retries when the
@@ -670,18 +699,22 @@ fn receive_loop(
         Ok(ServerMessage::PaneSurface(frame)) => {
             let mut assets = loop_shared.assets.lock().unwrap();
             loop_shared.grid.lock().unwrap().replace(&frame, &mut assets);
+            loop_shared.resync_pending.store(false, Ordering::Release);
         }
         Ok(ServerMessage::PaneSurfacePatch(patch)) => {
             let mut grid = loop_shared.grid.lock().unwrap();
             if !grid.apply_patch(&patch) {
-                // Keep the last coherent surface rather than a stitched
-                // one, and wait for the server's next complete frame.
+                // Keep the last coherent surface rather than a stitched one,
+                // and ask for a complete one: the server does not know the
+                // patch was refused, so without this every later patch is
+                // refused too and the view stops updating.
                 let held = grid.revision;
                 drop(grid);
                 *loop_shared.error.lock().unwrap() = Some(format!(
-                    "ignored surface patch {} built on revision {}; holding revision {held}",
+                    "refused surface patch {} built on revision {}; held {held} and asked for a full surface",
                     patch.surface_revision, patch.base_surface_revision
                 ));
+                request_resync(&loop_shared, &outbound);
             }
         }
         Ok(ServerMessage::EndpointControl { kind, data })
@@ -1406,6 +1439,12 @@ pub unsafe extern "C" fn hx_resize(
     // Tell every endpoint, not just the active one: switching machines should
     // not show a surface composed for the wrong window size.
     for endpoint in &session.endpoints {
+        *endpoint.shared.geometry.lock().unwrap() = Geometry {
+            cols,
+            rows,
+            cell_width_px,
+            cell_height_px,
+        };
         let _ = endpoint.outbound.send(ClientMessage::ClientShellResize {
             cell_width_px,
             cell_height_px,
@@ -1613,6 +1652,13 @@ mod tests {
             boot_id: Mutex::new(None),
             desired_surface: AtomicBool::new(false),
             applied_surface: AtomicBool::new(false),
+            geometry: Mutex::new(Geometry {
+                cols: 80,
+                rows: 24,
+                cell_width_px: 8,
+                cell_height_px: 16,
+            }),
+            resync_pending: AtomicBool::new(false),
             snapshot_json: Mutex::new(None),
             error: Mutex::new(None),
             events: Mutex::new(std::collections::VecDeque::new()),
@@ -1688,6 +1734,47 @@ mod tests {
     /// The server rejects a command carrying an unknown boot id with
     /// `stale_boot`, so the request must wait for a snapshot rather than go out
     /// with a placeholder — which silently left the new machine blank.
+    /// A refused patch must trigger a request for a complete surface. The
+    /// server does not know the patch was refused, so without this every later
+    /// patch is refused too and the view silently stops updating.
+    #[test]
+    fn a_refused_patch_asks_for_a_full_surface() {
+        let shared = shared();
+        let (tx, rx) = std::sync::mpsc::channel();
+        *shared.geometry.lock().unwrap() = Geometry {
+            cols: 100,
+            rows: 40,
+            cell_width_px: 9,
+            cell_height_px: 18,
+        };
+
+        request_resync(&shared, &tx);
+
+        let ClientMessage::ClientShellResize { surface_size, .. } = rx.try_recv().unwrap() else {
+            panic!("a resync should ask for a resize, which forces a recompute");
+        };
+        assert_eq!((surface_size.cols, surface_size.rows), (100, 40));
+    }
+
+    /// One refused patch must not produce a resize per frame.
+    #[test]
+    fn resync_requests_do_not_pile_up() {
+        let shared = shared();
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        request_resync(&shared, &tx);
+        request_resync(&shared, &tx);
+        request_resync(&shared, &tx);
+
+        assert!(rx.try_recv().is_ok());
+        assert!(rx.try_recv().is_err(), "only one request until a surface lands");
+
+        // A complete surface clears the flag, so a later desync can recover.
+        shared.resync_pending.store(false, Ordering::Release);
+        request_resync(&shared, &tx);
+        assert!(rx.try_recv().is_ok());
+    }
+
     #[test]
     fn surface_state_waits_for_a_boot_id() {
         let shared = shared();
