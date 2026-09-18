@@ -72,6 +72,11 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BUILT" "$APP/Contents/MacOS/HerdX"
 
+# The binary links herdr's Apache-2.0 sources (see NOTICE), and section 4(a)
+# asks that recipients of the *artifact* get the licence — a copy sitting in the
+# repo does nothing for someone who only ever sees the .dmg.
+cp "$ROOT/LICENSE" "$ROOT/NOTICE" "$APP/Contents/Resources/"
+
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

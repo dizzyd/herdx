@@ -1,0 +1,26 @@
+HerdX
+Copyright 2026 Dave (Dizzy) Smith
+
+Licensed under the Apache License, Version 2.0. See LICENSE.
+
+--------------------------------------------------------------------------
+
+This product includes software from herdr (https://github.com/herdrdev/herdr),
+Copyright the herdr authors, licensed under the Apache License, Version 2.0.
+
+herdr is not merely a runtime dependency here. The `herdr-protocol` crate
+compiles herdr's own sources directly: most of `herdr-protocol/src` is
+symlinks into the pinned `vendor/herdr` submodule, so herdr's code is linked
+into the shipped HerdX binary. Those files are used unmodified.
+
+Three files in `herdr-protocol/src` are not symlinks. They are stand-ins
+written for this project, and each reproduces a small type definition from the
+corresponding herdr module so that the vendored code compiles against them:
+
+  detect.rs     the `Agent` enum and its labels
+  platform.rs   one `cfg!()`-derived constant
+  sound.rs      the `Sound` discriminant
+
+The submodule is pinned; `herdr-protocol/src/lib.rs` records which herdr
+release, and `herdr-protocol/tests/protocol.rs` fails if upstream's
+definitions drift away from the stand-ins.

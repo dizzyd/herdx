@@ -321,3 +321,14 @@ gets checked: capture late enough to land after a server restart.
 The window is laid out off-screen and never activates, so this does not steal
 focus or appear on any display. It also avoids `screencapture -R`, which picks
 the wrong display on multi-monitor setups.
+
+## Licence
+
+HerdX is Apache-2.0; see `LICENSE`.
+
+That is not an independent choice. `herdr-protocol` compiles herdr's own
+Apache-2.0 sources — the symlinks described under [Crates](#crates) — so herdr's
+code is linked into the shipped binary, and the licence travels with it. `NOTICE`
+records what comes from herdr and what the three local shims reproduce, and
+`bundle.sh` copies both files into `HerdX.app/Contents/Resources` so the `.dmg`
+carries them rather than leaving them behind in the repo.
