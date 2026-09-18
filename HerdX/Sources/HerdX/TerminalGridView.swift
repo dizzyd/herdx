@@ -109,6 +109,13 @@ final class TerminalGridView: NSView {
     /// like, taken as a whole.
     private(set) var dominantBackground: NSColor?
 
+    /// The colour most of the text is drawn in.
+    ///
+    /// Read for the same reason as the background: when another client is the
+    /// one herdr is taking its host theme from, both of these are that
+    /// client's, which is the only way to find out what it is.
+    private(set) var dominantForeground: NSColor?
+
     /// Cells the server keeps around the outside for its own pane borders.
     ///
     /// herdr draws a box around every pane and reports each pane's `inner`
@@ -328,6 +335,29 @@ final class TerminalGridView: NSView {
 
         measureDeadCells(session)
 
+        dominantForeground = session.withGrid { grid in
+            var counts: [UInt32: Int] = [:]
+            for pane in panes {
+                let maxY = min(pane.inner.y + pane.inner.height, grid.height)
+                let maxX = min(pane.inner.x + pane.inner.width, grid.width)
+                guard maxX > pane.inner.x, maxY > pane.inner.y else { continue }
+                for row in pane.inner.y..<maxY {
+                    let base = row * grid.width
+                    for column in pane.inner.x..<maxX {
+                        let cell = grid.cells[base + column]
+                        // Blank cells carry a foreground nothing was drawn in,
+                        // and there are far more of them than of text.
+                        guard cell.glyph_len > 0 else { continue }
+                        counts[cell.fg, default: 0] += 1
+                    }
+                }
+            }
+            return counts.max { $0.value < $1.value }.map { packed in
+                PackedColor(packed.key, theme: theme, isForeground: true)
+                    .resolved(theme: theme, isForeground: true)
+            }
+        } ?? nil
+
         // Weighted by area, so one small pane running a coloured program does
         // not repaint the whole window.
         dominantBackground =
@@ -374,6 +404,19 @@ final class TerminalGridView: NSView {
         // wrong by exactly this much. It settles on the next surface, because
         // the ring a server draws does not depend on how big the surface is.
         reportGridSize()
+    }
+
+    /// The background every pane shares, when they all share one.
+    ///
+    /// A host theme colours the whole session, so it shows up in every pane at
+    /// once. A program that sets its own colours only colours the pane it is
+    /// running in — which is the difference between "another client is themed
+    /// differently" and "vim is open".
+    var uniformBackground: NSColor? {
+        guard !panes.isEmpty else { return nil }
+        let colours = panes.compactMap { paneBackgrounds[$0.id] }
+        guard colours.count == panes.count, let first = colours.first else { return nil }
+        return colours.allSatisfy { !$0.isNoticeablyDifferent(from: first) } ? first : nil
     }
 
     /// The colour to lay a pane down on, and to leave showing in its padding.

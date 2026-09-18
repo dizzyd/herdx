@@ -30,6 +30,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     /// The colour the panes are actually painted in, when it differs from the
     /// configured background.
     private var observedBackground: NSColor?
+    /// The colours another client attached to this session is using.
+    ///
+    /// herdr keeps one host theme for the whole session and applies whichever
+    /// client was last active — so with a second client attached, the terminal
+    /// changes colour every time you switch apps. Nothing HerdX publishes can
+    /// stop that; the only way out is for both clients to hold the same theme.
+    ///
+    /// When the other client is the one herdr is taking its theme from, its
+    /// colours arrive baked into the cells, which is what this remembers.
+    private(set) var attachedTerminal: (background: NSColor, foreground: NSColor)?
     /// Identifies the newest transient notice, so an older one's timer does not
     /// clear it.
     private var noticeToken = 0
@@ -403,6 +413,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
                 }
             }
         }
+        // Told each time it opens: what is attached can change while it is shut.
+        preferencesWindow?.attachedTerminal = attachedTerminal
+        preferencesWindow?.refresh()
         preferencesWindow?.showWindow(nil)
         preferencesWindow?.window?.makeKeyAndOrderFront(nil)
     }
@@ -549,6 +562,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
             themedEndpoints = online
         }
 
+        noteAttachedTerminal()
         watchMachines()
         offerInstallIfNeeded(session)
         sidebar.update(endpoints: session.endpoints, active: session.activeEndpoint)
@@ -983,6 +997,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
 
     @objc private func showMachines(_ sender: Any?) {
         machinesWindow.present()
+    }
+
+    /// Remembers the colours when they are not the ones we asked for.
+    ///
+    /// A surface painted in colours we did not publish was composed against
+    /// another client's host theme, so those are its colours.
+    private func noteAttachedTerminal() {
+        // Every pane, not the dominant one: a host theme colours the whole
+        // session at once, while a program with its own palette colours only
+        // the pane it runs in.
+        guard let background = gridView.uniformBackground,
+            let foreground = gridView.dominantForeground
+        else { return }
+        let ours = Chrome(theme: terminalTheme, background: nil)
+        guard background.isNoticeablyDifferent(from: ours.content) else {
+            return
+        }
+        attachedTerminal = (background, foreground)
     }
 
     /// Picks up machines added or removed outside this window.

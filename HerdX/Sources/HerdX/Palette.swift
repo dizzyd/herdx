@@ -147,3 +147,20 @@ extension NSColor {
         return luma < 0.5
     }
 }
+
+extension NSColor {
+    /// Whether two colours would read as different on screen.
+    ///
+    /// A tolerance rather than equality: the same colour can make the round
+    /// trip through a composed surface a shade off, and a comparison that
+    /// called that a difference would see one everywhere.
+    func isNoticeablyDifferent(from other: NSColor) -> Bool {
+        guard let a = usingColorSpace(.sRGB), let b = other.usingColorSpace(.sRGB) else {
+            return false
+        }
+        let distance =
+            abs(a.redComponent - b.redComponent) + abs(a.greenComponent - b.greenComponent)
+            + abs(a.blueComponent - b.blueComponent)
+        return distance > 0.05
+    }
+}

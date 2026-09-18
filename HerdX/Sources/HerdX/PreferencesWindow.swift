@@ -19,6 +19,11 @@ final class PreferencesWindowController: NSWindowController {
     private let labelStepper = NSStepper()
     private let lineField = NSTextField()
     private let lineStepper = NSStepper()
+    private let matchButton = NSButton()
+    private let matchNote = NSTextField(labelWithString: "")
+    /// Colours another client attached to the same session is using, when there
+    /// is one. Supplied by the app, which is what watches the surface.
+    var attachedTerminal: (background: NSColor, foreground: NSColor)?
     private let backgroundWell = NSColorWell()
     private let foregroundWell = NSColorWell()
 
@@ -135,11 +140,27 @@ final class PreferencesWindowController: NSWindowController {
         let preset = NSButton(title: "Use Preset", target: self, action: #selector(usePreset))
         preset.bezelStyle = .rounded
 
+        matchButton.title = "Match Attached Terminal"
+        matchButton.bezelStyle = .rounded
+        matchButton.target = self
+        matchButton.action = #selector(matchAttached)
+
         let colours = NSStackView(views: [
             backgroundWell, caption("background"), foregroundWell, caption("text"), preset,
         ])
         colours.orientation = .horizontal
         colours.spacing = 6
+
+        matchNote.font = .systemFont(ofSize: 11)
+        matchNote.textColor = .secondaryLabelColor
+        matchNote.lineBreakMode = .byWordWrapping
+        matchNote.maximumNumberOfLines = 3
+        matchNote.preferredMaxLayoutWidth = 300
+
+        let match = NSStackView(views: [matchButton, matchNote])
+        match.orientation = .vertical
+        match.alignment = .leading
+        match.spacing = 4
 
         let grid = NSGridView(views: [
             [label("Font:"), font],
@@ -147,6 +168,7 @@ final class PreferencesWindowController: NSWindowController {
             [label("Appearance:"), appearancePopUp],
             [label("Terminal:"), terminalPopUp],
             [label("Colours:"), colours],
+            [NSGridCell.emptyContentView, match],
             [label("Pane padding:"), padding],
             [label("Pane label:"), labelSize],
             [label("Line height:"), lineHeight],
@@ -180,7 +202,7 @@ final class PreferencesWindowController: NSWindowController {
     }
 
     /// Reflects the stored preferences in the controls.
-    private func refresh() {
+    func refresh() {
         let font = preferences.font
         // The system monospace face reports an internal name like
         // ".SF NS Mono Light Regular", which is not what to show someone.
@@ -213,6 +235,20 @@ final class PreferencesWindowController: NSWindowController {
         paddingStepper.doubleValue = Double(preferences.panePadding)
         labelField.stringValue = String(format: "%.0f", preferences.paneLabelSize)
         labelStepper.doubleValue = Double(preferences.paneLabelSize)
+        if let attached = attachedTerminal {
+            matchButton.isEnabled = true
+            matchNote.stringValue =
+                "Another terminal is attached to this session. herdr gives the whole "
+                + "session one theme and applies whichever client you used last, so the "
+                + "colours change as you switch. Matching it stops that."
+            backgroundWell.toolTip = Preferences.encode(attached.background)
+        } else {
+            matchButton.isEnabled = false
+            matchNote.stringValue =
+                "Nothing else is attached to this session, so these colours are the "
+                + "ones you will see."
+        }
+
         lineField.stringValue = String(format: "%.0f", preferences.lineHeight * 100)
         lineStepper.doubleValue = Double(preferences.lineHeight * 100)
     }
@@ -274,6 +310,15 @@ final class PreferencesWindowController: NSWindowController {
     @objc private func colourChanged() {
         preferences.background = backgroundWell.color
         preferences.foreground = foregroundWell.color
+        apply()
+    }
+
+    /// Adopts the other client's colours, which is the only thing that stops
+    /// the terminal changing colour as you switch between them.
+    @objc private func matchAttached() {
+        guard let attached = attachedTerminal else { return }
+        preferences.background = attached.background
+        preferences.foreground = attached.foreground
         apply()
     }
 
