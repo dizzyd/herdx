@@ -26,6 +26,7 @@ extension Command {
         case .focusWorkspace: return 16
         case .copyMode: return 17
         case .closeTabWithID: return 18
+        case .help: return 19
         }
     }
 
@@ -33,7 +34,7 @@ extension Command {
         let all: [Command] = [
             .newTab, .closeTab, .nextTab, .previousTab, .splitRight, .splitDown,
             .focusLeft, .focusDown, .focusUp, .focusRight, .closePane, .zoomPane, .newWorkspace,
-            .copyMode,
+            .copyMode, .help,
         ]
         return Dictionary(uniqueKeysWithValues: all.map { ($0.tag, $0) })
     }()
@@ -67,5 +68,8 @@ extension Command {
         // duplicate equivalent to whichever item it finds first, so copy mode
         // was unreachable from the menu.
         ("Copy Mode", Key(equivalent: "c", modifiers: [.command, .option]), .copyMode),
+        ("", Key(equivalent: "", modifiers: []), .newTab),
+        // Shift-command-slash is what a Mac calls Help.
+        ("Keyboard Shortcuts", Key(equivalent: "/", modifiers: [.command, .shift]), .help),
     ]
 }

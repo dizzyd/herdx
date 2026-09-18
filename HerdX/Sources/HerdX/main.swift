@@ -47,6 +47,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var appliedSystemIsDark: Bool?
     private let copyModeStatus = CopyModeStatusView()
     private let tabBar = TabBarView()
+    private let help = HelpSheet()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         preferences = Preferences.current
@@ -536,6 +537,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             window.makeFirstResponder(gridView)
             return
         }
+        // Likewise client-side: the keymap is ours, so herdr has nothing to
+        // say about it and no method to ask.
+        if case .help = command {
+            help.show(over: window)
+            return
+        }
         guard let boot = bootID ?? session.lastSnapshot?.bootID,
             let json = command.requestJSON(id: UUID().uuidString)
         else { return }
@@ -700,12 +707,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             MainActor.assumeIsolated {
             guard let self else { NSApp.terminate(nil); return }
 
-            // `HERDX_CAPTURE_SETTINGS` shoots the Settings window instead of
-            // the main one, which is otherwise impossible to see headlessly.
-            let settings = ProcessInfo.processInfo.environment["HERDX_CAPTURE_SETTINGS"] != nil
+            // `HERDX_CAPTURE_SETTINGS` and `HERDX_CAPTURE_HELP` shoot those
+            // windows instead of the main one, which is otherwise impossible to
+            // see headlessly.
+            let environment = ProcessInfo.processInfo.environment
+            let settings = environment["HERDX_CAPTURE_SETTINGS"] != nil
+            let helpWanted = environment["HERDX_CAPTURE_HELP"] != nil
             if settings { self.showPreferences(nil) }
-            guard let view = settings
-                ? self.preferencesWindow?.window?.contentView : self.window.contentView
+            if helpWanted, let session = self.session {
+                self.invoke(.help, session: session)
+            }
+            let target: NSView? =
+                settings
+                ? self.preferencesWindow?.window?.contentView
+                : (helpWanted
+                    ? self.window.attachedSheet?.contentView : self.window.contentView)
+            guard let view = target
             else {
                 NSApp.terminate(nil)
                 return
@@ -718,6 +735,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             {
                 try? data.write(to: URL(fileURLWithPath: path))
             }
+            // A sheet holds terminate off until it closes, so the capture would
+            // write its file and then hang forever.
+            if let sheet = self.window.attachedSheet { self.window.endSheet(sheet) }
             NSApp.terminate(nil)
             }
         }

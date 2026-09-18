@@ -16,6 +16,8 @@ enum Command {
     case closeTabWithID(String)
     /// Handled entirely in the client; it has no endpoint method.
     case copyMode
+    /// Likewise: the keymap is ours, so the reference to it has to be ours too.
+    case help
 
     var method: String {
         switch self {
@@ -31,7 +33,7 @@ enum Command {
         case .focusTab: return "tab.focus"
         case .focusWorkspace: return "workspace.focus"
         case .closeTabWithID: return "tab.close"
-        case .copyMode: return ""
+        case .copyMode, .help: return ""
         }
     }
 
@@ -62,6 +64,20 @@ enum Command {
     }
 }
 
+/// One key of the `ctrl+b` keymap.
+struct PrefixBinding {
+    let key: String
+    /// Whether shift is what distinguishes this from another binding on the
+    /// same key. Only meaningful where two bindings share one.
+    let shift: Bool
+    let command: Command
+    let title: String
+
+    /// How the key reads in the help: a shifted letter is the capital, and
+    /// punctuation already carries its own shift.
+    var label: String { shift && key.count == 1 ? key.uppercased() : key }
+}
+
 /// Resolves keystrokes to commands.
 ///
 /// Two schemes run side by side, because both are muscle memory for somebody:
@@ -75,6 +91,26 @@ final class ChordResolver {
 
     /// herdr's default prefix is ctrl+b.
     private let prefixKeyCode = 11  // 'b'
+
+    /// The second half of every chord, as a table rather than a switch, so the
+    /// help screen and the keymap cannot drift apart: both read this.
+    static let prefixBindings: [PrefixBinding] = [
+        PrefixBinding(key: "c", shift: false, command: .newTab, title: "New tab"),
+        PrefixBinding(key: "n", shift: false, command: .nextTab, title: "Next tab"),
+        PrefixBinding(key: "p", shift: false, command: .previousTab, title: "Previous tab"),
+        PrefixBinding(key: "x", shift: false, command: .closePane, title: "Close pane"),
+        PrefixBinding(key: "x", shift: true, command: .closeTab, title: "Close tab"),
+        PrefixBinding(key: "v", shift: false, command: .splitRight, title: "Split right"),
+        PrefixBinding(key: "-", shift: false, command: .splitDown, title: "Split down"),
+        PrefixBinding(key: "z", shift: false, command: .zoomPane, title: "Zoom pane"),
+        PrefixBinding(key: "h", shift: false, command: .focusLeft, title: "Select pane left"),
+        PrefixBinding(key: "j", shift: false, command: .focusDown, title: "Select pane down"),
+        PrefixBinding(key: "k", shift: false, command: .focusUp, title: "Select pane up"),
+        PrefixBinding(key: "l", shift: false, command: .focusRight, title: "Select pane right"),
+        PrefixBinding(key: "n", shift: true, command: .newWorkspace, title: "New workspace"),
+        PrefixBinding(key: "[", shift: false, command: .copyMode, title: "Copy mode"),
+        PrefixBinding(key: "?", shift: false, command: .help, title: "This list"),
+    ]
 
     func reset() { prefixArmed = false }
 
@@ -101,21 +137,12 @@ final class ChordResolver {
 
     /// The second key of a `ctrl+b` chord.
     private func prefixCommand(_ event: NSEvent) -> Command? {
-        let shifted = event.modifierFlags.contains(.shift)
-        switch event.charactersIgnoringModifiers?.lowercased() {
-        case "c": return .newTab
-        case "v": return .splitRight
-        case "-": return .splitDown
-        case "h": return .focusLeft
-        case "j": return .focusDown
-        case "k": return .focusUp
-        case "l": return .focusRight
-        case "n": return shifted ? .newWorkspace : .nextTab
-        case "p": return .previousTab
-        case "x": return shifted ? .closeTab : .closePane
-        case "z": return .zoomPane
-        case "[": return .copyMode
-        default: return nil
-        }
+        guard let typed = event.charactersIgnoringModifiers?.lowercased() else { return nil }
+        let candidates = Self.prefixBindings.filter { $0.key == typed }
+        // Shift only decides between two bindings on the same key. Asking it to
+        // decide a lone binding would lose "?", which cannot be typed without
+        // shift on most layouts.
+        if candidates.count == 1 { return candidates[0].command }
+        return candidates.first { $0.shift == event.modifierFlags.contains(.shift) }?.command
     }
 }
