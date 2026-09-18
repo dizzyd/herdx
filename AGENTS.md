@@ -46,12 +46,25 @@ acceptable.
 ```sh
 ./scripts/check.sh      # cargo test + bundle — run before every commit
 ./scripts/bundle.sh     # assembles build/HerdX.app
+./scripts/package.sh    # signs and notarizes a release .dmg (see RELEASING.md)
 ```
 
 `bundle.sh` deletes the SwiftPM product before building. SwiftPM does not know
 about `libherdr_core.a` — it arrives through a raw `-L` flag and is not a
 tracked input — so without that a Rust-only change leaves the old code linked in
 and the build silently lies to you.
+
+That `-L` comes from `HERDX_CORE_LIB_DIR`, which `bundle.sh` sets to the profile
+it just built. A bare `swift build` still works — the manifest falls back to
+`../target/debug` — but it will link whatever is sitting there.
+
+`HERDX_UNIVERSAL=1` builds both slices and lipos the staticlib, which releases
+need. Two traps live in that path, both of which fail quietly rather than
+loudly: SwiftPM wants `--arch arm64` where Rust says `aarch64`, and hands back a
+thin binary if you give it the Rust spelling; and the universal build lands in
+`.build/apple/Products/<Config>`, not `.build/<config>`, so the binary is found
+via `--show-bin-path` rather than a hardcoded path. `bundle.sh` asserts both
+slices are present before it claims success.
 
 ## Verify by measuring, never by reasoning
 

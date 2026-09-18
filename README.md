@@ -242,7 +242,11 @@ fall back to AppKit so its font fallback still covers emoji and box drawing.
 git submodule update --init
 ./scripts/check.sh                         # build and test everything
 ./scripts/bundle.sh                        # just build build/HerdX.app
+./scripts/package.sh                       # signed, notarized universal .dmg
 ```
+
+`package.sh` needs a Developer ID certificate and notarization credentials;
+`RELEASING.md` covers those and the tag-driven GitHub workflow that uses them.
 
 Examples talk to a running server, which is the only way to check the parts
 that assumptions get wrong:

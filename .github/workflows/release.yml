@@ -1,0 +1,117 @@
+name: Release
+
+# A tag ships; a manual run is how you prove the pipeline still works without
+# burning a version number. Both build and notarize identically — the only
+# difference is whether the result becomes a GitHub release or an artifact.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to stamp into the build (no release is published)"
+        required: false
+        default: "0.0.0-dev"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # vendor/herdr is a submodule and the build does not work without it.
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Work out the version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = push ]; then
+            echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Select the newest stable Xcode
+        run: |
+          latest="$(ls -d /Applications/Xcode_*.app 2>/dev/null | grep -v -i beta | sort -V | tail -1 || true)"
+          if [ -n "$latest" ]; then sudo xcode-select -s "$latest"; fi
+          xcodebuild -version
+          swift --version
+
+      - name: Add the Rust targets
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      # Deliberately uncached. Releases are rare, and this repo has already been
+      # bitten by a stale libherdr_core.a linking cleanly into a build that
+      # silently shipped old code (see scripts/bundle.sh). A cold build costs a
+      # few minutes; a quietly wrong release costs a lot more.
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Import the Developer ID certificate
+        env:
+          CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/build.keychain-db"
+          # Random: this keychain lives for one job, and a fixed password in a
+          # workflow file is a habit worth not forming.
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 24)"
+          echo "$CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$KEYCHAIN" \
+            -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          # Without this, codesign blocks on a UI prompt no one can answer and
+          # the job hangs until it times out.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+
+          rm -f "$RUNNER_TEMP/certificate.p12"
+          security find-identity -v -p codesigning "$KEYCHAIN"
+
+      - name: Build, sign, notarize and staple
+        env:
+          HERDX_VERSION: ${{ steps.version.outputs.value }}
+          HERDX_KEYCHAIN: ${{ runner.temp }}/build.keychain-db
+          HERDX_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          HERDX_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          HERDX_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          echo "$APPLE_API_KEY_P8" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
+          export HERDX_API_KEY_PATH="$RUNNER_TEMP/AuthKey.p8"
+          ./scripts/package.sh
+
+      - name: Shred the credentials
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/AuthKey.p8" "$RUNNER_TEMP/certificate.p12"
+          security delete-keychain "$RUNNER_TEMP/build.keychain-db" || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HerdX-${{ steps.version.outputs.value }}-dmg
+          path: build/HerdX-*.dmg
+          if-no-files-found: error
+
+      - name: Publish the release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "build/HerdX-${{ steps.version.outputs.value }}.dmg" \
+            --title "HerdX ${{ steps.version.outputs.value }}" \
+            --generate-notes
