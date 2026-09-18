@@ -245,8 +245,9 @@ final class PreferencesWindowController: NSWindowController {
         } else {
             matchButton.isEnabled = false
             matchNote.stringValue =
-                "Nothing else is attached to this session, so these colours are the "
-                + "ones you will see."
+                "These colours are published to the herdr session, so they apply to "
+                + "every client attached to it — including a herdr terminal showing the "
+                + "same session."
         }
 
         lineField.stringValue = String(format: "%.0f", preferences.lineHeight * 100)
