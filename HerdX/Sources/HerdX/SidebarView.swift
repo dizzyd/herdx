@@ -248,10 +248,14 @@ final class SidebarView: NSView {
         addSubview(modes)
         addSubview(stack)
         NSLayoutConstraint.activate([
-            modes.topAnchor.constraint(equalTo: topAnchor, constant: 10),
+            // Centred in a band the height of the tab strip, so the switch and
+            // the tabs sit on the same line by construction rather than by a
+            // constant that has to be re-guessed whenever either moves.
+            modes.centerYAnchor.constraint(
+                equalTo: topAnchor, constant: TabBarView.height / 2),
             modes.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
             modes.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            stack.topAnchor.constraint(equalTo: modes.bottomAnchor),
+            stack.topAnchor.constraint(equalTo: topAnchor, constant: TabBarView.height),
             stack.leadingAnchor.constraint(equalTo: leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: trailingAnchor),
         ])
@@ -276,6 +280,10 @@ final class SidebarView: NSView {
     func apply(chrome: Chrome) {
         self.chrome = chrome
         layer?.backgroundColor = chrome.surface.cgColor
+        // A system control draws itself for the appearance it is told it is
+        // in, not for whatever is behind it — so on a dark sidebar under a
+        // light system appearance the unselected segment was dark on dark.
+        modes.appearance = NSAppearance(named: chrome.isDark ? .darkAqua : .aqua)
         lastSignature = nil
     }
 
