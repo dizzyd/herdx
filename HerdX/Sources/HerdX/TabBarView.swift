@@ -125,10 +125,26 @@ private final class TabChip: NSView {
         var views: [NSView] = [dot, label]
 
         if paneCount > 1 {
+            // A split glyph, not a bare number: beside a tab whose label is
+            // itself a number, "1 2" reads as one thing rather than a tab
+            // called 1 holding 2 panes.
+            let glyph = NSImageView(
+                image: NSImage(
+                    systemSymbolName: "rectangle.split.2x1",
+                    accessibilityDescription: "\(paneCount) panes")?
+                    .withSymbolConfiguration(.init(pointSize: 9, weight: .semibold))
+                    ?? NSImage())
+            glyph.contentTintColor = chrome.tertiary
+
             let count = NSTextField(labelWithString: "\(paneCount)")
-            count.font = .systemFont(ofSize: 11)
+            count.font = .systemFont(ofSize: 10, weight: .medium)
             count.textColor = chrome.tertiary
-            views.append(count)
+
+            let badge = NSStackView(views: [glyph, count])
+            badge.orientation = .horizontal
+            badge.spacing = 2
+            badge.toolTip = "\(paneCount) panes"
+            views.append(badge)
         }
 
         close.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close tab")
