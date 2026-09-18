@@ -12,6 +12,8 @@ final class MachinesWindowController: NSWindowController, NSTableViewDataSource,
 {
     /// Raised when the catalog changed, so the session can pick it up.
     private let onChange: () -> Void
+    /// Raised to set herdr up on a machine that does not have it.
+    private let onInstall: (String) -> Void
 
     private let table = NSTableView()
     private var machines: [Machines.Machine] = []
@@ -19,8 +21,11 @@ final class MachinesWindowController: NSWindowController, NSTableViewDataSource,
     private let removeButton = NSButton()
     private let editButton = NSButton()
 
-    init(onChange: @escaping () -> Void) {
+    private let installButton = NSButton()
+
+    init(onChange: @escaping () -> Void, onInstall: @escaping (String) -> Void) {
         self.onChange = onChange
+        self.onInstall = onInstall
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 560, height: 340),
@@ -63,6 +68,10 @@ final class MachinesWindowController: NSWindowController, NSTableViewDataSource,
         editButton.bezelStyle = .rounded
         editButton.target = self
         editButton.action = #selector(edit)
+        installButton.title = "Install herdr…"
+        installButton.bezelStyle = .rounded
+        installButton.target = self
+        installButton.action = #selector(install)
         removeButton.title = "Remove"
         removeButton.bezelStyle = .rounded
         removeButton.target = self
@@ -74,7 +83,9 @@ final class MachinesWindowController: NSWindowController, NSTableViewDataSource,
         note.font = .systemFont(ofSize: 11)
         note.textColor = .secondaryLabelColor
 
-        let buttons = NSStackView(views: [note, NSView(), add, editButton, removeButton])
+        let buttons = NSStackView(views: [
+            note, NSView(), installButton, add, editButton, removeButton,
+        ])
         buttons.orientation = .horizontal
         buttons.spacing = 8
 
@@ -115,6 +126,7 @@ final class MachinesWindowController: NSWindowController, NSTableViewDataSource,
         let hasSelection = machines.indices.contains(table.selectedRow)
         editButton.isEnabled = hasSelection
         removeButton.isEnabled = hasSelection
+        installButton.isEnabled = hasSelection
     }
 
     // MARK: - Table
@@ -183,6 +195,36 @@ final class MachinesWindowController: NSWindowController, NSTableViewDataSource,
                 Machines.save(
                     id: machine.id, label: label, target: target, session: session,
                     enabled: machine.enabled))
+        }
+    }
+
+    /// Sets herdr up on a machine, by running herdr's own installer.
+    ///
+    /// Not reimplemented here: herdr downloads the build matching the far
+    /// side's platform — your Mac's binary cannot seed a Linux box — checks the
+    /// version supports endpoint federation, and refuses to install at all
+    /// unless a person at a terminal approves. Doing any of that ourselves
+    /// would be duplicating careful work and discarding its one safeguard.
+    @objc private func install() {
+        guard let window, machines.indices.contains(table.selectedRow) else { return }
+        let machine = machines[table.selectedRow]
+
+        let alert = NSAlert()
+        alert.messageText = "Install herdr on “\(machine.label)”?"
+        alert.informativeText =
+            "HerdX will open a terminal running:\n\n"
+            + "    herdr --remote \(machine.target)\n\n"
+            + "herdr downloads the build matching that machine and copies it to "
+            + "~/.local/bin/herdr. It asks you to confirm in the terminal before "
+            + "changing anything."
+        alert.addButton(withTitle: "Open Terminal")
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn else { return }
+            MainActor.assumeIsolated {
+                self?.window?.close()
+                self?.onInstall(machine.target)
+            }
         }
     }
 

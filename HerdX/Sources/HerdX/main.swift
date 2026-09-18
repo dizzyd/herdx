@@ -70,9 +70,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     private let help = HelpSheet()
     private let prompt = Prompt()
     private let picker = Picker()
-    private lazy var machinesWindow = MachinesWindowController { [weak self] in
-        self?.reattachMachines()
-    }
+    private lazy var machinesWindow = MachinesWindowController(
+        onChange: { [weak self] in self?.reattachMachines() },
+        onInstall: { [weak self] target in self?.installHerdr(on: target) })
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         preferences = Preferences.current
@@ -959,6 +959,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
 
     @objc private func showMachines(_ sender: Any?) {
         machinesWindow.present()
+    }
+
+    /// Opens a local tab running herdr's own remote installer.
+    ///
+    /// A pane rather than a background command: herdr refuses to install
+    /// unless stdin is a terminal, because approving a binary onto another
+    /// machine is a decision it wants a person to make. A pane is a terminal,
+    /// so its prompt arrives where you can answer it.
+    private func installHerdr(on target: String) {
+        guard let session,
+            let local = session.endpoints.first(where: { !$0.isRemote && $0.status == .online })
+        else {
+            notice("no local herdr server to run the installer from")
+            return
+        }
+        focus(.newTab, on: local.index)
+
+        // The pane does not exist until the server has made it and said so, so
+        // the command waits for the snapshot rather than a guess at how long
+        // that takes.
+        waitForNewPane(session: session, tries: 40) { [weak self] pane in
+            guard let self else { return }
+            guard let pane else {
+                self.notice("could not open a terminal for the installer")
+                return
+            }
+            session.send(text: "herdr --remote \(Self.shellQuoted(target))\n", to: pane)
+        }
+    }
+
+    /// Calls back with the focused pane once it changes, or nil if it does not.
+    private func waitForNewPane(
+        session: HerdrSession, tries: Int, then act: @escaping (String?) -> Void
+    ) {
+        let before = session.lastSnapshot?.focusedPaneID
+        var remaining = tries
+        func poll() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                MainActor.assumeIsolated {
+                    let now = session.lastSnapshot?.focusedPaneID
+                    if let now, now != before {
+                        act(now)
+                        return
+                    }
+                    remaining -= 1
+                    if remaining <= 0 { act(nil) } else { poll() }
+                }
+            }
+        }
+        poll()
+    }
+
+    /// Single-quoted for the shell the pane is running.
+    private static func shellQuoted(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     /// Rebuilds the session so a change to the catalog takes effect.
