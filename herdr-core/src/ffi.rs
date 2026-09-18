@@ -1344,6 +1344,28 @@ pub unsafe extern "C" fn hx_send_paste(
 ///
 /// # Safety
 /// `session` must be live.
+/// Sends a host-theme update to every endpoint.
+///
+/// The window has one palette, so every machine attached to it needs to be
+/// told: a surface composed against another machine's idea of the default
+/// background is the wrong colour the moment you switch to it, and switching
+/// is not something the theme changes in response to.
+fn broadcast_host_theme(
+    session: &HxSession,
+    update: herdr_protocol::protocol::ClientHostThemeUpdate,
+) -> bool {
+    let mut sent = false;
+    for endpoint in &session.endpoints {
+        sent |= endpoint
+            .outbound
+            .send(ClientMessage::ClientShellHostTheme {
+                update: update.clone(),
+            })
+            .is_ok();
+    }
+    sent
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn hx_set_default_color(
     session: *const HxSession,
@@ -1358,19 +1380,17 @@ pub unsafe extern "C" fn hx_set_default_color(
     let Some(session) = session.as_ref() else {
         return false;
     };
-    session
-        .outbound
-        .send(ClientMessage::ClientShellHostTheme {
-            update: ClientHostThemeUpdate::DefaultColor {
-                kind: if foreground {
-                    ClientHostDefaultColorKind::Foreground
-                } else {
-                    ClientHostDefaultColorKind::Background
-                },
-                color: ClientHostColor { r, g, b },
+    broadcast_host_theme(
+        session,
+        ClientHostThemeUpdate::DefaultColor {
+            kind: if foreground {
+                ClientHostDefaultColorKind::Foreground
+            } else {
+                ClientHostDefaultColorKind::Background
             },
-        })
-        .is_ok()
+            color: ClientHostColor { r, g, b },
+        },
+    )
 }
 
 /// Publishes whether the app is currently in light or dark appearance.
@@ -1383,16 +1403,14 @@ pub unsafe extern "C" fn hx_set_appearance(session: *const HxSession, dark: bool
     let Some(session) = session.as_ref() else {
         return false;
     };
-    session
-        .outbound
-        .send(ClientMessage::ClientShellHostTheme {
-            update: ClientHostThemeUpdate::Appearance(if dark {
-                ClientHostAppearance::Dark
-            } else {
-                ClientHostAppearance::Light
-            }),
-        })
-        .is_ok()
+    broadcast_host_theme(
+        session,
+        ClientHostThemeUpdate::Appearance(if dark {
+            ClientHostAppearance::Dark
+        } else {
+            ClientHostAppearance::Light
+        }),
+    )
 }
 
 /// Publishes the 16 ANSI palette entries, so `Indexed` colours resolve to the
@@ -1425,12 +1443,7 @@ pub unsafe extern "C" fn hx_set_palette(
             )
         })
         .collect();
-    session
-        .outbound
-        .send(ClientMessage::ClientShellHostTheme {
-            update: ClientHostThemeUpdate::PaletteColors(entries),
-        })
-        .is_ok()
+    broadcast_host_theme(session, ClientHostThemeUpdate::PaletteColors(entries))
 }
 
 /// Tells the server the surface size changed.

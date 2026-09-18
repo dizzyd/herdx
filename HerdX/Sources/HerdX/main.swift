@@ -58,6 +58,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     private var appearanceObserver: NSKeyValueObservation?
     /// What was last sent to the server, so an unchanged theme is not resent.
     private var publishedTheme: [UInt8]?
+    /// Machines that have been told our palette. An ssh endpoint attaches
+    /// seconds after launch, long after the theme was first published, and a
+    /// machine that never heard it composes against its own default background
+    /// — which is why switching to one turned the terminal a different colour.
+    private var themedEndpoints: Set<Int> = []
     /// The appearance the current theme was resolved from.
     private var appliedSystemIsDark: Bool?
     private let copyModeStatus = ModeStatus()
@@ -510,6 +515,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         // connection status changes on its own, and gating on snapshots left
         // a machine reading "connecting…" long after it was up. The sidebar
         // compares a signature and returns immediately when nothing moved.
+        let online = Set(session.endpoints.filter { $0.status == .online }.map(\.index))
+        if !online.subtracting(themedEndpoints).isEmpty {
+            themedEndpoints = online
+            publish(theme: terminalTheme, force: true)
+        } else if online != themedEndpoints {
+            // A machine that dropped is told again when it returns.
+            themedEndpoints = online
+        }
+
         sidebar.update(endpoints: session.endpoints, active: session.activeEndpoint)
         tabBar.update(with: session.lastSnapshot)
         gridView.paneLabels = Self.paneLabels(from: session.lastSnapshot)
