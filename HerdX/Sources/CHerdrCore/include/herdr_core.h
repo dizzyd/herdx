@@ -117,6 +117,21 @@ char *hx_pane_id(const HxSession *session, uint32_t id_index);
 size_t hx_endpoint_count(const HxSession *session);
 char *hx_endpoint_id(const HxSession *session, size_t index);
 char *hx_endpoint_label(const HxSession *session, size_t index);
+
+/// The SSH machines herdr knows about, as a JSON array. Free with
+/// hx_string_free.
+char *hx_machines_json(void);
+
+/// Adds a machine, or replaces the one with `id`. Returns the id, or NULL with
+/// the reason available from hx_machine_error.
+char *hx_machine_save(const char *id, const char *label, const char *target,
+                      const char *session, bool enabled);
+
+/// Removes a machine by id.
+bool hx_machine_remove(const char *id);
+
+/// Why the last machine edit failed. Free with hx_string_free.
+char *hx_machine_error(void);
 uint8_t hx_endpoint_status(const HxSession *session, size_t index);
 bool hx_endpoint_is_remote(const HxSession *session, size_t index);
 size_t hx_active_endpoint(const HxSession *session);

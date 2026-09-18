@@ -70,6 +70,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     private let help = HelpSheet()
     private let prompt = Prompt()
     private let picker = Picker()
+    private lazy var machinesWindow = MachinesWindowController { [weak self] in
+        self?.reattachMachines()
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         preferences = Preferences.current
@@ -957,6 +960,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         }
     }
 
+    @objc private func showMachines(_ sender: Any?) {
+        machinesWindow.present()
+    }
+
+    /// Rebuilds the session so a change to the catalog takes effect.
+    ///
+    /// Endpoints are resolved once, when the session is created, so a machine
+    /// added or removed is not something the running session can be told
+    /// about — it has to be stood up again.
+    private func reattachMachines() {
+        gridView.forgetSurface()
+        gridView.session = nil
+        session = nil
+        themedEndpoints = []
+        publishedTheme = nil
+        if !connect() {
+            window.subtitle = "waiting for herdr… (\(lastConnectError ?? "no server"))"
+            reconnect()
+        }
+        applyTitle()
+    }
+
     @objc private func findInPane(_ sender: Any?) {
         gridView.enterCopyMode(searching: true)
         window.makeFirstResponder(gridView)
@@ -1049,6 +1074,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
             title: "Settings…", action: #selector(showPreferences(_:)), keyEquivalent: ",")
         settings.target = self
         appMenu.addItem(settings)
+        let machines = NSMenuItem(
+            title: "Machines…", action: #selector(showMachines(_:)), keyEquivalent: "m")
+        machines.keyEquivalentModifierMask = [.command, .shift]
+        machines.target = self
+        appMenu.addItem(machines)
         appMenu.addItem(.separator())
         appMenu.addItem(
             withTitle: "Quit HerdX", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -1186,6 +1216,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
             // see headlessly.
             let environment = ProcessInfo.processInfo.environment
             let settings = environment["HERDX_CAPTURE_SETTINGS"] != nil
+            let machinesWanted = environment["HERDX_CAPTURE_MACHINES"] != nil
+            if machinesWanted {
+                self.showMachines(nil)
+                if environment["HERDX_CAPTURE_MACHINES"] == "add" {
+                    self.machinesWindow.beginAdd()
+                }
+            }
             // The value names any action, so a sheet other than help can be
             // photographed too.
             let sheetAction = environment["HERDX_CAPTURE_HELP"]
@@ -1196,7 +1233,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
                 self.perform(sheetAction, session: session)
             }
             let target: NSView? =
-                settings
+                machinesWanted
+                ? (self.machinesWindow.window?.attachedSheet?.contentView
+                    ?? self.machinesWindow.window?.contentView)
+                : settings
                 ? self.preferencesWindow?.window?.contentView
                 : (helpWanted
                     ? self.window.attachedSheet?.contentView : self.window.contentView)

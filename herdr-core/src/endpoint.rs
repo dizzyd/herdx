@@ -25,7 +25,7 @@ pub enum EndpointKind {
 }
 
 /// A saved SSH machine, as herdr's client catalog stores it.
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, serde::Serialize)]
 struct SavedSshEndpoint {
     id: String,
     label: String,
@@ -39,6 +39,10 @@ struct SavedSshEndpoint {
 struct Catalog {
     #[serde(default)]
     ssh: Vec<SavedSshEndpoint>,
+    /// Carried through a rewrite untouched: it is herdr's to set, but dropping
+    /// it would forget which machine the TUI opens on.
+    #[serde(default)]
+    selected_profile: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -107,6 +111,170 @@ pub fn saved_selection() -> Option<String> {
     }
     let text = std::fs::read_to_string(client_state_dir().join("endpoint-selection.json")).ok()?;
     serde_json::from_str::<Selection>(&text).ok()?.selected_profile
+}
+
+/// Every saved machine, enabled or not.
+#[derive(serde::Serialize)]
+pub struct Machine {
+    pub id: String,
+    pub label: String,
+    pub target: String,
+    pub session: String,
+    pub enabled: bool,
+}
+
+pub fn machines() -> Vec<Machine> {
+    load_catalog()
+        .ssh
+        .into_iter()
+        .map(|entry| Machine {
+            id: entry.id,
+            label: entry.label,
+            target: entry.target,
+            session: entry.session,
+            enabled: entry.enabled,
+        })
+        .collect()
+}
+
+/// Adds or replaces an SSH machine in the catalog herdr shares.
+///
+/// The catalog is herdr's file, not ours, and it is read with
+/// `deny_unknown_fields`: an entry carrying anything beyond these five keys
+/// makes herdr reject the whole file. So this writes exactly that shape, and
+/// applies herdr's own limits rather than inventing its own.
+pub fn save_machine(
+    id: Option<&str>,
+    label: &str,
+    target: &str,
+    session: &str,
+    enabled: bool,
+) -> Result<String, String> {
+    let label = label.trim();
+    let target = target.trim();
+    let session = if session.trim().is_empty() {
+        "default"
+    } else {
+        session.trim()
+    };
+
+    if label.is_empty() {
+        return Err("Name cannot be empty".into());
+    }
+    if target.is_empty() {
+        return Err("SSH target cannot be empty".into());
+    }
+    if label.len() > 128 || label.chars().any(char::is_control) {
+        return Err("Name is too long".into());
+    }
+    if target.len() > 1024 || target.chars().any(char::is_control) {
+        return Err("SSH target is too long".into());
+    }
+    // herdr refuses a target carrying a password, and so should the thing
+    // writing its file.
+    let authority = target.strip_prefix("ssh://").unwrap_or(target);
+    if authority
+        .rsplit_once('@')
+        .is_some_and(|(userinfo, _)| userinfo.contains(':'))
+    {
+        return Err("SSH target must not contain a password".into());
+    }
+
+    let mut catalog = load_catalog();
+    let id = match id {
+        Some(existing) => existing.to_owned(),
+        None => new_profile_id(),
+    };
+
+    let entry = SavedSshEndpoint {
+        id: id.clone(),
+        label: label.to_owned(),
+        target: target.to_owned(),
+        session: session.to_owned(),
+        enabled,
+    };
+
+    match catalog.ssh.iter_mut().find(|e| e.id == id) {
+        Some(slot) => *slot = entry,
+        None => {
+            if catalog.ssh.len() >= 64 {
+                return Err("herdr allows at most 64 machines".into());
+            }
+            catalog.ssh.push(entry);
+        }
+    }
+    write_catalog(&catalog)?;
+    Ok(id)
+}
+
+/// Removes a machine. Missing is not an error: the catalog is shared, and
+/// something else may have removed it already.
+pub fn remove_machine(id: &str) -> Result<(), String> {
+    let mut catalog = load_catalog();
+    catalog.ssh.retain(|entry| entry.id != id);
+    write_catalog(&catalog)
+}
+
+fn load_catalog() -> Catalog {
+    std::fs::read_to_string(client_state_dir().join("endpoints.json"))
+        .ok()
+        .and_then(|text| serde_json::from_str::<Catalog>(&text).ok())
+        .unwrap_or(Catalog {
+            ssh: Vec::new(),
+            selected_profile: None,
+        })
+}
+
+/// Writes through a temporary file, as herdr does: a catalog half-written
+/// because something died mid-save is one herdr will refuse to load at all.
+fn write_catalog(catalog: &Catalog) -> Result<(), String> {
+    #[derive(serde::Serialize)]
+    struct Out<'a> {
+        version: u32,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        selected_profile: &'a Option<String>,
+        ssh: &'a [SavedSshEndpoint],
+    }
+
+    let directory = client_state_dir();
+    std::fs::create_dir_all(&directory).map_err(|e| format!("cannot create state dir: {e}"))?;
+
+    let text = serde_json::to_string_pretty(&Out {
+        version: 1,
+        selected_profile: &catalog.selected_profile,
+        ssh: &catalog.ssh,
+    })
+    .map_err(|e| format!("cannot encode catalog: {e}"))?;
+
+    let path = directory.join("endpoints.json");
+    let temp = directory.join(format!("endpoints.json.hx{}", std::process::id()));
+    std::fs::write(&temp, text).map_err(|e| format!("cannot write catalog: {e}"))?;
+    std::fs::rename(&temp, &path).map_err(|e| {
+        let _ = std::fs::remove_file(&temp);
+        format!("cannot replace catalog: {e}")
+    })
+}
+
+/// herdr's profile ids are 32 lowercase hex characters.
+fn new_profile_id() -> String {
+    let mut bytes = [0u8; 16];
+    getrandom(&mut bytes);
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn getrandom(buffer: &mut [u8]) {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    // Uniqueness is all that is needed here: the id names a row in a file the
+    // user owns, and herdr only requires that it parse as 32 hex characters.
+    let mut seed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0)
+        ^ (std::process::id() as u64) << 32;
+    for slot in buffer.iter_mut() {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        *slot = (seed >> 33) as u8;
+    }
 }
 
 /// A duplex byte stream carrying the client protocol.

@@ -316,9 +316,62 @@ final class HerdrSession {
         _ = bootID.withCString { b in json.withCString { r in hx_endpoint_request(handle, b, r) } }
     }
 
-    private static func take(_ pointer: UnsafeMutablePointer<CChar>?) -> String? {
+    static func take(_ pointer: UnsafeMutablePointer<CChar>?) -> String? {
         guard let pointer else { return nil }
         defer { hx_string_free(pointer) }
         return String(cString: pointer)
+    }
+}
+
+/// The SSH machines herdr will attach to.
+///
+/// Read and written straight from herdr's own catalog rather than through the
+/// session: a machine that is disabled, or that failed to connect, still has to
+/// be listed and edited, and there is no endpoint method for any of this — the
+/// catalog is a client-side file that herdr's own TUI edits the same way.
+enum Machines {
+    struct Machine: Codable, Identifiable, Equatable {
+        var id: String
+        var label: String
+        var target: String
+        var session: String
+        var enabled: Bool
+    }
+
+    static func all() -> [Machine] {
+        guard let json = HerdrSession.take(hx_machines_json()),
+            let data = json.data(using: .utf8),
+            let machines = try? JSONDecoder().decode([Machine].self, from: data)
+        else { return [] }
+        return machines
+    }
+
+    /// Why a save was refused, in the words herdr's own rules use.
+    struct Refusal: Error {
+        let reason: String
+    }
+
+    /// Returns the saved id, or the reason it was refused.
+    @discardableResult
+    static func save(
+        id: String?, label: String, target: String, session: String, enabled: Bool
+    ) -> Result<String, Refusal> {
+        let saved = label.withCString { l in
+            target.withCString { t in
+                session.withCString { s in
+                    if let id {
+                        return id.withCString { hx_machine_save($0, l, t, s, enabled) }
+                    }
+                    return hx_machine_save(nil, l, t, s, enabled)
+                }
+            }
+        }
+        if let saved = HerdrSession.take(saved) { return .success(saved) }
+        return .failure(Refusal(reason: HerdrSession.take(hx_machine_error()) ?? "could not save"))
+    }
+
+    @discardableResult
+    static func remove(id: String) -> Bool {
+        id.withCString { hx_machine_remove($0) }
     }
 }

@@ -1,66 +1,60 @@
-//! Lists discovered endpoints and attaches to each, reporting what came back.
+//! Exercises the machine catalog against a throwaway state directory.
 
-use herdr_core::client::{default_socket_path, hello_with_surface, EndpointConnection};
-use herdr_core::endpoint;
-use herdr_core::protocol::{ClientShellSnapshot, ServerMessage};
+use herdr_core::ffi::*;
+
+fn text(ptr: *mut std::ffi::c_char) -> String {
+    if ptr.is_null() {
+        return String::new();
+    }
+    unsafe {
+        let value = std::ffi::CStr::from_ptr(ptr).to_string_lossy().into_owned();
+        hx_string_free(ptr);
+        value
+    }
+}
+
+fn c(value: &str) -> std::ffi::CString {
+    std::ffi::CString::new(value).unwrap()
+}
 
 fn main() {
-    let endpoints = endpoint::discover();
-    println!("selection: {:?}\n", endpoint::saved_selection());
+    unsafe {
+        println!("start: {}", text(hx_machines_json()));
 
-    for ep in endpoints {
-        println!("== {} ({}) {:?}", ep.label, ep.id, ep.kind);
-        let started = std::time::Instant::now();
-        // Only the endpoint you are looking at needs a surface; the rest are
-        // attached purely for their snapshots.
-        let hello = hello_with_surface(100, 30, 8, 16, false);
-        let mut conn = match EndpointConnection::attach(&ep, &default_socket_path(), &hello) {
-            Ok(conn) => conn,
-            Err(err) => {
-                println!("   offline: {err}\n");
-                continue;
-            }
-        };
-        println!(
-            "   connected in {:?}, server {}",
-            started.elapsed(),
-            conn.welcome().server_version
-        );
+        let id = text(hx_machine_save(
+            std::ptr::null(),
+            c("Test Box").as_ptr(),
+            c("test.example").as_ptr(),
+            c("default").as_ptr(),
+            true,
+        ));
+        println!("added: {id}");
+        println!("after add: {}", text(hx_machines_json()));
 
-        for _ in 0..40 {
-            match conn.recv() {
-                Ok(ServerMessage::EndpointControl { kind, data })
-                    if kind == "shell.snapshot.v1" =>
-                {
-                    let snapshot: ClientShellSnapshot = serde_json::from_str(&data).unwrap();
-                    println!(
-                        "   {} workspace(s), {} tab(s), {} agent(s)",
-                        snapshot.workspaces.len(),
-                        snapshot.tabs.len(),
-                        snapshot.agents.len()
-                    );
-                    for workspace in &snapshot.workspaces {
-                        println!(
-                            "     workspace {} {:?} branch={:?} status={:?}",
-                            workspace.number, workspace.label, workspace.branch,
-                            workspace.agent_status
-                        );
-                    }
-                    for agent in &snapshot.agents {
-                        println!(
-                            "     agent {:?} status={:?}",
-                            agent.display_agent, agent.agent_status
-                        );
-                    }
-                    break;
-                }
-                Ok(_) => {}
-                Err(err) => {
-                    println!("   stream ended: {err}");
-                    break;
-                }
-            }
+        let renamed = text(hx_machine_save(
+            c(&id).as_ptr(),
+            c("Renamed").as_ptr(),
+            c("test.example").as_ptr(),
+            c("").as_ptr(),
+            false,
+        ));
+        println!("edited: {renamed}");
+        println!("after edit: {}", text(hx_machines_json()));
+
+        // Rejections the catalog's own rules require.
+        for (label, target) in [("", "host"), ("ok", "user:secret@host")] {
+            let failed = hx_machine_save(
+                std::ptr::null(),
+                c(label).as_ptr(),
+                c(target).as_ptr(),
+                c("default").as_ptr(),
+                true,
+            );
+            println!("reject {label:?}/{target:?}: {}", text(hx_machine_error()));
+            assert!(failed.is_null());
         }
-        println!();
+
+        println!("removed: {}", hx_machine_remove(c(&id).as_ptr()));
+        println!("end: {}", text(hx_machines_json()));
     }
 }

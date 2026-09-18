@@ -2087,3 +2087,101 @@ fn mouse_message(
         }],
     }
 }
+
+#[allow(non_snake_case)]
+fn LAST_MACHINE_ERROR() -> &'static Mutex<Option<String>> {
+    static CELL: std::sync::OnceLock<Mutex<Option<String>>> = std::sync::OnceLock::new();
+    CELL.get_or_init(|| Mutex::new(None))
+}
+
+// MARK: - Machines
+
+/// The SSH machines herdr knows about, as a JSON array.
+///
+/// Read from herdr's catalog rather than from the live session: a machine that
+/// is disabled, or that failed to connect, still has to be listed and edited.
+///
+/// # Safety
+/// The returned pointer must be released with `hx_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn hx_machines_json() -> *mut c_char {
+    let machines = crate::endpoint::machines();
+    match serde_json::to_string(&machines) {
+        Ok(text) => string_or_null(Some(text)),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// Adds a machine, or replaces the one with `id`.
+///
+/// Returns the id on success, or null with the reason in `hx_machine_error`.
+///
+/// # Safety
+/// Every non-null pointer must be valid NUL-terminated UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn hx_machine_save(
+    id: *const c_char,
+    label: *const c_char,
+    target: *const c_char,
+    session: *const c_char,
+    enabled: bool,
+) -> *mut c_char {
+    let read = |pointer: *const c_char| -> Option<String> {
+        if pointer.is_null() {
+            return None;
+        }
+        CStr::from_ptr(pointer).to_str().ok().map(str::to_owned)
+    };
+    let (Some(label), Some(target)) = (read(label), read(target)) else {
+        *LAST_MACHINE_ERROR().lock().unwrap() = Some("invalid text".into());
+        return std::ptr::null_mut();
+    };
+    let session = read(session).unwrap_or_default();
+
+    match crate::endpoint::save_machine(
+        read(id).as_deref(),
+        &label,
+        &target,
+        &session,
+        enabled,
+    ) {
+        Ok(saved) => string_or_null(Some(saved)),
+        Err(reason) => {
+            *LAST_MACHINE_ERROR().lock().unwrap() = Some(reason);
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Removes a machine.
+///
+/// # Safety
+/// `id` must be valid NUL-terminated UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn hx_machine_remove(id: *const c_char) -> bool {
+    if id.is_null() {
+        return false;
+    }
+    let Ok(id) = CStr::from_ptr(id).to_str() else {
+        return false;
+    };
+    match crate::endpoint::remove_machine(id) {
+        Ok(()) => true,
+        Err(reason) => {
+            *LAST_MACHINE_ERROR().lock().unwrap() = Some(reason);
+            false
+        }
+    }
+}
+
+/// Why the last machine edit failed.
+///
+/// # Safety
+/// The returned pointer must be released with `hx_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn hx_machine_error() -> *mut c_char {
+    match LAST_MACHINE_ERROR().lock().unwrap().take() {
+        Some(reason) => string_or_null(Some(reason)),
+        None => std::ptr::null_mut(),
+    }
+}
