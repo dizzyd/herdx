@@ -66,21 +66,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         sidebar.onSelect = { [weak self] command in
             guard let self, let session = self.session else { return }
             self.invoke(command, session: session)
-            self.window.makeFirstResponder(self.gridView)
+            self.focusTerminal()
         }
         tabBar.onSelectTab = { [weak self] tabID in
             guard let self, let session = self.session else { return }
             self.invoke(.focusTab(tabID), session: session)
-            self.window.makeFirstResponder(self.gridView)
+            self.focusTerminal()
         }
         tabBar.onCloseTab = { [weak self] tabID in
             guard let self, let session = self.session else { return }
             self.invoke(.closeTabWithID(tabID), session: session)
+            self.focusTerminal()
         }
         tabBar.onNewTab = { [weak self] in
             guard let self, let session = self.session else { return }
             self.invoke(.newTab, session: session)
-            self.window.makeFirstResponder(self.gridView)
+            self.focusTerminal()
         }
         sidebar.onSelectWorkspace = { [weak self] workspaceID, endpoint in
             guard let self, let session = self.session else { return }
@@ -93,7 +94,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self.invoke(
                 .focusWorkspace(workspaceID), session: session,
                 bootID: session.bootID(forEndpoint: endpoint))
-            self.window.makeFirstResponder(self.gridView)
+            self.focusTerminal()
         }
         sidebar.onSelectEndpoint = { [weak self] index in
             guard let self, let session = self.session else { return }
@@ -101,7 +102,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             // The new machine's surface has not arrived; drop the old one so
             // the previous machine's output is not shown under a new name.
             self.gridView.forgetSurface()
-            self.window.makeFirstResponder(self.gridView)
+            self.focusTerminal()
         }
 
         window = NSWindow(
@@ -389,6 +390,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         gridView.onFocusPane = { [weak self] paneID in
             guard let self, let session = self.session else { return }
             self.invoke(.focusPane(paneID), session: session)
+            self.focusTerminal()
         }
         gridView.onResize = { [weak self] cols, rows in
             guard let self, let session = self.session else { return }
@@ -548,6 +550,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc private func menuCommand(_ sender: NSMenuItem) {
         guard let session, let command = Command.allByTag[sender.tag] else { return }
         invoke(command, session: session)
+    }
+
+    /// Hands the keyboard back to the terminal, abandoning a half-entered
+    /// chord.
+    ///
+    /// Every pointing gesture that changes what has focus goes through here:
+    /// the prefix was aimed at the pane you were in when you pressed it, so
+    /// carrying it across to a new pane, tab or machine would fire the chord
+    /// somewhere you never pointed it.
+    private func focusTerminal() {
+        chords.reset()
+        gridView.prefixArmed = false
+        window.makeFirstResponder(gridView)
     }
 
     /// Disarms a half-entered chord when the window stops listening.
