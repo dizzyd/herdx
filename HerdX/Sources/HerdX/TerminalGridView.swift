@@ -106,6 +106,33 @@ final class TerminalGridView: NSView {
     /// like, taken as a whole.
     private(set) var dominantBackground: NSColor?
 
+    /// Cells the server keeps around the outside for its own pane borders.
+    ///
+    /// herdr draws a box around every pane and reports each pane's `inner`
+    /// rect inside it. We frame panes ourselves and never draw those cells, so
+    /// left alone they are a dead ring: a whole row of nothing between the tabs
+    /// and the first line of output. `offset` is where the content actually
+    /// starts, and `ring` is what the surface has to grow by for the content to
+    /// still fill the window.
+    private struct DeadCells: Equatable {
+        /// Where the content starts, in cells from the surface's corner.
+        var offsetX = 0
+        var offsetY = 0
+        /// How many cells the whole ring costs.
+        var ringCols = 0
+        var ringRows = 0
+    }
+    private var dead = DeadCells()
+
+    /// Where cell (0, 0) lands, chosen so the *content* sits against the frame
+    /// inset rather than the surface's top-left corner.
+    private var contentOrigin: CGPoint {
+        CGPoint(
+            x: panePadding + frameInset - CGFloat(dead.offsetX) * cellSize.width,
+            y: panePadding + frameInset + labelClearance
+                - CGFloat(dead.offsetY) * cellSize.height)
+    }
+
     /// The focused pane, from the snapshot rather than the surface.
     ///
     /// The snapshot is the authority and arrives before the first surface, so
@@ -175,9 +202,12 @@ final class TerminalGridView: NSView {
         let reserved = (panePadding + frameInset) * 2
         let usable = CGSize(
             width: bounds.width - reserved, height: bounds.height - reserved - labelClearance)
+        // Plus the server's own border ring: those cells are not ours to draw
+        // in, so asking only for what fits leaves the content a ring short of
+        // the window.
         return (
-            max(Int(usable.width / cellSize.width), 1),
-            max(Int(usable.height / cellSize.height), 1)
+            max(Int(usable.width / cellSize.width), 1) + dead.ringCols,
+            max(Int(usable.height / cellSize.height), 1) + dead.ringRows
         )
     }
 
@@ -293,6 +323,8 @@ final class TerminalGridView: NSView {
                 return result
             } ?? [:]
 
+        measureDeadCells(session)
+
         // Weighted by area, so one small pane running a coloured program does
         // not repaint the whole window.
         dominantBackground =
@@ -308,6 +340,37 @@ final class TerminalGridView: NSView {
         if let dominantBackground, dominantBackground != previous {
             onBackgroundChanged?(dominantBackground)
         }
+    }
+
+    /// Works out the ring of border cells the surface spends on itself.
+    private func measureDeadCells(_ session: HerdrSession) {
+        let inners = panes.map(\.inner)
+        guard !inners.isEmpty,
+            let size = session.withGrid({ (width: $0.width, height: $0.height) })
+        else {
+            dead = DeadCells()
+            return
+        }
+        let minX = inners.map(\.x).min() ?? 0
+        let minY = inners.map(\.y).min() ?? 0
+        let maxX = inners.map { $0.x + $0.width }.max() ?? size.width
+        let maxY = inners.map { $0.y + $0.height }.max() ?? size.height
+
+        // Clamped: a surface that reported something strange must not be able
+        // to drive an ever-growing resize, since the size we ask for is
+        // computed from the size we were given.
+        let measured = DeadCells(
+            offsetX: min(max(minX, 0), 4),
+            offsetY: min(max(minY, 0), 4),
+            ringCols: min(max(size.width - (maxX - minX), 0), 8),
+            ringRows: min(max(size.height - (maxY - minY), 0), 8))
+        guard measured != dead else { return }
+        dead = measured
+        // The ring is only known once a surface has arrived, and it changes
+        // what will fit — so the size the server was told at startup is now
+        // wrong by exactly this much. It settles on the next surface, because
+        // the ring a server draws does not depend on how big the surface is.
+        reportGridSize()
     }
 
     /// The colour to lay a pane down on, and to leave showing in its padding.
@@ -337,8 +400,7 @@ final class TerminalGridView: NSView {
 
         if !panes.isEmpty, let session {
             context.saveGState()
-            context.translateBy(
-                x: panePadding + frameInset, y: panePadding + frameInset + labelClearance)
+            context.translateBy(x: contentOrigin.x, y: contentOrigin.y)
             session.withGrid { grid in
                 for pane in panes {
                     let background = background(of: pane)
@@ -794,9 +856,9 @@ extension TerminalGridView {
     private func hit(_ event: NSEvent) -> (pane: PaneView, column: Int, row: Int)? {
         guard cellSize.width > 0, cellSize.height > 0 else { return nil }
         let point = convert(event.locationInWindow, from: nil)
-        let column = Int((point.x - panePadding - frameInset) / cellSize.width)
-        let row = Int(
-            (point.y - panePadding - frameInset - labelClearance) / cellSize.height)
+        let origin = contentOrigin
+        let column = Int((point.x - origin.x) / cellSize.width)
+        let row = Int((point.y - origin.y) / cellSize.height)
 
         let pane = panes.first {
             column >= $0.rect.x && column < $0.rect.x + $0.rect.width
@@ -815,8 +877,8 @@ extension TerminalGridView {
             button: button,
             column: UInt16(max(column, 0)),
             row: UInt16(max(row, 0)),
-            pixel_x: UInt32(max(point.x - panePadding - frameInset, 0)),
-            pixel_y: UInt32(max(point.y - panePadding - frameInset - labelClearance, 0)),
+            pixel_x: UInt32(max(point.x - contentOrigin.x, 0)),
+            pixel_y: UInt32(max(point.y - contentOrigin.y, 0)),
             modifiers: KeyMapper.modifiers(event.modifierFlags),
             lines: UInt16(max(lines, 0)))
     }
