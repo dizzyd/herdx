@@ -431,15 +431,28 @@ final class TerminalGridView: NSView {
         }
 
         guard let placeholder else { return }
+        // Centred per line and drawn into a rect: what goes here is sometimes
+        // several lines of explanation, and `draw(at:)` would range them down
+        // the left of a single centred block.
+        let style = NSMutableParagraphStyle()
+        style.alignment = .center
+        style.lineSpacing = 3
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 12),
-            .foregroundColor: theme.foreground.withAlphaComponent(0.45),
+            .foregroundColor: chrome.secondary,
+            .paragraphStyle: style,
         ]
         let text = NSAttributedString(string: placeholder, attributes: attributes)
-        let size = text.size()
+        let width = min(bounds.width - 80, 460)
+        let height = text.boundingRect(
+            with: CGSize(width: width, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin]
+        ).height
         text.draw(
-            at: CGPoint(
-                x: (bounds.width - size.width) / 2, y: (bounds.height - size.height) / 2))
+            with: CGRect(
+                x: (bounds.width - width) / 2, y: (bounds.height - height) / 2,
+                width: width, height: height),
+            options: [.usesLineFragmentOrigin])
     }
 
     /// Drops images the scene no longer refers to.

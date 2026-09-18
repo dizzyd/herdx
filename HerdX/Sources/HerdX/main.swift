@@ -272,8 +272,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         switch active.status {
         case .connecting:
             gridView.placeholder = "connecting to \(active.label)…"
+        case .offline where !active.isRemote:
+            // The local machine going quiet usually means herdr is not there
+            // at all, which "Local is offline" does not begin to say.
+            switch LocalHerdr.state(serverIsUp: false) {
+            case .missing:
+                gridView.placeholder =
+                    "HerdX is a client for herdr, which is not installed.\n\n"
+                    + LocalHerdr.installCommand
+                    + "\n\nthen run  herdr  to start a session."
+            case .installed:
+                gridView.placeholder =
+                    "herdr is installed but not running.\n\n"
+                    + "run  herdr  in a terminal to start a session."
+            case .running:
+                gridView.placeholder = active.error ?? "\(active.label) is offline"
+            }
         case .offline:
-            gridView.placeholder = "\(active.label) is offline"
+            gridView.placeholder = active.error ?? "\(active.label) is offline"
         case .online:
             gridView.placeholder =
                 active.snapshot == nil
@@ -971,7 +987,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         guard let session,
             let local = session.endpoints.first(where: { !$0.isRemote && $0.status == .online })
         else {
-            notice("no local herdr server to run the installer from")
+            // The installer is herdr's, and it runs in a herdr pane. Without a
+            // local server there is neither, and saying "no local server" to
+            // someone who has never installed herdr explains nothing.
+            let alert = NSAlert()
+            switch LocalHerdr.state(serverIsUp: false) {
+            case .missing:
+                alert.messageText = "herdr is not installed on this Mac"
+                alert.informativeText =
+                    "HerdX is a client for herdr, and sets up other machines by running "
+                    + "herdr's own installer here. Install it first:\n\n"
+                    + LocalHerdr.installCommand
+            case .installed, .running:
+                alert.messageText = "herdr is not running on this Mac"
+                alert.informativeText =
+                    "The installer runs in a herdr terminal. Run  herdr  to start a "
+                    + "session, then try again."
+            }
+            alert.runModal()
             return
         }
         focus(.newTab, on: local.index)
