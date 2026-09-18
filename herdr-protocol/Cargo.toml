@@ -34,3 +34,17 @@ bytes = "1"
 
 [dev-dependencies]
 serde_json = "1"
+
+# This crate compiles a *subset* of herdr's sources — only the modules a client
+# needs — so a great deal of what they import and define is genuinely unused
+# here. That produced well over a hundred warnings about code we deliberately
+# do not reach, which drowned out the handful from the code we actually write.
+#
+# The files are symlinks into the pinned submodule, so they are not ours to
+# edit; silencing has to happen at the crate. Only the categories a subset
+# build creates are allowed, so a real problem in vendored code still shows up.
+[lints.rust]
+dead_code = "allow"
+unused_imports = "allow"
+private_interfaces = "allow"
+deprecated = "allow"

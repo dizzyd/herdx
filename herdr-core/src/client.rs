@@ -218,7 +218,7 @@ impl EndpointConnection {
     ///
     /// The receive loop blocks in `recv`, so outbound messages need their own
     /// handle rather than waiting for it to return.
-    pub fn take_writer(&mut self) -> Option<crate::endpoint::WriteHalf> {
+    pub(crate) fn take_writer(&mut self) -> Option<crate::endpoint::WriteHalf> {
         self.writer.take()
     }
 

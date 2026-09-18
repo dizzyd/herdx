@@ -17,7 +17,7 @@ fn LAST_CONNECT_ERROR() -> &'static Mutex<Option<String>> {
     LAST_CONNECT_ERROR_CELL.get_or_init(|| Mutex::new(None))
 }
 
-use crate::client::{default_socket_path, hello, EndpointConnection};
+use crate::client::default_socket_path;
 use herdr_protocol::protocol::{
     CellData, ClientMessage, PaneSurfaceFrame, PaneSurfacePatch, ServerMessage,
 };

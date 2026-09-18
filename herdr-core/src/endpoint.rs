@@ -287,11 +287,11 @@ fn getrandom(buffer: &mut [u8]) {
 /// Transports are split rather than shared: the receive loop blocks on reads,
 /// so writes need their own half. A socket can be cloned for that, but a
 /// child's stdin cannot, so both are modelled as explicit halves.
-pub struct Transport;
+pub(crate) struct Transport;
 
 /// Keeps the ssh process alive while either half is in use, and reaps it once
 /// both are gone.
-struct ChildGuard(std::sync::Mutex<Child>);
+pub(crate) struct ChildGuard(std::sync::Mutex<Child>);
 
 impl Drop for ChildGuard {
     fn drop(&mut self) {
@@ -302,7 +302,7 @@ impl Drop for ChildGuard {
     }
 }
 
-pub enum ReadHalf {
+pub(crate) enum ReadHalf {
     Local(std::os::unix::net::UnixStream),
     Ssh {
         stdout: std::process::ChildStdout,
@@ -329,7 +329,7 @@ impl ReadHalf {
     }
 }
 
-pub enum WriteHalf {
+pub(crate) enum WriteHalf {
     Local(std::os::unix::net::UnixStream),
     Ssh {
         stdin: std::process::ChildStdin,
