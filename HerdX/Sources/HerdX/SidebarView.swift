@@ -55,15 +55,17 @@ final class SidebarRow: NSView {
         // *left* of the machine's, which read as the wrong way round.
         var leading: [NSView] = []
 
-        let chevron = NSButton(
-            image: collapsed.flatMap {
-                Self.symbol($0 ? "chevron.right" : "chevron.down", size: 9)
-            } ?? NSImage(), target: self, action: #selector(toggle))
-        chevron.isBordered = false
-        chevron.contentTintColor = chrome.tertiary
-        chevron.isEnabled = collapsed != nil
-        chevron.widthAnchor.constraint(equalToConstant: 12).isActive = true
-        leading.append(chevron)
+        // Only a machine has anything to disclose, so only a machine spends a
+        // column on saying so.
+        if let collapsed {
+            let chevron = NSButton(
+                image: Self.symbol(collapsed ? "chevron.right" : "chevron.down", size: 9)
+                    ?? NSImage(), target: self, action: #selector(toggle))
+            chevron.isBordered = false
+            chevron.contentTintColor = chrome.tertiary
+            chevron.widthAnchor.constraint(equalToConstant: 12).isActive = true
+            leading.append(chevron)
+        }
 
         let marker: NSView
         if let symbol, let image = Self.symbol(symbol, size: 11) {
@@ -113,7 +115,12 @@ final class SidebarRow: NSView {
         row.translatesAutoresizingMaskIntoConstraints = false
         addSubview(row)
         NSLayoutConstraint.activate([
-            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            // A workspace starts where its machine's glyph does, so its dot
+            // sits under that glyph and the two names line up. Letting the row
+            // start at the margin instead put every workspace to the left of
+            // the machine it belongs to, which reads as the wrong way round.
+            row.leadingAnchor.constraint(
+                equalTo: leadingAnchor, constant: collapsed == nil ? 26 : 8),
             row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             row.topAnchor.constraint(equalTo: topAnchor, constant: 4),
             row.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
@@ -280,10 +287,10 @@ final class SidebarView: NSView {
             subtitle = endpoint.error.map(Self.reason) ?? "not connected"
         case .online:
             let count = endpoint.snapshot?.workspaces.count ?? 0
-            let spaces = count == 1 ? "1 space" : "\(count) spaces"
-            // A machine you are not looking at can still say it needs you.
-            let blocked = endpoint.snapshot?.agents.contains { $0.agentStatus == .blocked } ?? false
-            subtitle = blocked ? "\(spaces) · needs attention" : spaces
+            // Not "needs attention" as well: the dot is already amber when an
+            // agent is blocked, and saying it twice costs the width the count
+            // is sitting in.
+            subtitle = count == 1 ? "1 space" : "\(count) spaces"
         }
 
         add(
