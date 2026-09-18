@@ -101,13 +101,38 @@ struct Keymap {
                 + (command ? "⌘" : "") + key.label
         }
 
-        func matches(_ event: NSEvent) -> Bool {
+        /// Whether the event is this chord.
+        ///
+        /// Every modifier is compared, the ones the binding does not want
+        /// included: a chord is not "⌃B or anything containing it", or ⌘⌃B
+        /// would arm the prefix on its way to a menu item.
+        ///
+        /// Shift is the exception, and only when `ignoringShift`. A profile
+        /// writes `help = "prefix+?"` with no shift in it, because "?" already
+        /// carries one — demanding shift be up there made help unreachable.
+        /// A keystroke that would produce this binding, for self-checking.
+        var probeCharacters: String {
+            switch key {
+            case .character(let key): return key
+            case .tab: return "\t"
+            case .arrow: return "\u{F700}"
+            case .digits: return "1"
+            }
+        }
+
+        var probeKeyCode: UInt16 {
+            switch key {
+            case .tab: return 48
+            case .arrow(let code): return code
+            default: return 0
+            }
+        }
+
+        func matches(_ event: NSEvent, ignoringShift: Bool = false) -> Bool {
             let flags = event.modifierFlags
-            // Every modifier is compared, the ones the binding does not want
-            // included: a chord is not "⌃B or anything containing it", or
-            // ⌘⌃B would arm the prefix on its way to a menu item.
+            let shiftMatches = ignoringShift || flags.contains(.shift) == shift
             return key.matches(event)
-                && flags.contains(.shift) == shift
+                && shiftMatches
                 && flags.contains(.control) == control
                 && flags.contains(.option) == option
                 && flags.contains(.command) == command
@@ -188,8 +213,20 @@ struct Keymap {
     }
 
     /// The action a key completes, once the prefix is armed.
+    ///
+    /// The action a key completes, once the prefix is armed.
+    ///
+    /// Exact first, then ignoring shift. Both passes are needed: `h` and
+    /// `shift+h` are two different bindings and must not be confused, while
+    /// `?` is one binding that cannot be typed without a shift the profile
+    /// never mentions. Trying exact first means the explicit binding always
+    /// wins where there is one.
     func action(forPrefixed event: NSEvent) -> Action? {
-        bindings.first { $0.binding.usesPrefix && $0.binding.matches(event) }?.action
+        let prefixed = bindings.filter(\.binding.usesPrefix)
+        if let exact = prefixed.first(where: { $0.binding.matches(event) }) {
+            return exact.action
+        }
+        return prefixed.first { $0.binding.matches(event, ignoringShift: true) }?.action
     }
 
     /// How the prefix itself reads, for the help and the armed indicator.

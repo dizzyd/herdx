@@ -630,6 +630,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         invoke(.focusPane(next.id), session: session)
     }
 
+    /// Reports any prefix binding no keystroke can reach.
+    ///
+    /// Generated from the keymap rather than from a list here, so it keeps
+    /// checking whatever the server sends. It exists because the matcher has
+    /// twice been too strict about shift and made a binding unreachable —
+    /// silently, since an armed prefix consumes the key either way.
+    private func reportUnreachableChords() {
+        for (action, binding) in chords.keymap.bindings where binding.usesPrefix {
+            // How a key is actually typed is not knowable from the profile:
+            // "?" needs a shift the profile never mentions. So a binding counts
+            // as reachable if either spelling finds it.
+            let reachable = [binding.shift, true].contains { shift in
+                var flags: NSEvent.ModifierFlags = shift ? [.shift] : []
+                if binding.control { flags.insert(.control) }
+                if binding.option { flags.insert(.option) }
+                if binding.command { flags.insert(.command) }
+                guard
+                    let event = NSEvent.keyEvent(
+                        with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0,
+                        windowNumber: window.windowNumber, context: nil,
+                        characters: binding.probeCharacters,
+                        charactersIgnoringModifiers: binding.probeCharacters,
+                        isARepeat: false, keyCode: binding.probeKeyCode)
+                else { return false }
+                return chords.keymap.action(forPrefixed: event) == action
+            }
+            if !reachable { print("probe: UNREACHABLE \(action.rawValue) = \(binding.label)") }
+        }
+        print("probe: checked \(chords.keymap.bindings.filter(\.binding.usesPrefix).count) chords")
+    }
+
     /// A line over the terminal that clears itself.
     private func notice(_ text: String) {
         noticeToken += 1
@@ -810,6 +841,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     self.gridView.keyDown(with: event)
                 }
                 print("probe: sent \(probe.count) keys")
+                if ProcessInfo.processInfo.environment["HERDX_PROBE_CHORDS"] != nil {
+                    self.reportUnreachableChords()
+                }
+
                 // Give the keys time to reach the server, then leave: a probe
                 // that never exits leaves its output stuck in a pipe buffer.
                 // A capture hook, when there is one, needs the app to outlive
