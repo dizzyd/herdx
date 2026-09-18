@@ -13,16 +13,30 @@ final class Picker: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         let choose: () -> Void
     }
 
+    /// Raised as the highlight moves, for a list whose entries are worth
+    /// seeing before they are chosen.
+    private var onHighlight: ((Item) -> Void)?
+    /// Raised when the list is closed without choosing, so a preview can be
+    /// put back.
+    private var onCancel: (() -> Void)?
+    private var chose = false
+
     private var window: NSWindow?
     private let search = NSSearchField()
     private let table = NSTableView()
     private var all: [Item] = []
     private var shown: [Item] = []
 
-    func show(over parent: NSWindow, title: String, items: [Item]) {
+    func show(
+        over parent: NSWindow, title: String, items: [Item],
+        onHighlight: ((Item) -> Void)? = nil, onCancel: (() -> Void)? = nil
+    ) {
         guard window == nil else { return }
         all = items
         shown = items
+        self.onHighlight = onHighlight
+        self.onCancel = onCancel
+        chose = false
 
         search.placeholderString = "Filter"
         search.font = .systemFont(ofSize: 13)
@@ -71,7 +85,16 @@ final class Picker: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         sheet.onChoose = { [weak self] in self?.chooseSelected() }
         window = sheet
 
-        parent.beginSheet(sheet) { [weak self] _ in self?.window = nil }
+        parent.beginSheet(sheet) { [weak self] _ in
+            guard let self else { return }
+            self.window = nil
+            // Closed without choosing: whatever the highlight was showing is
+            // not what anyone asked for.
+            if !self.chose { self.onCancel?() }
+            self.onHighlight = nil
+            self.onCancel = nil
+        }
+        highlightChanged()
         // The search field takes the keys, so typing filters straight away and
         // the arrows still reach the list.
         sheet.makeFirstResponder(search)
@@ -108,14 +131,21 @@ final class Picker: NSObject, NSTableViewDataSource, NSTableViewDelegate {
             }
         table.reloadData()
         if !shown.isEmpty { table.selectRowIndexes([0], byExtendingSelection: false) }
+        highlightChanged()
     }
 
     @objc private func chooseSelected() {
         let row = table.selectedRow
         guard shown.indices.contains(row) else { return }
         let item = shown[row]
+        chose = true
         close()
         item.choose()
+    }
+
+    private func highlightChanged() {
+        guard let onHighlight, shown.indices.contains(table.selectedRow) else { return }
+        onHighlight(shown[table.selectedRow])
     }
 
     private func close() {
@@ -153,6 +183,7 @@ extension Picker: NSSearchFieldDelegate {
         let next = min(max(table.selectedRow + step, 0), shown.count - 1)
         table.selectRowIndexes([next], byExtendingSelection: false)
         table.scrollRowToVisible(next)
+        highlightChanged()
     }
 }
 

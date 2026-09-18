@@ -86,6 +86,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     private let help = HelpSheet()
     private let prompt = Prompt()
     private let picker = Picker()
+    private let themePicker = Picker()
     private lazy var machinesWindow = MachinesWindowController(
         onChange: { [weak self] in self?.reattachMachines() },
         onInstall: { [weak self] machine in self?.installHerdr(on: machine) })
@@ -995,6 +996,96 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         }
     }
 
+    /// Picks a theme, showing each one as the highlight passes over it.
+    ///
+    /// Applied on the way past rather than only on Return: a palette is a thing
+    /// you judge by looking at it, and a list of names tells you nothing about
+    /// which one you want.
+    @objc private func showThemes(_ sender: Any?) {
+        let installed = ThemeLibrary.installed()
+        guard !installed.isEmpty else {
+            offerToFetchThemes()
+            return
+        }
+        let before = (preferences.themeName, preferences.themeColors)
+
+        // Read up front so each row can say what it is. "kitty theme" on four
+        // hundred rows says nothing, while light or dark is most of what
+        // anyone is filtering for.
+        let described = installed.map { entry -> Picker.Item in
+            let theme = ThemeLibrary.theme(at: entry.url)
+            let detail =
+                theme.map { theme in
+                    (theme.background.isDarkish ? "dark" : "light") + "  ·  "
+                        + (Preferences.encode(theme.background) ?? "")
+                } ?? "unreadable"
+            return Picker.Item(title: entry.name, detail: detail) {}
+        }
+
+        themePicker.show(
+            over: window, title: "Themes",
+            items: described,
+            onHighlight: { [weak self] item in
+                guard let self,
+                    let entry = installed.first(where: { $0.name == item.title }),
+                    let theme = ThemeLibrary.theme(at: entry.url)
+                else { return }
+                self.preview(theme: theme, named: entry.name)
+            },
+            onCancel: { [weak self] in
+                guard let self else { return }
+                self.preferences.themeName = before.0
+                self.preferences.themeColors = before.1
+                self.commitTheme()
+            })
+    }
+
+    /// Shows a theme without keeping it, so moving off it puts things back.
+    private func preview(theme: Theme, named name: String) {
+        preferences.themeName = name
+        preferences.themeColors = theme.hexComponents
+        // A loaded palette and the two overrides cannot both win, and the
+        // overrides would repaint two of the twenty colours being looked at.
+        preferences.background = nil
+        preferences.foreground = nil
+        commitTheme()
+    }
+
+    private func commitTheme() {
+        Preferences.current = preferences
+        applyTheme()
+    }
+
+    /// Offers to fetch the collection, saying where it comes from.
+    private func offerToFetchThemes() {
+        let alert = NSAlert()
+        alert.messageText = "Get colour themes?"
+        alert.informativeText =
+            "HerdX will download kitty's theme collection — a few hundred palettes — "
+            + "from github.com/kovidgoyal/kitty-themes, and keep them in "
+            + "Application Support. Nothing is sent."
+        alert.addButton(withTitle: "Download")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        notice("fetching themes…")
+        ThemeLibrary.fetch { [weak self] result in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                switch result {
+                case .success(let count):
+                    self.notice("\(count) themes ready")
+                    self.showThemes(nil)
+                case .failure(let error):
+                    let failed = NSAlert()
+                    failed.messageText = "The themes could not be downloaded"
+                    failed.informativeText = error.reason
+                    failed.runModal()
+                }
+            }
+        }
+    }
+
     @objc private func showMachines(_ sender: Any?) {
         machinesWindow.present()
     }
@@ -1273,6 +1364,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
             title: "Settings…", action: #selector(showPreferences(_:)), keyEquivalent: ",")
         settings.target = self
         appMenu.addItem(settings)
+        let themes = NSMenuItem(
+            title: "Themes…", action: #selector(showThemes(_:)), keyEquivalent: "t")
+        themes.keyEquivalentModifierMask = [.command, .option]
+        themes.target = self
+        appMenu.addItem(themes)
         let machines = NSMenuItem(
             title: "Machines…", action: #selector(showMachines(_:)), keyEquivalent: "m")
         machines.keyEquivalentModifierMask = [.command, .shift]
@@ -1416,6 +1512,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
             let environment = ProcessInfo.processInfo.environment
             let settings = environment["HERDX_CAPTURE_SETTINGS"] != nil
             let machinesWanted = environment["HERDX_CAPTURE_MACHINES"] != nil
+            let themesWanted = environment["HERDX_CAPTURE_THEMES"] != nil
+            if themesWanted { self.showThemes(nil) }
             if machinesWanted {
                 self.showMachines(nil)
                 if environment["HERDX_CAPTURE_MACHINES"] == "add" {
@@ -1432,7 +1530,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
                 self.perform(sheetAction, session: session)
             }
             let target: NSView? =
-                machinesWanted
+                themesWanted
+                ? self.window.attachedSheet?.contentView
+                : machinesWanted
                 ? (self.machinesWindow.window?.attachedSheet?.contentView
                     ?? self.machinesWindow.window?.contentView)
                 : settings
