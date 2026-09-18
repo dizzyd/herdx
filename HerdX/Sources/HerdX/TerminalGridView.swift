@@ -573,7 +573,7 @@ final class TerminalGridView: NSView {
     private func drawPrefixIndicator(on rect: CGRect, in context: CGContext) {
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: labelSize, weight: .semibold),
-            .foregroundColor: NSColor.white,
+            .foregroundColor: chrome.accent.isDarkish ? NSColor.white : NSColor.black,
         ]
         let text = NSAttributedString(string: prefixLabel, attributes: attributes)
         let size = text.size()

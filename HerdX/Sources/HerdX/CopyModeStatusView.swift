@@ -14,7 +14,7 @@ final class CopyModeStatusView: NSView {
         layer?.cornerRadius = 6
         isHidden = true
 
-        label.font = .monospacedSystemFont(ofSize: 11, weight: .medium)
+        label.font = .monospacedSystemFont(ofSize: 12, weight: .semibold)
         label.translatesAutoresizingMaskIntoConstraints = false
         addSubview(label)
         NSLayoutConstraint.activate([
@@ -36,15 +36,19 @@ final class CopyModeStatusView: NSView {
         isHidden = false
     }
 
-    /// Coloured from the chrome, not from the window's appearance.
+    /// Coloured to be legible whatever the palette turns out to be.
     ///
-    /// It floats over the terminal, so the terminal is what it has to be
-    /// legible against. Taking the Mac light/dark theme instead put dark text
-    /// on a dark pane whenever the two did not agree.
+    /// It floats over the terminal, and every previous attempt picked one of
+    /// the two palettes and got it wrong for somebody: the Mac light/dark theme
+    /// put dark text on a dark pane, and a tint of the terminal's own colours
+    /// is only as distinct as those colours happen to be. So the fill is the
+    /// accent at full strength and the text is whichever of black or white
+    /// stands out against it, which cannot come out the same shade as the
+    /// thing behind it.
     func apply(chrome: Chrome) {
-        layer?.backgroundColor = chrome.accentFill.cgColor
-        layer?.borderWidth = 1
-        layer?.borderColor = chrome.accent.withAlphaComponent(0.6).cgColor
-        label.textColor = chrome.primary
+        let fill = chrome.accent
+        layer?.backgroundColor = fill.cgColor
+        layer?.borderWidth = 0
+        label.textColor = fill.isDarkish ? .white : .black
     }
 }
