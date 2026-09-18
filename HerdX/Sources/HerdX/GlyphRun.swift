@@ -18,7 +18,9 @@ struct GlyphRunDrawer {
     let cellSize: CGSize
     let ascent: CGFloat
 
-    init(base: NSFont) {
+    /// `lineHeight` multiplies the font's natural line height, for readers who
+    /// want their output less tightly packed than the face was drawn for.
+    init(base: NSFont, lineHeight: CGFloat = 1) {
         let pointSize = base.pointSize
         let manager = NSFontManager.shared
         let bold = manager.convert(base, toHaveTrait: .boldFontMask)
@@ -42,11 +44,12 @@ struct GlyphRunDrawer {
         }
 
         // Cells must land on whole pixels or the grid shimmers during scroll.
-        let height = CTFontGetAscent(base) + CTFontGetDescent(base) + CTFontGetLeading(base)
-        cellSize = CGSize(
-            width: advance.rounded(.up),
-            height: max(height.rounded(.up), 1))
-        ascent = CTFontGetAscent(base)
+        let natural = CTFontGetAscent(base) + CTFontGetDescent(base) + CTFontGetLeading(base)
+        let height = max((natural * max(lineHeight, 1)).rounded(.up), 1)
+        cellSize = CGSize(width: advance.rounded(.up), height: height)
+        // The extra room is split above and below, so a taller line leaves the
+        // text centred in its cell rather than perched at the top of it.
+        ascent = (CTFontGetAscent(base) + (height - natural) / 2).rounded()
     }
 
     func font(bold: Bool, italic: Bool) -> CTFont {

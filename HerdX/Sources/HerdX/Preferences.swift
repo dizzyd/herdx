@@ -42,6 +42,8 @@ struct Preferences {
     var panePadding: CGFloat
     /// Size of the label on a pane's frame, in points.
     var paneLabelSize: CGFloat
+    /// Line height as a multiple of the font's natural one.
+    var lineHeight: CGFloat
 
     private enum Key {
         static let fontName = "fontName"
@@ -52,6 +54,7 @@ struct Preferences {
         static let foreground = "terminalForeground"
         static let panePadding = "panePadding"
         static let paneLabelSize = "paneLabelSize"
+        static let lineHeight = "lineHeight"
     }
 
     /// Colours round-trip through `#rrggbb`, so they stay readable in defaults
@@ -89,7 +92,8 @@ struct Preferences {
                 background: decode(defaults.string(forKey: Key.background)),
                 foreground: decode(defaults.string(forKey: Key.foreground)),
                 panePadding: defaults.object(forKey: Key.panePadding) as? CGFloat ?? 6,
-                paneLabelSize: defaults.object(forKey: Key.paneLabelSize) as? CGFloat ?? 11)
+                paneLabelSize: defaults.object(forKey: Key.paneLabelSize) as? CGFloat ?? 11,
+                lineHeight: defaults.object(forKey: Key.lineHeight) as? CGFloat ?? 1)
         }
         set {
             let defaults = UserDefaults.standard
@@ -101,6 +105,7 @@ struct Preferences {
             defaults.set(encode(newValue.foreground), forKey: Key.foreground)
             defaults.set(newValue.panePadding, forKey: Key.panePadding)
             defaults.set(newValue.paneLabelSize, forKey: Key.paneLabelSize)
+            defaults.set(newValue.lineHeight, forKey: Key.lineHeight)
         }
     }
 

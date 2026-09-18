@@ -31,7 +31,6 @@ final class SidebarRow: NSView {
         symbol: String?,
         collapsed: Bool?,
         selected: Bool,
-        indent: CGFloat,
         chrome: Chrome,
         target: Target,
         onSelect: @escaping (Target) -> Void,
@@ -47,28 +46,41 @@ final class SidebarRow: NSView {
         wantsLayer = true
         layer?.cornerRadius = 6
 
+        // Both kinds of row use the same two columns, so a workspace's dot
+        // sits under its machine's glyph and their names start at the same x.
+        // Indenting the workspaces instead left their names starting to the
+        // *left* of the machine's, which read as the wrong way round.
         var leading: [NSView] = []
 
-        if let collapsed {
-            let chevron = NSButton(
-                image: Self.symbol(collapsed ? "chevron.right" : "chevron.down", size: 9)
-                    ?? NSImage(), target: self, action: #selector(toggle))
-            chevron.isBordered = false
-            chevron.contentTintColor = chrome.tertiary
-            chevron.widthAnchor.constraint(equalToConstant: 12).isActive = true
-            leading.append(chevron)
-        }
+        let chevron = NSButton(
+            image: collapsed.flatMap {
+                Self.symbol($0 ? "chevron.right" : "chevron.down", size: 9)
+            } ?? NSImage(), target: self, action: #selector(toggle))
+        chevron.isBordered = false
+        chevron.contentTintColor = chrome.tertiary
+        chevron.isEnabled = collapsed != nil
+        chevron.widthAnchor.constraint(equalToConstant: 12).isActive = true
+        leading.append(chevron)
 
+        let marker: NSView
         if let symbol, let image = Self.symbol(symbol, size: 11) {
             let glyph = NSImageView(image: image)
             glyph.contentTintColor = chrome.secondary
-            glyph.widthAnchor.constraint(equalToConstant: 15).isActive = true
-            leading.append(glyph)
+            marker = glyph
         } else {
             let dot = StatusDot()
             dot.set(status: status, chrome: chrome)
-            leading.append(dot)
+            let box = NSView()
+            box.addSubview(dot)
+            NSLayoutConstraint.activate([
+                dot.centerXAnchor.constraint(equalTo: box.centerXAnchor),
+                dot.centerYAnchor.constraint(equalTo: box.centerYAnchor),
+                box.heightAnchor.constraint(equalTo: dot.heightAnchor),
+            ])
+            marker = box
         }
+        marker.widthAnchor.constraint(equalToConstant: 15).isActive = true
+        leading.append(marker)
 
         let name = NSTextField(labelWithString: title)
         name.font = .systemFont(ofSize: 12, weight: .semibold)
@@ -98,7 +110,7 @@ final class SidebarRow: NSView {
         row.translatesAutoresizingMaskIntoConstraints = false
         addSubview(row)
         NSLayoutConstraint.activate([
-            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8 + indent),
+            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
             row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             row.topAnchor.constraint(equalTo: topAnchor, constant: 5),
             row.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -5),
@@ -156,7 +168,11 @@ final class SidebarRow: NSView {
 /// selection. Tabs live in the tab bar; agents show up as the status of the
 /// workspace and tab that contain them.
 final class SidebarView: NSView {
+    /// The width it opens at. Not a constraint: pinning it meant the split
+    /// view offered a drag handle it could never honour.
     static let width: CGFloat = 240
+    static let minimumWidth: CGFloat = 170
+    static let maximumWidth: CGFloat = 420
 
     /// Raised when a row is clicked, with the method needed to focus it.
     var onSelect: ((Command) -> Void)?
@@ -189,7 +205,6 @@ final class SidebarView: NSView {
             stack.topAnchor.constraint(equalTo: topAnchor),
             stack.leadingAnchor.constraint(equalTo: leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: trailingAnchor),
-            widthAnchor.constraint(equalToConstant: Self.width),
         ])
     }
 
@@ -243,7 +258,6 @@ final class SidebarView: NSView {
                     // workspace; the others are focused on their own server,
                     // which is not the same as being what you are looking at.
                     selected: isActive && workspace.focused,
-                    indent: 16,
                     target: .workspace(workspace.workspaceID, endpoint: endpoint.index))
             }
         }
@@ -275,7 +289,6 @@ final class SidebarView: NSView {
             symbol: endpoint.isRemote ? "server.rack" : "desktopcomputer",
             collapsed: collapsed.contains(endpoint.id),
             selected: ownsSelection,
-            indent: 0,
             target: .endpoint(endpoint.index),
             onToggle: { [weak self] in
                 guard let self else { return }
@@ -304,14 +317,12 @@ final class SidebarView: NSView {
         symbol: String?,
         collapsed: Bool?,
         selected: Bool,
-        indent: CGFloat,
         target: SidebarRow.Target,
         onToggle: (() -> Void)? = nil
     ) {
         let row = SidebarRow(
             title: title, subtitle: subtitle, status: status, symbol: symbol,
-            collapsed: collapsed, selected: selected,
-            indent: indent, chrome: chrome, target: target,
+            collapsed: collapsed, selected: selected, chrome: chrome, target: target,
             onSelect: { [weak self] target in
                 switch target {
                 case .endpoint(let index): self?.onSelectEndpoint?(index)

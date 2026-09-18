@@ -173,8 +173,8 @@ final class TerminalGridView: NSView {
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
 
-    init(font: NSFont) {
-        glyphs = GlyphRunDrawer(base: font)
+    init(font: NSFont, lineHeight: CGFloat) {
+        glyphs = GlyphRunDrawer(base: font, lineHeight: lineHeight)
         cellSize = glyphs.cellSize
         super.init(frame: .zero)
         // Layer-backed because its pane views are, and with the redraw policy
@@ -182,8 +182,8 @@ final class TerminalGridView: NSView {
     }
 
     /// Swaps the font, which changes the cell size and therefore the grid.
-    func apply(font: NSFont) {
-        glyphs = GlyphRunDrawer(base: font)
+    func apply(font: NSFont, lineHeight: CGFloat) {
+        glyphs = GlyphRunDrawer(base: font, lineHeight: lineHeight)
         cellSize = glyphs.cellSize
         syncPaneViews()
         // The grid size changed under the server; make it re-lay-out.

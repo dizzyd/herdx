@@ -6,7 +6,8 @@ import AppKit
 /// structured description of the workspace tree, so this app is a renderer and
 /// an input source, not a terminal emulator.
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSplitViewDelegate
+{
     private var window: NSWindow!
     private var gridView: TerminalGridView!
     private var sidebar: SidebarView!
@@ -65,7 +66,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         preferences = Preferences.current
-        gridView = TerminalGridView(font: preferences.font)
+        gridView = TerminalGridView(font: preferences.font, lineHeight: preferences.lineHeight)
 
         let cell = gridView.cellSize
         let cols = 120
@@ -158,6 +159,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let split = ChromeSplitView()
         split.isVertical = true
         split.dividerStyle = .thin
+        split.delegate = self
         windowSplit = split
         split.addArrangedSubview(sidebar)
         split.addArrangedSubview(terminalArea)
@@ -177,6 +179,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         ])
         window.contentView = container
         copyModeStatus.attach(to: window, over: gridView)
+
+        // The sidebar opens at its default width and is draggable from there;
+        // the divider has to be placed after layout, or it is positioned
+        // against a window that has not been sized yet.
+        window.contentView?.layoutSubtreeIfNeeded()
+        split.setPosition(SidebarView.width, ofDividerAt: 0)
 
         // Lay out before connecting: the handshake carries a surface size, and
         // asking for one before the views have frames requests a 1x1 surface —
@@ -357,7 +365,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 MainActor.assumeIsolated {
                     guard let self else { return }
                     self.preferences = updated
-                    self.gridView.apply(font: updated.font)
+                    self.gridView.apply(
+                        font: updated.font, lineHeight: updated.lineHeight)
                     self.applyTheme()
                 }
             }
@@ -955,6 +964,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.makeFirstResponder(gridView)
     }
 
+    /// How far the sidebar may be dragged. Without these the split view lets
+    /// it be squeezed to nothing or dragged over the whole window.
+    func splitView(
+        _ splitView: NSSplitView, constrainMinCoordinate proposed: CGFloat,
+        ofSubviewAt index: Int
+    ) -> CGFloat {
+        index == 0 ? SidebarView.minimumWidth : proposed
+    }
+
+    func splitView(
+        _ splitView: NSSplitView, constrainMaxCoordinate proposed: CGFloat,
+        ofSubviewAt index: Int
+    ) -> CGFloat {
+        index == 0 ? min(SidebarView.maximumWidth, proposed) : proposed
+    }
+
+    /// The terminal takes the slack when the window resizes; the sidebar keeps
+    /// whatever width it was dragged to.
+    func splitView(_ splitView: NSSplitView, shouldAdjustSizeOfSubview view: NSView) -> Bool {
+        !(view is SidebarView)
+    }
+
     func windowDidResize(_ notification: Notification) { copyModeStatus.reposition() }
     func windowDidMove(_ notification: Notification) { copyModeStatus.reposition() }
 
@@ -1050,33 +1081,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 print("probe: focusedPaneFromSnapshot=\(self.gridView.focusedPaneFromSnapshot ?? "nil")")
                 print("probe: focusedPane=\(self.gridView.focusedPane ?? "nil")")
                 print("probe: panes=\(self.gridView.panes.map(\.id))")
-                if let snapshot = self.session?.lastSnapshot {
-                    print("probe: snapshot panes=\(snapshot.panes.map { "\($0.paneID)@\($0.tabID)" })")
-                    print("probe: zoomed tabs=\(snapshot.tabs.filter(\.zoomed).map(\.tabID))")
-                    print("probe: labels=\(self.gridView.paneLabels)")
-                }
-
-                let made = self.window.makeFirstResponder(self.gridView)
-                print("probe: makeFirstResponder=\(made)")
-
-                // `HERDX_PROBE_ARM` leaves the chord prefix armed, so the
-                // indicator can be photographed.
-                if ProcessInfo.processInfo.environment["HERDX_PROBE_ARM"] != nil {
-                    self.gridView.prefixArmed = true
-                }
-
-                for character in probe {
-                    guard
-                        let event = NSEvent.keyEvent(
-                            with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
-                            windowNumber: self.window.windowNumber, context: nil,
-                            characters: String(character),
-                            charactersIgnoringModifiers: String(character),
-                            isARepeat: false, keyCode: 0)
-                    else { continue }
-                    self.gridView.keyDown(with: event)
-                }
-                print("probe: sent \(probe.count) keys")
+                print("probe: cellSize=\(self.gridView.cellSize) grid=\(self.gridView.gridSize)")
                 if ProcessInfo.processInfo.environment["HERDX_PROBE_RESIZE"] != nil {
                     self.enterResizeMode()
                     print("probe: parent frame=\(self.window.frame)")

@@ -17,6 +17,8 @@ final class PreferencesWindowController: NSWindowController {
     private let paddingStepper = NSStepper()
     private let labelField = NSTextField()
     private let labelStepper = NSStepper()
+    private let lineField = NSTextField()
+    private let lineStepper = NSStepper()
     private let backgroundWell = NSColorWell()
     private let foregroundWell = NSColorWell()
 
@@ -28,7 +30,7 @@ final class PreferencesWindowController: NSWindowController {
         self.onChange = onChange
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 440, height: 292),
+            contentRect: NSRect(x: 0, y: 0, width: 440, height: 324),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false)
@@ -109,6 +111,22 @@ final class PreferencesWindowController: NSWindowController {
         labelSize.orientation = .horizontal
         labelSize.spacing = 4
 
+        lineField.alignment = .right
+        lineField.target = self
+        lineField.action = #selector(lineHeightChanged)
+        lineField.widthAnchor.constraint(equalToConstant: 48).isActive = true
+        // Percent rather than a multiplier: nobody thinks in 1.2.
+        lineStepper.minValue = 100
+        lineStepper.maxValue = 200
+        lineStepper.increment = 5
+        lineStepper.valueWraps = false
+        lineStepper.target = self
+        lineStepper.action = #selector(lineHeightStepped)
+
+        let lineHeight = NSStackView(views: [lineField, lineStepper, caption("%")])
+        lineHeight.orientation = .horizontal
+        lineHeight.spacing = 4
+
         for well in [backgroundWell, foregroundWell] {
             well.target = self
             well.action = #selector(colourChanged)
@@ -131,6 +149,7 @@ final class PreferencesWindowController: NSWindowController {
             [label("Colours:"), colours],
             [label("Pane padding:"), padding],
             [label("Pane label:"), labelSize],
+            [label("Line height:"), lineHeight],
         ])
         grid.rowSpacing = 10
         grid.columnSpacing = 10
@@ -194,6 +213,8 @@ final class PreferencesWindowController: NSWindowController {
         paddingStepper.doubleValue = Double(preferences.panePadding)
         labelField.stringValue = String(format: "%.0f", preferences.paneLabelSize)
         labelStepper.doubleValue = Double(preferences.paneLabelSize)
+        lineField.stringValue = String(format: "%.0f", preferences.lineHeight * 100)
+        lineStepper.doubleValue = Double(preferences.lineHeight * 100)
     }
 
     // MARK: - Actions
@@ -218,6 +239,16 @@ final class PreferencesWindowController: NSWindowController {
     /// does not apply to a terminal grid.
     @objc func validModesForFontPanel(_ panel: NSFontPanel) -> NSFontPanel.ModeMask {
         [.collection, .face, .size]
+    }
+
+    @objc private func lineHeightStepped() {
+        preferences.lineHeight = CGFloat(lineStepper.doubleValue) / 100
+        apply()
+    }
+
+    @objc private func lineHeightChanged() {
+        preferences.lineHeight = CGFloat(lineField.doubleValue).clamped(to: 100...200) / 100
+        apply()
     }
 
     @objc private func labelSizeStepped() {
