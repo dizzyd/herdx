@@ -282,11 +282,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// what the app draws.
     private func applyTheme() {
         appliedSystemIsDark = systemIsDark
-        // Two themes and one palette: `window` is the light/dark appearance the
-        // Mac controls follow, `terminal` is what the grid is painted in, and
-        // the palette is the chrome derived from the terminal so the window
-        // reads as one surface.
-        let windowTheme = preferences.theme(matching: systemIsDark)
+        // The Mac light/dark appearance is set on the window below and the
+        // controls follow it; everything this app paints itself comes from the
+        // terminal theme and the chrome derived from it, so that the window
+        // reads as one surface rather than two.
         terminalTheme = preferences.terminalTheme(matching: systemIsDark)
 
         gridView.theme = terminalTheme
@@ -298,7 +297,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case .dark: window.appearance = NSAppearance(named: .darkAqua)
         case .light: window.appearance = NSAppearance(named: .aqua)
         }
-        copyModeStatus.apply(theme: windowTheme)
         applyChrome()
         publish(theme: terminalTheme)
     }
@@ -317,6 +315,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // shows above the sidebar and tabs.
         window.backgroundColor = palette.surface
         sidebar.apply(chrome: palette)
+        copyModeStatus.apply(chrome: palette)
         tabBar.apply(chrome: palette)
         windowSplit?.apply(chrome: palette)
         terminalSplit?.apply(chrome: palette)
@@ -1008,6 +1007,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     self.gridView.keyDown(with: event)
                 }
                 print("probe: sent \(probe.count) keys")
+                if ProcessInfo.processInfo.environment["HERDX_PROBE_RESIZE"] != nil {
+                    self.enterResizeMode()
+                }
                 if ProcessInfo.processInfo.environment["HERDX_PROBE_CHORDS"] != nil {
                     self.reportUnreachableChords()
                 }

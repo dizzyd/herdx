@@ -36,10 +36,15 @@ final class CopyModeStatusView: NSView {
         isHidden = false
     }
 
-    func apply(theme: Theme) {
-        let onDark = theme.background.isDarkish
-        layer?.backgroundColor = (onDark ? NSColor.white : NSColor.black)
-            .withAlphaComponent(0.14).cgColor
-        label.textColor = theme.foreground
+    /// Coloured from the chrome, not from the window's appearance.
+    ///
+    /// It floats over the terminal, so the terminal is what it has to be
+    /// legible against. Taking the Mac light/dark theme instead put dark text
+    /// on a dark pane whenever the two did not agree.
+    func apply(chrome: Chrome) {
+        layer?.backgroundColor = chrome.accentFill.cgColor
+        layer?.borderWidth = 1
+        layer?.borderColor = chrome.accent.withAlphaComponent(0.6).cgColor
+        label.textColor = chrome.primary
     }
 }
