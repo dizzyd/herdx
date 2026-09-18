@@ -355,6 +355,31 @@ impl Transport {
 }
 
 /// Spawns `herdr remote-client-bridge` over ssh.
+/// The command to run on the far side.
+///
+/// `ssh host herdr …` runs a non-interactive, non-login shell, and
+/// `~/.local/bin` — where herdr installs itself — is usually not on the PATH
+/// such a shell gets. herdr's own remote attach uses the absolute path for
+/// exactly this reason, so a machine with herdr installed would otherwise look
+/// to us like a machine without it.
+fn remote_bridge_command(session: &str) -> String {
+    let arguments = if session == "default" {
+        "remote-client-bridge".to_owned()
+    } else {
+        format!("--session {} remote-client-bridge", shell_quoted(session))
+    };
+    format!(
+        "if [ -x \"$HOME/.local/bin/herdr\" ]; then exec \"$HOME/.local/bin/herdr\" {arguments}; \
+         else exec herdr {arguments}; fi"
+    )
+}
+
+/// Single-quoted for the remote shell. herdr validates session names, but the
+/// catalog is a file a person edits.
+fn shell_quoted(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
 fn start_ssh(target: &str, session: &str) -> io::Result<(ReadHalf, WriteHalf)> {
     let mut command = Command::new("ssh");
     command
@@ -368,12 +393,8 @@ fn start_ssh(target: &str, session: &str) -> io::Result<(ReadHalf, WriteHalf)> {
         .arg("-o")
         .arg("ServerAliveInterval=30")
         .arg(target)
-        .arg("herdr");
-    if session != "default" {
-        command.arg("--session").arg(session);
-    }
+        .arg(remote_bridge_command(session));
     command
-        .arg("remote-client-bridge")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

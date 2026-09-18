@@ -616,7 +616,8 @@ fn spawn_endpoint(
                 Err(err) => {
                     // No label: whatever shows this already knows which
                     // machine it is asking about.
-                    *thread_shared.error.lock().unwrap() = Some(format!("{err}"));
+                    *thread_shared.error.lock().unwrap() =
+                        Some(explain_attach_failure(&thread_endpoint, &err.to_string()));
                     thread_status.store(HX_ENDPOINT_OFFLINE, Ordering::Release);
                 }
             }
@@ -636,6 +637,24 @@ fn spawn_endpoint(
         outbound: tx,
         status,
     }
+}
+
+/// Turns a transport failure into something a reader can act on.
+///
+/// herdr installs itself on a machine when you attach with `herdr --remote`,
+/// after asking; it is not something that happens because a client tried to
+/// connect. So a machine without it is a machine that needs that command run
+/// once, and saying so is more use than passing on the shell's own wording.
+fn explain_attach_failure(endpoint: &crate::endpoint::Endpoint, message: &str) -> String {
+    let missing = message.contains("command not found")
+        || message.contains("not found")
+        || message.contains("No such file or directory");
+    if let crate::endpoint::EndpointKind::Ssh { target, .. } = &endpoint.kind {
+        if missing {
+            return format!("herdr is not installed — run: herdr --remote {target}");
+        }
+    }
+    message.to_owned()
 }
 
 /// Reads from one endpoint until it goes away.
