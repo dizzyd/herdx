@@ -6,6 +6,10 @@
 //!
 //! The upstream definition is pure `cfg!()`, so this cannot drift in behaviour
 //! without a compile-visible change upstream.
+//!
+//! Not upstream's file. `PlatformCapabilities` and its values are reproduced
+//! from herdr's `platform` (Apache-2.0; see NOTICE) so the vendored sources
+//! compile against them.
 
 pub(crate) struct PlatformCapabilities {
     #[allow(dead_code)]

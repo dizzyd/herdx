@@ -10,6 +10,10 @@
 //! `Agent` carries no serde derives upstream, so it is not wire-visible and a
 //! local copy cannot break protocol compatibility. `tests/protocol.rs` reads
 //! the vendored source and fails if upstream's agent list or labels change.
+//!
+//! Not upstream's file. `Agent` and its labels are reproduced from herdr's
+//! `detect` (Apache-2.0; see NOTICE) so the vendored sources compile against
+//! them.
 
 /// Which agent we detected running in a pane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

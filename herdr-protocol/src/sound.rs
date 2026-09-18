@@ -7,6 +7,10 @@
 //! override file for each kind.
 //!
 //! No serde derives upstream, so this is not wire-visible.
+//!
+//! Not upstream's file. `Sound` and its variants are reproduced from herdr's
+//! `sound` (Apache-2.0; see NOTICE) so the vendored sources compile against
+//! them.
 
 /// Which notification sound to play.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
