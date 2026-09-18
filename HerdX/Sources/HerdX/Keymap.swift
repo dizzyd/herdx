@@ -79,7 +79,9 @@ struct Keymap {
         var label: String {
             switch self {
             case .character(let key): return key
-            case .tab: return "⇥"
+            // Spelled out: ⇥ is a handful of hairlines at this size and reads
+            // as a smudge next to the letters it is listed among.
+            case .tab: return "tab"
             case .arrow(let code):
                 return ["↑", "↓", "←", "→"][[126, 125, 123, 124].firstIndex(of: Int(code)) ?? 0]
             case .digits: return "1…9"

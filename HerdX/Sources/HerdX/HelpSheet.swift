@@ -103,9 +103,10 @@ final class HelpSheet {
 
         let grid = NSGridView(views: rows.map { key, description in
             let keyLabel = NSTextField(labelWithString: key)
-            // Monospaced digits keep the key column from shifting about as the
-            // glyphs change width.
-            keyLabel.font = .monospacedSystemFont(ofSize: 12, weight: .semibold)
+            // A shade larger than the description beside it: the keys are the
+            // part you are scanning for, and several are symbols rather than
+            // letters.
+            keyLabel.font = .monospacedSystemFont(ofSize: 13, weight: .semibold)
             let text = NSTextField(labelWithString: description)
             text.font = .systemFont(ofSize: 12)
             return [keyLabel, text]
