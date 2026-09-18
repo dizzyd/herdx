@@ -162,7 +162,17 @@ struct Keymap {
     /// is always `name = "value"` under one table — never nested, never
     /// multi-line. Anything it does not recognise is skipped rather than
     /// guessed at.
+    /// Parses a profile without adding anything to it, so the additions
+    /// themselves do not recurse through `adopt`.
+    private init?(bare profile: String) {
+        self.init(profile: profile, adoptingAdditions: false)
+    }
+
     init?(profile: String) {
+        self.init(profile: profile, adoptingAdditions: true)
+    }
+
+    private init?(profile: String, adoptingAdditions: Bool) {
         var found: [(Action, Binding)] = []
         var prefixSpec: Binding?
 
@@ -187,6 +197,29 @@ struct Keymap {
         guard !found.isEmpty else { return nil }
         if let prefixSpec { prefix = prefixSpec }
         bindings = found
+        if adoptingAdditions { adopt(Self.additions) }
+    }
+
+    /// Adds bindings of our own wherever herdr has left the key free.
+    ///
+    /// Written as a profile and run through the same parser, so there is one
+    /// way a binding comes to exist. A key herdr already uses is left alone:
+    /// these are additions, and an addition that overrode the user's own
+    /// keymap would be the guessing this class exists to stop.
+    private mutating func adopt(_ profile: String) {
+        guard let extra = Keymap(bare: profile) else { return }
+        for candidate in extra.bindings {
+            let taken = bindings.contains {
+                $0.binding.usesPrefix == candidate.binding.usesPrefix
+                    && $0.binding.key == candidate.binding.key
+                    && $0.binding.shift == candidate.binding.shift
+                    && $0.binding.control == candidate.binding.control
+                    && $0.binding.option == candidate.binding.option
+                    && $0.binding.command == candidate.binding.command
+            }
+            guard !taken else { continue }
+            bindings.append(candidate)
+        }
     }
 
     /// `prefix+shift+h`, `ctrl+b`, `prefix+1..9`, `up`.
@@ -248,6 +281,18 @@ struct Keymap {
 }
 
 extension Keymap {
+    /// Bindings HerdX adds where herdr leaves the key unbound.
+    ///
+    /// The arrows do what hjkl already does. herdr's own keymap is built for
+    /// hands that stay on the home row; a Mac app is also used by people who
+    /// reach for the arrow keys, and there is no reason both cannot work.
+    static let additions = """
+        focus_pane_left = "prefix+left"
+        focus_pane_down = "prefix+down"
+        focus_pane_up = "prefix+up"
+        focus_pane_right = "prefix+right"
+        """
+
     /// herdr's defaults, used until a snapshot brings the user's own.
     ///
     /// Written as a profile rather than as a table so there is one parser and

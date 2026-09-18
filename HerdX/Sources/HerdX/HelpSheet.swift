@@ -20,11 +20,18 @@ final class HelpSheet {
 
         // Bindings HerdX cannot carry out are still the user's bindings, and
         // leaving them out would make the list look complete when it is not.
-        let prefixed = keymap.bindings.filter(\.binding.usesPrefix).map { entry in
+        // An action with more than one key gets one row listing both, rather
+        // than two rows saying the same thing.
+        var keysByAction: [Keymap.Action: [String]] = [:]
+        var order: [Keymap.Action] = []
+        for entry in keymap.bindings where entry.binding.usesPrefix {
+            if keysByAction[entry.action] == nil { order.append(entry.action) }
+            keysByAction[entry.action, default: []].append(entry.binding.label)
+        }
+        let prefixed = order.map { action in
             (
-                entry.binding.label,
-                supported(entry.action)
-                    ? entry.action.title : entry.action.title + "  —  not yet"
+                keysByAction[action, default: []].joined(separator: "  "),
+                supported(action) ? action.title : action.title + "  —  not yet"
             )
         }
         // herdr binds far more than fits in one column at a sensible window
