@@ -57,7 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var publishedTheme: [UInt8]?
     /// The appearance the current theme was resolved from.
     private var appliedSystemIsDark: Bool?
-    private let copyModeStatus = CopyModeStatusView()
+    private let copyModeStatus = ModeStatus()
     private let tabBar = TabBarView()
     private let help = HelpSheet()
     private let prompt = Prompt()
@@ -135,7 +135,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.titleVisibility = .hidden
 
 
-        copyModeStatus.translatesAutoresizingMaskIntoConstraints = false
 
         // Tabs sit above the terminal and start where the terminal starts, so
         // the sidebar keeps the whole left column.
@@ -170,25 +169,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let container = NSView()
         split.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(split)
-        // Explicitly above the split, and lifted in the layer tree too. Both
-        // are layer-backed, and subview order alone does not settle which layer
-        // composites on top — which is exactly the kind of difference an
-        // offscreen `cacheDisplay` renders correctly and a real window does
-        // not.
-        container.addSubview(copyModeStatus, positioned: .above, relativeTo: split)
-        copyModeStatus.wantsLayer = true
-        copyModeStatus.layer?.zPosition = 1
         NSLayoutConstraint.activate([
             split.topAnchor.constraint(equalTo: container.topAnchor),
             split.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             split.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             split.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            copyModeStatus.leadingAnchor.constraint(
-                equalTo: container.leadingAnchor, constant: SidebarView.width + 12),
-            copyModeStatus.bottomAnchor.constraint(
-                equalTo: container.bottomAnchor, constant: -12),
         ])
         window.contentView = container
+        copyModeStatus.attach(to: window)
 
         // Lay out before connecting: the handshake carries a surface size, and
         // asking for one before the views have frames requests a 1x1 surface —
@@ -222,9 +210,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         if !AppDelegate.isHeadless {
-            window.makeKeyAndOrderFront(nil)
-            window.makeFirstResponder(gridView)
-            NSApp.activate(ignoringOtherApps: true)
+            // `HERDX_QUIET_FRONT` shows the window without taking focus, for
+            // validating what only a real compositor can show. Stealing focus
+            // from whoever is at the keyboard is not acceptable just to look
+            // at a pixel.
+            if ProcessInfo.processInfo.environment["HERDX_QUIET_FRONT"] != nil {
+                window.orderFront(nil)
+            } else {
+                window.makeKeyAndOrderFront(nil)
+                window.makeFirstResponder(gridView)
+                NSApp.activate(ignoringOtherApps: true)
+            }
         } else {
             // Lay the window out off-screen so the view hierarchy has real
             // frames to render into, without ever appearing on a display.
@@ -900,6 +896,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.makeFirstResponder(gridView)
     }
 
+    func windowDidResize(_ notification: Notification) { copyModeStatus.reposition() }
+    func windowDidMove(_ notification: Notification) { copyModeStatus.reposition() }
+
     /// Disarms a half-entered chord when the window stops listening.
     ///
     /// The prefix consumes the next keystroke wherever it arrives. Left armed
@@ -1069,8 +1068,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self.gridView.refreshIfNeeded()
             view.layoutSubtreeIfNeeded()
             self.gridView.displayIfNeeded()
-            if let data = self.snapshot(of: view)?
-                .representation(using: .png, properties: [:])
+            let composited = environment["HERDX_CAPTURE_COMPOSITED"] != nil
+            let rep = composited ? self.composited() : self.snapshot(of: view)
+            if let data = rep?.representation(using: .png, properties: [:])
             {
                 try? data.write(to: URL(fileURLWithPath: path))
             }
@@ -1090,6 +1090,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// was not drawing, which produced correct-looking screenshots of a broken
     /// window and cost hours. If this starts coming back blank, fix the view,
     /// not the screenshot.
+    /// The window as the compositor actually draws it.
+    ///
+    /// `cacheDisplay` walks subviews and draws them in order; a real window
+    /// composites layers, and the two disagree about anything whose visibility
+    /// depends on layer order. This asks the window server for our own window
+    /// and nothing else, so it cannot catch anything else on the display.
+    private func composited() -> NSBitmapImageRep? {
+        guard
+            let image = CGWindowListCreateImage(
+                .null, .optionIncludingWindow, CGWindowID(window.windowNumber),
+                [.boundsIgnoreFraming, .bestResolution])
+        else { return nil }
+        return NSBitmapImageRep(cgImage: image)
+    }
+
     private func snapshot(of view: NSView) -> NSBitmapImageRep? {
         guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
             return nil
