@@ -80,6 +80,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     /// snapshot cannot say because it is about this client's attention rather
     /// than the session's state.
     private var agentPriority = AgentPriority()
+    /// Held so its tick can follow the sidebar when the switch is used.
+    private weak var arrangementItem: NSMenuItem?
     /// What the machine catalog looked like when the session was built.
     private var knownMachines: String?
     private var ticks = 0
@@ -140,6 +142,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
             guard let self else { return }
             self.preferences.sidebarArrangement = arrangement.rawValue
             Preferences.current = self.preferences
+            self.arrangementItem?.state = arrangement == .priority ? .on : .off
         }
         sidebar.show(
             arrangement: preferences.sidebarArrangement
@@ -242,6 +245,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         }
 
         buildMenu()
+        arrangementItem?.state =
+            preferences.sidebarArrangement == SidebarView.Arrangement.priority.rawValue
+            ? .on : .off
         installKeyMonitor()
         events.requestAuthorization()
         applyTheme()
@@ -1027,6 +1033,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     /// Applied on the way past rather than only on Return: a palette is a thing
     /// you judge by looking at it, and a list of names tells you nothing about
     /// which one you want.
+    /// Switches the sidebar between machines and agents.
+    @objc private func toggleArrangement(_ sender: Any?) {
+        let next: SidebarView.Arrangement =
+            preferences.sidebarArrangement == SidebarView.Arrangement.priority.rawValue
+            ? .spaces : .priority
+        preferences.sidebarArrangement = next.rawValue
+        Preferences.current = preferences
+        sidebar.show(arrangement: next)
+        arrangementItem?.state = next == .priority ? .on : .off
+        if let session { sidebar.update(endpoints: session.endpoints, active: session.activeEndpoint) }
+    }
+
     @objc private func showThemes(_ sender: Any?) {
         let installed = ThemeLibrary.installed()
         guard !installed.isEmpty else {
@@ -1406,6 +1424,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
             title: "Settings…", action: #selector(showPreferences(_:)), keyEquivalent: ",")
         settings.target = self
         appMenu.addItem(settings)
+        // herdr has no binding for this — it is a config setting there — so
+        // this is HerdX's own, and it goes in the menu rather than into a
+        // keymap read from the server.
+        let agents = NSMenuItem(
+            title: "Sort Sidebar by Agent", action: #selector(toggleArrangement(_:)),
+            keyEquivalent: "a")
+        agents.keyEquivalentModifierMask = [.command, .option]
+        agents.target = self
+        arrangementItem = agents
+        appMenu.addItem(agents)
+        appMenu.addItem(.separator())
+
         let themes = NSMenuItem(
             title: "Themes…", action: #selector(showThemes(_:)), keyEquivalent: "t")
         themes.keyEquivalentModifierMask = [.command, .option]
