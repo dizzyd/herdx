@@ -457,10 +457,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard let snapshot else { return [:] }
         let agents = Dictionary(
             snapshot.agents.map { ($0.paneID, $0) }, uniquingKeysWith: { first, _ in first })
+        // A zoomed tab sends a surface holding one pane, so the others are not
+        // merely small, they are absent — and nothing on screen would otherwise
+        // say they exist. It leads the label because the label truncates from
+        // the middle, so the head survives however narrow the pane gets.
+        let zoomed = Set(snapshot.tabs.filter(\.zoomed).map(\.tabID))
+        let paneCount = Dictionary(grouping: snapshot.panes, by: \.tabID).mapValues(\.count)
 
         var labels: [String: String] = [:]
         for pane in snapshot.panes {
             var parts: [String] = []
+            if zoomed.contains(pane.tabID), let total = paneCount[pane.tabID], total > 1 {
+                parts.append("⤢ \(total - 1) hidden")
+            }
             if let cwd = pane.cwd, !cwd.isEmpty { parts.append(abbreviated(cwd)) }
             if let agent = agents[pane.paneID] {
                 if let name = agent.displayAgent, !name.isEmpty { parts.append(name) }
@@ -1074,23 +1083,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 if ProcessInfo.processInfo.environment["HERDX_PROBE_COMMANDS"] != nil,
                     let session = self.session
                 {
-                    let before = session.lastSnapshot?.focusedTabID ?? "nil"
-                    print("probe: tabs before=\(session.lastSnapshot?.tabs.count ?? 0) focused=\(before)")
-                    self.invoke(.newTab, session: session)
+                    print("probe: panes=\(session.lastSnapshot?.panes.count ?? 0)")
+                    self.invoke(.splitRight, session: session)
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                         MainActor.assumeIsolated {
-                            let mid = session.lastSnapshot
-                            print("probe: after newTab tabs=\(mid?.tabs.count ?? 0) focused=\(mid?.focusedTabID ?? "nil")")
-                            self.invoke(.nextTab, session: session)
+                            print("probe: after split panes=\(session.lastSnapshot?.panes.count ?? 0)")
+                            self.invoke(.zoomPane, session: session)
                             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                                 MainActor.assumeIsolated {
                                     let after = session.lastSnapshot
-                                    print("probe: after nextTab focused=\(after?.focusedTabID ?? "nil")")
-                                    self.invoke(.closeTab, session: session)
+                                    print("probe: zoomed=\(after?.tabs.first?.zoomed ?? false) surfacePanes=\(self.gridView.panes.count)")
+                                    print("probe: labels=\(self.gridView.paneLabels)")
+                                    self.invoke(.closePane, session: session)
                                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                                         MainActor.assumeIsolated {
-                                            let end = session.lastSnapshot
-                                            print("probe: after closeTab tabs=\(end?.tabs.count ?? 0)")
+                                            print("probe: cleaned panes=\(session.lastSnapshot?.panes.count ?? 0)")
                                         }
                                     }
                                 }
