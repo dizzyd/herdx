@@ -13,7 +13,7 @@ final class MachinesWindowController: NSWindowController, NSTableViewDataSource,
     /// Raised when the catalog changed, so the session can pick it up.
     private let onChange: () -> Void
     /// Raised to set herdr up on a machine that does not have it.
-    private let onInstall: (String) -> Void
+    private let onInstall: (Machines.Machine) -> Void
 
     private let table = NSTableView()
     private var machines: [Machines.Machine] = []
@@ -23,7 +23,7 @@ final class MachinesWindowController: NSWindowController, NSTableViewDataSource,
 
     private let installButton = NSButton()
 
-    init(onChange: @escaping () -> Void, onInstall: @escaping (String) -> Void) {
+    init(onChange: @escaping () -> Void, onInstall: @escaping (Machines.Machine) -> Void) {
         self.onChange = onChange
         self.onInstall = onInstall
 
@@ -212,18 +212,17 @@ final class MachinesWindowController: NSWindowController, NSTableViewDataSource,
         let alert = NSAlert()
         alert.messageText = "Install herdr on “\(machine.label)”?"
         alert.informativeText =
-            "HerdX will open a terminal running:\n\n"
-            + "    herdr --remote \(machine.target)\n\n"
-            + "herdr downloads the build matching that machine and copies it to "
-            + "~/.local/bin/herdr. It asks you to confirm in the terminal before "
-            + "changing anything."
+            "HerdX will open a terminal running herdr's own setup for "
+            + "\(machine.target).\n\nherdr downloads the build matching that machine "
+            + "and copies it to ~/.local/bin/herdr. It asks you to confirm in the "
+            + "terminal before changing anything."
         alert.addButton(withTitle: "Open Terminal")
         alert.addButton(withTitle: "Cancel")
         alert.beginSheetModal(for: window) { [weak self] response in
             guard response == .alertFirstButtonReturn else { return }
             MainActor.assumeIsolated {
                 self?.window?.close()
-                self?.onInstall(machine.target)
+                self?.onInstall(machine)
             }
         }
     }

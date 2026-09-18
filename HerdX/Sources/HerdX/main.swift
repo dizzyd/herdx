@@ -66,6 +66,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     /// Machines already offered a herdr install, so the offer is made once and
     /// not every time the endpoint retries.
     private var offeredInstall: Set<String> = []
+    /// What the machine catalog looked like when the session was built.
+    private var knownMachines: String?
+    private var ticks = 0
     /// The appearance the current theme was resolved from.
     private var appliedSystemIsDark: Bool?
     private let copyModeStatus = ModeStatus()
@@ -75,7 +78,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     private let picker = Picker()
     private lazy var machinesWindow = MachinesWindowController(
         onChange: { [weak self] in self?.reattachMachines() },
-        onInstall: { [weak self] target in self?.installHerdr(on: target) })
+        onInstall: { [weak self] machine in self?.installHerdr(on: machine) })
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         preferences = Preferences.current
@@ -546,6 +549,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
             themedEndpoints = online
         }
 
+        watchMachines()
         offerInstallIfNeeded(session)
         sidebar.update(endpoints: session.endpoints, active: session.activeEndpoint)
         tabBar.update(with: session.lastSnapshot)
@@ -981,6 +985,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         machinesWindow.present()
     }
 
+    /// Picks up machines added or removed outside this window.
+    ///
+    /// The catalog is shared: herdr's own TUI edits it, and so does the setup
+    /// command HerdX runs in a pane, which finishes long after the click that
+    /// started it. Neither can tell us, so the file is watched.
+    ///
+    /// Once a second rather than every frame — it is a file read, and a list of
+    /// machines does not change at sixty hertz.
+    private func watchMachines() {
+        ticks += 1
+        guard ticks % 60 == 0 else { return }
+        let current = Machines.all()
+            .map { "\($0.id):\($0.label):\($0.target):\($0.session):\($0.enabled)" }
+            .joined(separator: "|")
+        guard let previous = knownMachines else {
+            knownMachines = current
+            return
+        }
+        guard previous != current else { return }
+        knownMachines = current
+        reattachMachines()
+    }
+
     /// Offers to set herdr up on a machine that answered without it.
     ///
     /// Once per machine, because an endpoint retries on a backoff and an offer
@@ -993,21 +1020,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         for endpoint in session.endpoints
         where endpoint.needsInstall && !offeredInstall.contains(endpoint.id) {
             offeredInstall.insert(endpoint.id)
-            guard let target = Machines.all().first(where: { $0.id == endpoint.id })?.target
+            guard let machine = Machines.all().first(where: { $0.id == endpoint.id })
             else { continue }
 
             let alert = NSAlert()
             alert.messageText = "Set herdr up on “\(endpoint.label)”?"
             alert.informativeText =
-                "\(target) is reachable but has no herdr installed, so HerdX cannot "
-                + "attach to it.\n\nHerdX will open a terminal running:\n\n"
-                + "    herdr --remote \(target)\n\n"
-                + "herdr downloads the build matching that machine and asks you to "
-                + "confirm before changing anything."
+                "\(machine.target) is reachable but has no herdr installed, so "
+                + "HerdX cannot attach to it.\n\nHerdX will open a terminal running "
+                + "herdr's own setup, which downloads the build matching that machine "
+                + "and asks you to confirm before changing anything."
             alert.addButton(withTitle: "Open Terminal")
             alert.addButton(withTitle: "Not Now")
             if alert.runModal() == .alertFirstButtonReturn {
-                installHerdr(on: target)
+                installHerdr(on: machine)
             }
         }
     }
@@ -1018,7 +1044,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     /// unless stdin is a terminal, because approving a binary onto another
     /// machine is a decision it wants a person to make. A pane is a terminal,
     /// so its prompt arrives where you can answer it.
-    private func installHerdr(on target: String) {
+    private func installHerdr(on machine: Machines.Machine) {
         guard let session,
             let local = session.endpoints.first(where: { !$0.isRemote && $0.status == .online })
         else {
@@ -1053,7 +1079,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
                 self.notice("could not open a terminal for the installer")
                 return
             }
-            session.send(text: "herdr --remote \(Self.shellQuoted(target))\n", to: pane)
+            session.send(text: Self.setupCommand(for: machine) + "\n", to: pane)
         }
     }
 
@@ -1079,6 +1105,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         poll()
     }
 
+    /// What to run to set a machine up.
+    ///
+    /// `herdr machine add` prepares the remote and saves the machine itself,
+    /// and unlike `herdr --remote` it does not go on to attach a TUI — which a
+    /// pane is already inside, and which herdr refuses to nest. Subcommands are
+    /// exempt from that guard; the TUI is what it stops.
+    ///
+    /// It has no idea the machine is already saved and would simply add a
+    /// second copy, so the old row is removed after. Chained with `&&` because
+    /// `add` writes nothing until the remote is prepared: decline the install
+    /// and the machine is left exactly as it was.
+    private static func setupCommand(for machine: Machines.Machine) -> String {
+        var add = "herdr machine add --label \(shellQuoted(machine.label))"
+        if machine.session != "default" {
+            add += " --remote-session \(shellQuoted(machine.session))"
+        }
+        add += " \(shellQuoted(machine.target))"
+        return add + " && herdr machine remove \(shellQuoted(machine.id))"
+    }
+
     /// Single-quoted for the shell the pane is running.
     private static func shellQuoted(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
@@ -1095,6 +1141,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         session = nil
         themedEndpoints = []
         publishedTheme = nil
+        knownMachines = nil
         if !connect() {
             window.subtitle = "waiting for herdr… (\(lastConnectError ?? "no server"))"
             reconnect()
