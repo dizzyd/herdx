@@ -170,7 +170,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let container = NSView()
         split.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(split)
-        container.addSubview(copyModeStatus)
+        // Explicitly above the split, and lifted in the layer tree too. Both
+        // are layer-backed, and subview order alone does not settle which layer
+        // composites on top — which is exactly the kind of difference an
+        // offscreen `cacheDisplay` renders correctly and a real window does
+        // not.
+        container.addSubview(copyModeStatus, positioned: .above, relativeTo: split)
+        copyModeStatus.wantsLayer = true
+        copyModeStatus.layer?.zPosition = 1
         NSLayoutConstraint.activate([
             split.topAnchor.constraint(equalTo: container.topAnchor),
             split.leadingAnchor.constraint(equalTo: container.leadingAnchor),
