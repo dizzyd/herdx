@@ -45,6 +45,13 @@ final class TerminalGridView: NSView {
     /// sit. It is the design's, not the reader's, so it is fixed.
     private let frameInset: CGFloat = 8
 
+    /// Clearance between a pane's top border and its first row of text.
+    ///
+    /// The label rides that border, so half of it hangs into the pane. Without
+    /// a band of its own it hangs over the first row instead, which at a small
+    /// pane padding puts it on top of the text.
+    private let labelClearance: CGFloat = 10
+
     /// What to write on each pane's frame, by pane id.
     var paneLabels: [String: String] = [:] {
         didSet { if paneLabels != oldValue { needsDisplay = true } }
@@ -145,9 +152,12 @@ final class TerminalGridView: NSView {
     var gridSize: (cols: Int, rows: Int) {
         guard cellSize.width > 0, cellSize.height > 0 else { return (80, 24) }
         // The padding is drawn inside each pane, so leave room for it or the
-        // last column and row would be pushed under the border.
+        // last column and row would be pushed under the border. Height loses
+        // the label's band as well; a pane below this one takes its own out of
+        // the gutter the server leaves between them.
         let reserved = (panePadding + frameInset) * 2
-        let usable = CGSize(width: bounds.width - reserved, height: bounds.height - reserved)
+        let usable = CGSize(
+            width: bounds.width - reserved, height: bounds.height - reserved - labelClearance)
         return (
             max(Int(usable.width / cellSize.width), 1),
             max(Int(usable.height / cellSize.height), 1)
@@ -291,11 +301,11 @@ final class TerminalGridView: NSView {
     /// A pane's text area grown by the padding: what the pane visually covers.
     private func paddedRect(of pane: PaneView) -> CGRect {
         CGRect(
-            x: CGFloat(pane.inner.x) * cellSize.width,
-            y: CGFloat(pane.inner.y) * cellSize.height,
-            width: CGFloat(pane.inner.width) * cellSize.width,
-            height: CGFloat(pane.inner.height) * cellSize.height
-        ).insetBy(dx: -panePadding, dy: -panePadding)
+            x: CGFloat(pane.inner.x) * cellSize.width - panePadding,
+            y: CGFloat(pane.inner.y) * cellSize.height - panePadding - labelClearance,
+            width: CGFloat(pane.inner.width) * cellSize.width + panePadding * 2,
+            height: CGFloat(pane.inner.height) * cellSize.height + panePadding * 2
+                + labelClearance)
     }
 
     /// The container paints only the background; panes draw themselves.
@@ -310,7 +320,8 @@ final class TerminalGridView: NSView {
 
         if !panes.isEmpty, let session {
             context.saveGState()
-            context.translateBy(x: panePadding + frameInset, y: panePadding + frameInset)
+            context.translateBy(
+                x: panePadding + frameInset, y: panePadding + frameInset + labelClearance)
             session.withGrid { grid in
                 for pane in panes {
                     let background = background(of: pane)
@@ -489,8 +500,11 @@ final class TerminalGridView: NSView {
         let width = min(size.width, available)
         let height = size.height
 
+        // Right-justified: terminal output is left-heavy, so the far end of the
+        // top border is the quietest place on the frame to put it.
         let textRect = CGRect(
-            x: rect.minX + inset, y: rect.minY - height / 2, width: width, height: height)
+            x: rect.maxX - inset - width, y: rect.minY - height / 2,
+            width: width, height: height)
 
         // The border is cleared rather than painted over: above the top edge is
         // the terminal's own ground, below it is this pane's, and filling both
@@ -734,9 +748,9 @@ extension TerminalGridView {
     private func hit(_ event: NSEvent) -> (pane: PaneView, column: Int, row: Int)? {
         guard cellSize.width > 0, cellSize.height > 0 else { return nil }
         let point = convert(event.locationInWindow, from: nil)
-        let origin = panePadding + frameInset
-        let column = Int((point.x - origin) / cellSize.width)
-        let row = Int((point.y - origin) / cellSize.height)
+        let column = Int((point.x - panePadding - frameInset) / cellSize.width)
+        let row = Int(
+            (point.y - panePadding - frameInset - labelClearance) / cellSize.height)
 
         let pane = panes.first {
             column >= $0.rect.x && column < $0.rect.x + $0.rect.width
@@ -756,7 +770,7 @@ extension TerminalGridView {
             column: UInt16(max(column, 0)),
             row: UInt16(max(row, 0)),
             pixel_x: UInt32(max(point.x - panePadding - frameInset, 0)),
-            pixel_y: UInt32(max(point.y - panePadding - frameInset, 0)),
+            pixel_y: UInt32(max(point.y - panePadding - frameInset - labelClearance, 0)),
             modifiers: KeyMapper.modifiers(event.modifierFlags),
             lines: UInt16(max(lines, 0)))
     }
