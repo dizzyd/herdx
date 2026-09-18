@@ -790,6 +790,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         invoke(.focusTab(tabs[index].tabID), session: session)
     }
 
+    /// Focuses the tab `step` along from the focused one, wrapping round.
+    private func focusTab(offsetBy step: Int, session: HerdrSession) {
+        guard let snapshot = session.lastSnapshot else { return }
+        let tabs = snapshot.tabs.filter { $0.workspaceID == snapshot.focusedWorkspaceID }
+        guard tabs.count > 1,
+            let at = tabs.firstIndex(where: { $0.tabID == snapshot.focusedTabID })
+        else { return }
+        invoke(.focusTab(tabs[(at + step + tabs.count) % tabs.count].tabID), session: session)
+    }
+
     private func cyclePane(by step: Int, session: HerdrSession) {
         let panes = gridView.panes
         guard panes.count > 1, let current = gridView.focusedPane,
@@ -830,6 +840,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         print("probe: checked \(chords.keymap.bindings.filter(\.binding.usesPrefix).count) chords")
     }
 
+    /// Says that a command failed, and why if herdr said.
+    private func report(failure reply: String, for command: Command) {
+        let message =
+            reply
+            .split(separator: "\"message\":\"", maxSplits: 1).last?
+            .split(separator: "\"").first.map(String.init)
+        FileHandle.standardError.write(Data("herdx: \(command.method) failed: \(reply)\n".utf8))
+        notice("\(command.method) failed\(message.map { ": \($0)" } ?? "")")
+    }
+
     /// A line over the terminal that clears itself.
     private func notice(_ text: String) {
         noticeToken += 1
@@ -867,10 +887,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             return
         }
+        let id = UUID().uuidString
         guard let boot = bootID ?? session.lastSnapshot?.bootID,
-            let json = command.requestJSON(id: UUID().uuidString)
+            let json = command.requestJSON(id: id)
         else { return }
-        session.request(json, bootID: boot)
+        // Replies were dropped, so a request the server rejected did nothing
+        // and said nothing — which is how four commands came to be sending
+        // parameters herdr does not accept without anyone noticing.
+        session.request(json, bootID: boot, id: id) { [weak self] reply in
+            guard reply.contains("\"error\"") else { return }
+            MainActor.assumeIsolated {
+                self?.report(failure: reply, for: command)
+            }
+        }
     }
 
     @objc private func findInPane(_ sender: Any?) {
@@ -1017,6 +1046,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     self.enterResizeMode()
                     print("probe: parent frame=\(self.window.frame)")
                     print("probe: strip \(self.copyModeStatus.describeFrame())")
+                }
+                if ProcessInfo.processInfo.environment["HERDX_PROBE_REQUESTS"] != nil,
+                    let snapshot = self.session?.lastSnapshot
+                {
+                    let tabs = snapshot.tabs.filter {
+                        $0.workspaceID == snapshot.focusedWorkspaceID
+                    }
+                    let at = tabs.firstIndex { $0.tabID == snapshot.focusedTabID } ?? 0
+                    let next = tabs.isEmpty ? nil : tabs[(at + 1) % tabs.count].tabID
+                    let samples: [Command] = [
+                        .focusTab(next ?? "?"), .newTab, .newWorkspace,
+                        .closeTabWithID(snapshot.focusedTabID ?? "?"),
+                        .closePaneWithID(self.gridView.focusedPane ?? "?"),
+                        .zoomPane, .reloadConfig,
+                    ]
+                    for command in samples {
+                        print("probe: \(command.method) params=\(command.params)")
+                    }
+                    print("probe: focused tab=\(snapshot.focusedTabID ?? "nil") next=\(next ?? "nil")")
                 }
                 if ProcessInfo.processInfo.environment["HERDX_PROBE_CHORDS"] != nil {
                     self.reportUnreachableChords()

@@ -41,6 +41,7 @@ extension Command {
         case .renamePane: return 31
         case .renameWorkspace: return 32
         case .resizePane: return 33
+        case .closePaneWithID: return 34
         }
     }
 

@@ -14,6 +14,7 @@ enum Command {
     case focusTab(String)
     case focusWorkspace(String)
     case closeTabWithID(String)
+    case closePaneWithID(String)
     /// Handled entirely in the client; it has no endpoint method.
     case copyMode
     /// Likewise: the keymap is ours, so the reference to it has to be ours too.
@@ -37,7 +38,7 @@ enum Command {
         case .nextTab, .previousTab: return "tab.focus"
         case .splitRight, .splitDown: return "pane.split"
         case .focusLeft, .focusDown, .focusUp, .focusRight: return "pane.focus_direction"
-        case .closePane: return "pane.close"
+        case .closePane, .closePaneWithID: return "pane.close"
         case .zoomPane: return "pane.zoom"
         case .newWorkspace: return "workspace.create"
         case .focusPane: return "pane.focus"
@@ -58,6 +59,9 @@ enum Command {
         }
     }
 
+    /// `nextTab` and `previousTab` carry none: herdr's `tab.focus` takes a tab
+    /// id and has no relative form, so the neighbour is resolved from the
+    /// snapshot before the request is built.
     var params: [String: Any] {
         switch self {
         case .splitRight: return ["direction": "right"]
@@ -66,12 +70,14 @@ enum Command {
         case .focusDown: return ["direction": "down"]
         case .focusUp: return ["direction": "up"]
         case .focusRight: return ["direction": "right"]
-        case .nextTab: return ["relative": 1]
-        case .previousTab: return ["relative": -1]
         case .focusPane(let id): return ["pane_id": id]
         case .focusTab(let id): return ["tab_id": id]
         case .focusWorkspace(let id): return ["workspace_id": id]
         case .closeTabWithID(let id): return ["tab_id": id]
+        case .closePaneWithID(let id): return ["pane_id": id]
+        // `focus` defaults to false, so without it the thing you just asked
+        // for is created somewhere you are not looking.
+        case .newTab, .newWorkspace: return ["focus": true]
         case .closeWorkspace(let id): return ["workspace_id": id]
         case .swapLeft: return ["direction": "left"]
         case .swapDown: return ["direction": "down"]
