@@ -99,17 +99,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self.focusTerminal()
         }
         sidebar.onSelectWorkspace = { [weak self] workspaceID, endpoint in
-            guard let self, let session = self.session else { return }
-            if endpoint != session.activeEndpoint {
-                session.setActiveEndpoint(endpoint)
-                self.gridView.forgetSurface()
-            }
-            // The command must carry the boot id of the machine it targets, not
-            // of whichever one happened to be active a moment ago.
-            self.invoke(
-                .focusWorkspace(workspaceID), session: session,
-                bootID: session.bootID(forEndpoint: endpoint))
-            self.focusTerminal()
+            self?.focus(.focusWorkspace(workspaceID), on: endpoint)
         }
         sidebar.onSelectEndpoint = { [weak self] index in
             guard let self, let session = self.session else { return }
@@ -647,22 +637,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
 
         case .workspacePicker:
-            guard let snapshot, !snapshot.workspaces.isEmpty else { return nil }
+            let workspaces = session.endpoints.flatMap { endpoint in
+                (endpoint.snapshot?.workspaces ?? []).map { (endpoint, $0) }
+            }
+            guard !workspaces.isEmpty else { return nil }
             return {
                 self.picker.show(
                     over: self.window, title: "Workspaces",
-                    items: snapshot.workspaces.map { workspace in
+                    items: workspaces.map { endpoint, workspace in
                         Picker.Item(
                             title: workspace.label,
-                            detail: [workspace.branch, "\(workspace.agentStatus)"]
+                            detail: [endpoint.label, workspace.branch, "\(workspace.agentStatus)"]
                                 .compactMap { $0 }.joined(separator: "  ·  ")
-                        ) { self.invoke(.focusWorkspace(workspace.workspaceID), session: session) }
+                        ) {
+                            self.focus(
+                                .focusWorkspace(workspace.workspaceID), on: endpoint.index)
+                        }
                     })
             }
 
         case .goto_:
-            guard let snapshot, !snapshot.workspaces.isEmpty else { return nil }
-            return { self.picker.show(over: self.window, title: "Go to", items: self.navigator(snapshot, session: session)) }
+            let items = self.navigator(session)
+            guard !items.isEmpty else { return nil }
+            return { self.picker.show(over: self.window, title: "Go to", items: items) }
 
         case .resizeMode:
             return { self.enterResizeMode() }
@@ -707,40 +704,73 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return true
     }
 
+    /// Runs a command against a machine, switching to it first if need be.
+    ///
+    /// Anything that can name a target on another machine goes through here:
+    /// the command has to carry the boot id of the machine it targets, not of
+    /// whichever one happened to be active a moment ago.
+    private func focus(_ command: Command, on endpoint: Int) {
+        guard let session else { return }
+        if endpoint != session.activeEndpoint {
+            session.setActiveEndpoint(endpoint)
+            // The new machine's surface has not arrived; drop the old one so
+            // the previous machine's output is not shown under a new name.
+            gridView.forgetSurface()
+        }
+        invoke(command, session: session, bootID: session.bootID(forEndpoint: endpoint))
+        focusTerminal()
+    }
+
     /// Everything in the session, flattened for the navigator.
     ///
     /// Workspaces, then their tabs, then the panes inside them: a navigator is
     /// for when you know the name but not where it lives, so the list has to
     /// hold all three rather than make you pick a level first.
-    private func navigator(_ snapshot: Snapshot, session: HerdrSession) -> [Picker.Item] {
+    private func navigator(_ session: HerdrSession) -> [Picker.Item] {
         var items: [Picker.Item] = []
-        let agents = Dictionary(
-            snapshot.agents.map { ($0.paneID, $0) }, uniquingKeysWith: { first, _ in first })
 
-        for workspace in snapshot.workspaces {
-            items.append(
-                Picker.Item(title: workspace.label, detail: workspace.branch ?? "workspace") {
-                    self.invoke(.focusWorkspace(workspace.workspaceID), session: session)
-                })
-            for tab in snapshot.tabs where tab.workspaceID == workspace.workspaceID {
-                let name = tab.label.isEmpty ? "tab \(tab.number)" : tab.label
+        // Every attached machine, not just the one on screen: the whole point
+        // of attaching to several is finding what is running elsewhere without
+        // having to switch first to go looking.
+        for endpoint in session.endpoints {
+            guard let snapshot = endpoint.snapshot else { continue }
+            let agents = Dictionary(
+                snapshot.agents.map { ($0.paneID, $0) }, uniquingKeysWith: { first, _ in first })
+
+            for workspace in snapshot.workspaces {
                 items.append(
-                    Picker.Item(title: name, detail: "\(workspace.label)  ·  tab") {
-                        self.invoke(.focusTab(tab.tabID), session: session)
-                    })
-                for pane in snapshot.panes where pane.tabID == tab.tabID {
-                    let agent = agents[pane.paneID]
-                    // Falls back to the id rather than to "pane": a list where
-                    // every third row says the same word is not a list.
-                    let title =
-                        [pane.label, agent?.title, agent?.displayAgent]
-                        .compactMap { $0 }.first { !$0.isEmpty } ?? pane.paneID
+                    Picker.Item(
+                        title: workspace.label,
+                        detail: [endpoint.label, workspace.branch ?? "workspace"]
+                            .joined(separator: "  ·  ")
+                    ) { self.focus(.focusWorkspace(workspace.workspaceID), on: endpoint.index) })
+
+                for tab in snapshot.tabs where tab.workspaceID == workspace.workspaceID {
+                    let name = tab.label.isEmpty ? "tab \(tab.number)" : tab.label
                     items.append(
                         Picker.Item(
-                            title: title,
-                            detail: [workspace.label, name, pane.cwd.map(Self.abbreviated)]
-                                .compactMap { $0 }.joined(separator: "  ·  ")
-                        ) { self.invoke(.focusPane(pane.paneID), session: session) })
+                            title: name,
+                            detail: [endpoint.label, workspace.label, "tab"]
+                                .joined(separator: "  ·  ")
+                        ) { self.focus(.focusTab(tab.tabID), on: endpoint.index) })
+
+                    for pane in snapshot.panes where pane.tabID == tab.tabID {
+                        let agent = agents[pane.paneID]
+                        // Falls back to the id rather than to "pane": a list
+                        // where every third row says the same word is not a
+                        // list.
+                        let title =
+                            [pane.label, agent?.title, agent?.displayAgent]
+                            .compactMap { $0 }.first { !$0.isEmpty } ?? pane.paneID
+                        items.append(
+                            Picker.Item(
+                                title: title,
+                                detail: [
+                                    endpoint.label, workspace.label, name,
+                                    pane.cwd.map(Self.abbreviated),
+                                ].compactMap { $0 }.joined(separator: "  ·  ")
+                            ) { self.focus(.focusPane(pane.paneID), on: endpoint.index) })
+                    }
                 }
             }
         }
