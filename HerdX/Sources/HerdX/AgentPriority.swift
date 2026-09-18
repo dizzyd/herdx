@@ -13,7 +13,7 @@ import Foundation
 ///
 /// Ties go to whichever changed state most recently, so the thing that just
 /// started needing you sits above the thing that has needed you for an hour.
-struct AgentPriority {
+struct AgentPriority: Equatable {
     /// Which agents have been looked at since they last changed.
     ///
     /// herdr keeps this itself; the snapshot does not carry it, because it is

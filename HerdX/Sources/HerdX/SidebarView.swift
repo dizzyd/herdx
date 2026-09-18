@@ -210,9 +210,17 @@ final class SidebarView: NSView {
         didSet { if arrangement != oldValue { lastSignature = nil } }
     }
     /// Supplied by the app, which is what watches snapshots go by.
-    var priority = AgentPriority() { didSet { lastSignature = nil } }
+    /// Compared before invalidating, not merely assigned: a struct set every
+    /// tick fires `didSet` every tick whether or not it changed, and throwing
+    /// the signature away rebuilt every row sixty times a second. Rows built
+    /// that often cannot be hovered or clicked — the one under the pointer is
+    /// destroyed before the mouse comes back up.
+    var priority = AgentPriority() {
+        didSet { if priority != oldValue { lastSignature = nil } }
+    }
 
     private let stack = NSStackView()
+    private(set) var rebuilds = 0
     private let modes = NSSegmentedControl()
     /// Raised when the arrangement is switched, so it can be remembered.
     var onArrangementChanged: ((Arrangement) -> Void)?
@@ -324,6 +332,7 @@ final class SidebarView: NSView {
         self.endpoints = endpoints
         self.active = active
 
+        rebuilds += 1
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
 
         if arrangement == .priority {

@@ -1520,6 +1520,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
                 print("probe: focusedPane=\(self.gridView.focusedPane ?? "nil")")
                 print("probe: panes=\(self.gridView.panes.map(\.id))")
                 print("probe: cellSize=\(self.gridView.cellSize) grid=\(self.gridView.gridSize)")
+                let first = self.sidebar.rebuilds
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                    MainActor.assumeIsolated {
+                        print("probe: sidebar rebuilds in 3s=\(self.sidebar.rebuilds - first)")
+                    }
+                }
                 if ProcessInfo.processInfo.environment["HERDX_PROBE_RESIZE"] != nil {
                     self.enterResizeMode()
                     print("probe: parent frame=\(self.window.frame)")
