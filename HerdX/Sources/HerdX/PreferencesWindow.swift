@@ -19,6 +19,7 @@ final class PreferencesWindowController: NSWindowController {
     private let labelStepper = NSStepper()
     private let lineField = NSTextField()
     private let lineStepper = NSStepper()
+    private let themeLabel = NSTextField(labelWithString: "")
     private let matchButton = NSButton()
     private let matchNote = NSTextField(labelWithString: "")
     /// Colours another client attached to the same session is using, when there
@@ -35,7 +36,7 @@ final class PreferencesWindowController: NSWindowController {
         self.onChange = onChange
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 440, height: 324),
+            contentRect: NSRect(x: 0, y: 0, width: 470, height: 356),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false)
@@ -45,8 +46,14 @@ final class PreferencesWindowController: NSWindowController {
         window.setFrameAutosaveName("SettingsWindow")
         super.init(window: window)
 
-        window.contentView = buildContent()
+        let content = buildContent()
+        window.contentView = content
         refresh()
+        // Sized to what it holds rather than to a number kept in step by hand:
+        // every row added so far has needed that number changing, and the last
+        // one was noticed only because a control fell off the bottom.
+        content.layoutSubtreeIfNeeded()
+        window.setContentSize(content.fittingSize)
         window.center()
     }
 
@@ -140,6 +147,19 @@ final class PreferencesWindowController: NSWindowController {
         let preset = NSButton(title: "Use Preset", target: self, action: #selector(usePreset))
         preset.bezelStyle = .rounded
 
+        themeLabel.font = .systemFont(ofSize: 13)
+        themeLabel.lineBreakMode = .byTruncatingTail
+        let loadTheme = NSButton(
+            title: "Load…", target: self, action: #selector(loadTheme))
+        loadTheme.bezelStyle = .rounded
+        let clearTheme = NSButton(
+            title: "Clear", target: self, action: #selector(clearTheme))
+        clearTheme.bezelStyle = .rounded
+
+        let themeRow = NSStackView(views: [themeLabel, loadTheme, clearTheme])
+        themeRow.orientation = .horizontal
+        themeRow.spacing = 6
+
         matchButton.title = "Match Attached Terminal"
         matchButton.bezelStyle = .rounded
         matchButton.target = self
@@ -167,6 +187,7 @@ final class PreferencesWindowController: NSWindowController {
             [NSGridCell.emptyContentView, fontNote],
             [label("Appearance:"), appearancePopUp],
             [label("Terminal:"), terminalPopUp],
+            [label("Theme:"), themeRow],
             [label("Colours:"), colours],
             [NSGridCell.emptyContentView, match],
             [label("Pane padding:"), padding],
@@ -186,6 +207,10 @@ final class PreferencesWindowController: NSWindowController {
             grid.trailingAnchor.constraint(
                 lessThanOrEqualTo: content.trailingAnchor, constant: -20),
             grid.topAnchor.constraint(equalTo: content.topAnchor, constant: 20),
+            // Pinned at the bottom too, so the content view has a height to
+            // report. Without it the window sized itself to nothing and every
+            // row had to be paid for by hand in the frame above.
+            grid.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -20),
         ])
         return content
     }
@@ -235,6 +260,7 @@ final class PreferencesWindowController: NSWindowController {
         paddingStepper.doubleValue = Double(preferences.panePadding)
         labelField.stringValue = String(format: "%.0f", preferences.paneLabelSize)
         labelStepper.doubleValue = Double(preferences.paneLabelSize)
+        themeLabel.stringValue = preferences.themeName ?? "Built-in"
         if let attached = attachedTerminal {
             matchButton.isEnabled = true
             matchNote.stringValue =
@@ -311,6 +337,44 @@ final class PreferencesWindowController: NSWindowController {
     @objc private func colourChanged() {
         preferences.background = backgroundWell.color
         preferences.foreground = foregroundWell.color
+        apply()
+    }
+
+    /// Loads a kitty theme file.
+    ///
+    /// A file rather than a list: kitty's themes are published as files, in
+    /// their hundreds, and reading one is a great deal less work for everybody
+    /// than picking twenty colours out of a panel.
+    @objc private func loadTheme() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.init(filenameExtension: "conf") ?? .plainText, .plainText]
+        panel.allowsOtherFileTypes = true
+        panel.message = "Choose a kitty theme (.conf)"
+        guard panel.runModal() == .OK, let url = panel.url,
+            let text = try? String(contentsOf: url, encoding: .utf8)
+        else { return }
+
+        guard let theme = Theme(kittyConfiguration: text) else {
+            let alert = NSAlert()
+            alert.messageText = "That file is not a colour theme"
+            alert.informativeText =
+                "A kitty theme sets background, foreground and color0 through "
+                + "color15. This one does not."
+            alert.runModal()
+            return
+        }
+        preferences.themeName = url.deletingPathExtension().lastPathComponent
+        preferences.themeColors = theme.hexComponents
+        // The wells override the theme, so a leftover pair would silently
+        // repaint two of the twenty colours just loaded.
+        preferences.background = nil
+        preferences.foreground = nil
+        apply()
+    }
+
+    @objc private func clearTheme() {
+        preferences.themeName = nil
+        preferences.themeColors = nil
         apply()
     }
 

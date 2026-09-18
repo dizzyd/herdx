@@ -164,3 +164,81 @@ extension NSColor {
         return distance > 0.05
     }
 }
+
+extension Theme {
+    /// Reads a kitty theme file.
+    ///
+    /// kitty's format is `name value` a line at a time, and hundreds of themes
+    /// are published in it — which is a better answer than asking anyone to
+    /// pick twenty colours in a panel. Ghostty and a few others write the same
+    /// keys with an `=` between, so both separators are accepted.
+    ///
+    /// Unknown keys are skipped rather than refused: a real theme file also
+    /// carries font sizes, window padding and tab-bar settings, none of which
+    /// are a palette's business.
+    init?(kittyConfiguration text: String) {
+        var named: [String: NSColor] = [:]
+
+        for line in text.split(separator: "\n") {
+            let body = line.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)
+            // A `#` starts a comment *or* a colour, so a line is only a comment
+            // when nothing precedes it.
+            guard let first = body.first, !first.trimmingCharacters(in: .whitespaces).isEmpty
+            else { continue }
+
+            let parts =
+                line
+                .replacingOccurrences(of: "=", with: " ")
+                .split(separator: " ", omittingEmptySubsequences: true)
+                .map(String.init)
+            guard parts.count >= 2, let colour = Theme.hex(parts[1]) else { continue }
+            named[parts[0].lowercased()] = colour
+        }
+
+        // Without these two it is not a palette, whatever else it holds.
+        guard let background = named["background"], let foreground = named["foreground"]
+        else { return nil }
+
+        var ansi: [NSColor] = []
+        for index in 0..<16 {
+            guard let colour = named["color\(index)"] else { return nil }
+            ansi.append(colour)
+        }
+
+        self.init(
+            background: background,
+            foreground: foreground,
+            cursor: named["cursor"] ?? foreground,
+            selection: named["selection_background"] ?? named["selection"]
+                ?? foreground.blended(withFraction: 0.7, of: background) ?? foreground,
+            ansi: ansi)
+    }
+
+    /// `#rgb`, `#rrggbb`, or the same without the hash.
+    static func hex(_ text: String) -> NSColor? {
+        var digits = text.trimmingCharacters(in: .whitespaces)
+        if digits.hasPrefix("#") { digits.removeFirst() }
+        if digits.count == 3 {
+            digits = digits.map { "\($0)\($0)" }.joined()
+        }
+        guard digits.count == 6, let value = Int(digits, radix: 16) else { return nil }
+        return rgb((value >> 16) & 0xFF, (value >> 8) & 0xFF, value & 0xFF)
+    }
+
+    /// The whole palette as hex, for storing in defaults.
+    var hexComponents: [String] {
+        ([background, foreground, cursor, selection] + ansi).map {
+            Preferences.encode($0) ?? "#000000"
+        }
+    }
+
+    /// Rebuilds a theme stored by `hexComponents`.
+    init?(hexComponents: [String]) {
+        guard hexComponents.count == 20 else { return nil }
+        let colours = hexComponents.compactMap(Theme.hex)
+        guard colours.count == 20 else { return nil }
+        self.init(
+            background: colours[0], foreground: colours[1], cursor: colours[2],
+            selection: colours[3], ansi: Array(colours[4...]))
+    }
+}

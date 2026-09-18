@@ -44,6 +44,13 @@ struct Preferences {
     var paneLabelSize: CGFloat
     /// Line height as a multiple of the font's natural one.
     var lineHeight: CGFloat
+    /// A loaded palette and what to call it, when one has been loaded.
+    ///
+    /// A whole palette rather than the two default colours: a kitty theme is
+    /// twenty colours, and keeping only two of them would throw away the part
+    /// that makes one theme look different from another.
+    var themeName: String?
+    var themeColors: [String]?
 
     private enum Key {
         static let fontName = "fontName"
@@ -55,6 +62,8 @@ struct Preferences {
         static let panePadding = "panePadding"
         static let paneLabelSize = "paneLabelSize"
         static let lineHeight = "lineHeight"
+        static let themeName = "themeName"
+        static let themeColors = "themeColors"
     }
 
     /// Colours round-trip through `#rrggbb`, so they stay readable in defaults
@@ -93,7 +102,9 @@ struct Preferences {
                 foreground: decode(defaults.string(forKey: Key.foreground)),
                 panePadding: defaults.object(forKey: Key.panePadding) as? CGFloat ?? 6,
                 paneLabelSize: defaults.object(forKey: Key.paneLabelSize) as? CGFloat ?? 11,
-                lineHeight: defaults.object(forKey: Key.lineHeight) as? CGFloat ?? 1)
+                lineHeight: defaults.object(forKey: Key.lineHeight) as? CGFloat ?? 1,
+                themeName: defaults.string(forKey: Key.themeName),
+                themeColors: defaults.stringArray(forKey: Key.themeColors))
         }
         set {
             let defaults = UserDefaults.standard
@@ -106,6 +117,8 @@ struct Preferences {
             defaults.set(newValue.panePadding, forKey: Key.panePadding)
             defaults.set(newValue.paneLabelSize, forKey: Key.paneLabelSize)
             defaults.set(newValue.lineHeight, forKey: Key.lineHeight)
+            defaults.set(newValue.themeName, forKey: Key.themeName)
+            defaults.set(newValue.themeColors, forKey: Key.themeColors)
         }
     }
 
@@ -129,6 +142,13 @@ struct Preferences {
     /// The palette panes are drawn with, which follows the window unless
     /// pinned.
     func terminalTheme(matching systemIsDark: Bool) -> Theme {
+        // A loaded theme is a deliberate choice of twenty colours, so it is not
+        // something the system's light/dark should override.
+        if let themeColors, var loaded = Theme(hexComponents: themeColors) {
+            if let background { loaded.background = background }
+            if let foreground { loaded.foreground = foreground }
+            return loaded
+        }
         var theme: Theme
         switch terminalAppearance {
         case .system: theme = self.theme(matching: systemIsDark)
