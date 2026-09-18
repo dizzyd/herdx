@@ -438,6 +438,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
 
         self.session = session
         gridView.session = session
+        // Already active when the session arrives, which is the ordinary case:
+        // the notification fired before there was anything to tell.
+        session.setFocused(NSApp.isActive)
         gridView.onReadSelection = { [weak session] request in
             guard let session, let snapshot = session.lastSnapshot else { return }
             session.request(request, bootID: snapshot.bootID)
@@ -1340,6 +1343,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     /// whatever width it was dragged to.
     func splitView(_ splitView: NSSplitView, shouldAdjustSizeOfSubview view: NSView) -> Bool {
         !(view is SidebarView)
+    }
+
+    /// herdr only takes the host theme from the client it considers foreground,
+    /// and a client is promoted when it says it has focus. Without this, HerdX
+    /// was promoted only as a side effect of typing — so changing a theme
+    /// without typing first did nothing at all.
+    ///
+    /// Application level rather than window level: opening a sheet takes key
+    /// away from the window, and a theme picker that told the server it had
+    /// stopped looking would be unable to show anything.
+    func applicationDidBecomeActive(_ notification: Notification) {
+        session?.setFocused(true)
+    }
+
+    func applicationWillResignActive(_ notification: Notification) {
+        session?.setFocused(false)
     }
 
     func windowDidResize(_ notification: Notification) { copyModeStatus.reposition() }

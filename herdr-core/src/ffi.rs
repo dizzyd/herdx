@@ -1187,6 +1187,30 @@ pub unsafe extern "C" fn hx_endpoint_needs_install(
         .is_some_and(|endpoint| endpoint.shared.needs_install.load(Ordering::Acquire))
 }
 
+/// Tells every server whether this window is the one being looked at.
+///
+/// herdr keeps one foreground client per session and only listens to that one
+/// for the host theme — so a client that never says it has focus is only
+/// promoted as a side effect of typing, and a theme change made without typing
+/// first is dropped without a word.
+///
+/// # Safety
+/// `session` must be live.
+#[no_mangle]
+pub unsafe extern "C" fn hx_set_focus(session: *const HxSession, focused: bool) -> bool {
+    let Some(session) = session.as_ref() else {
+        return false;
+    };
+    let mut sent = false;
+    for endpoint in &session.endpoints {
+        sent |= endpoint
+            .outbound
+            .send(ClientMessage::ClientShellFocus { focused })
+            .is_ok();
+    }
+    sent
+}
+
 /// Whether a machine is reachable but has no herdr installed.
 ///
 /// # Safety

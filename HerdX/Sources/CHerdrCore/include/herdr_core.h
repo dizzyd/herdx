@@ -128,6 +128,9 @@ char *hx_endpoint_error(const HxSession *session, size_t index);
 /// Whether a machine is reachable but has no herdr installed.
 bool hx_endpoint_needs_install(const HxSession *session, size_t index);
 
+/// Tells every server whether this window is the one being looked at.
+bool hx_set_focus(const HxSession *session, bool focused);
+
 /// Adds a machine, or replaces the one with `id`. Returns the id, or NULL with
 /// the reason available from hx_machine_error.
 char *hx_machine_save(const char *id, const char *label, const char *target,

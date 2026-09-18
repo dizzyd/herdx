@@ -291,6 +291,12 @@ final class HerdrSession {
         _ = hx_set_default_color(handle, foreground, rgb.0, rgb.1, rgb.2)
     }
 
+    /// Tells the servers whether this window is the one being looked at.
+    func setFocused(_ focused: Bool) {
+        guard let handle else { return }
+        _ = hx_set_focus(handle, focused)
+    }
+
     func setAppearance(dark: Bool) {
         guard let handle else { return }
         _ = hx_set_appearance(handle, dark)
