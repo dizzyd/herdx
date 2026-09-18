@@ -27,6 +27,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// The colour the panes are actually painted in, when it differs from the
     /// configured background.
     private var observedBackground: NSColor?
+    /// Identifies the newest transient notice, so an older one's timer does not
+    /// clear it.
+    private var noticeToken = 0
+    /// The strip's real content, restored when a notice times out.
+    private var copyModeText: String?
+    /// The digit that completed a chord, for the bindings herdr writes as a
+    /// range: `switch_tab = "prefix+1..9"` is nine bindings on one line.
+    private var pendingDigit = 0
+    /// The profile the keymap was built from, so it is parsed once.
+    private var appliedKeyProfile: String?
 
     /// Runs without ever showing a window.
     ///
@@ -382,6 +392,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             session.request(request, bootID: snapshot.bootID)
         }
         gridView.onCopyModeChanged = { [weak self] status in
+            self?.copyModeText = status
             self?.copyModeStatus.update(status)
         }
         gridView.onCopyModeRequest = { [weak session] request, id, reply in
@@ -489,6 +500,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         if snapshotsChanged {
             if let snapshot = session.lastSnapshot {
+                // The user's own bindings, including a prefix they may have
+                // changed. Until one arrives the resolver runs on herdr's
+                // documented defaults.
+                if let profile = snapshot.serverKeybindingsToml, profile != appliedKeyProfile,
+                    let keymap = Keymap(profile: profile)
+                {
+                    appliedKeyProfile = profile
+                    chords.keymap = keymap
+                    gridView.prefixLabel = keymap.prefixLabel
+                }
                 gridView.focusedPaneFromSnapshot = snapshot.focusedPaneID
                 if let focused = snapshot.workspaces.first(where: \.focused) {
                     workspaceTitle = focused.label
@@ -522,10 +543,103 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func installKeyMonitor() {
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, let session = self.session else { return event }
-            let (command, consumed) = self.chords.resolve(event)
+            self.pendingDigit = Int(event.charactersIgnoringModifiers ?? "") ?? 0
+            let (action, consumed) = self.chords.resolve(event)
             self.gridView.prefixArmed = self.chords.prefixArmed
-            if let command { self.invoke(command, session: session) }
+            if let action { self.perform(action, session: session) }
             return consumed ? nil : event
+        }
+    }
+
+    /// Carries out one of herdr's actions, or says why it cannot.
+    ///
+    /// The keymap is the server's, so it names actions HerdX has no answer for.
+    /// Those say so rather than being swallowed: a bound key that does nothing
+    /// and explains nothing is what sent me looking for a broken keyboard.
+    private func perform(_ action: Keymap.Action, session: HerdrSession) {
+        guard let run = handler(for: action, session: session) else {
+            notice("\(chords.keymap.prefixLabel) \(action.title.lowercased()) is not in HerdX yet")
+            return
+        }
+        run()
+    }
+
+    /// What an action does, or nil when HerdX has no answer for it.
+    ///
+    /// One lookup rather than a switch plus a list of what the switch covers:
+    /// the help asks this same question, so it cannot claim a binding works
+    /// when nothing here carries it out.
+    private func handler(
+        for action: Keymap.Action, session: HerdrSession
+    ) -> (() -> Void)? {
+        let snapshot = session.lastSnapshot
+
+        switch action {
+        case .help: return { self.invoke(.help, session: session) }
+        case .settings: return { self.showPreferences(nil) }
+        case .detach: return { self.window.performClose(nil) }
+        case .toggleSidebar: return { self.invoke(.toggleSidebar, session: session) }
+        case .reloadConfig: return { self.invoke(.reloadConfig, session: session) }
+
+        case .newTab: return { self.invoke(.newTab, session: session) }
+        case .closeTab: return { self.invoke(.closeTab, session: session) }
+        case .nextTab: return { self.invoke(.nextTab, session: session) }
+        case .previousTab: return { self.invoke(.previousTab, session: session) }
+        case .switchTab: return { self.focusTab(at: self.pendingDigit - 1, session: session) }
+
+        case .newWorkspace: return { self.invoke(.newWorkspace, session: session) }
+        case .closeWorkspace:
+            guard let id = snapshot?.workspaces.first(where: \.focused)?.workspaceID else {
+                return nil
+            }
+            return { self.invoke(.closeWorkspace(id), session: session) }
+
+        case .splitVertical: return { self.invoke(.splitRight, session: session) }
+        case .splitHorizontal: return { self.invoke(.splitDown, session: session) }
+        case .closePane: return { self.invoke(.closePane, session: session) }
+        case .zoom: return { self.invoke(.zoomPane, session: session) }
+        case .focusPaneLeft: return { self.invoke(.focusLeft, session: session) }
+        case .focusPaneDown: return { self.invoke(.focusDown, session: session) }
+        case .focusPaneUp: return { self.invoke(.focusUp, session: session) }
+        case .focusPaneRight: return { self.invoke(.focusRight, session: session) }
+        case .cyclePaneNext: return { self.cyclePane(by: 1, session: session) }
+        case .cyclePanePrevious: return { self.cyclePane(by: -1, session: session) }
+        case .copyMode: return { self.invoke(.copyMode, session: session) }
+
+        default: return nil
+        }
+    }
+
+    /// Focuses a tab or pane by its place in the current tab bar.
+    ///
+    /// herdr binds these to a position, not to an id, so the id has to come
+    /// from the snapshot the same way clicking a chip gets it.
+    private func focusTab(at index: Int, session: HerdrSession) {
+        guard let snapshot = session.lastSnapshot else { return }
+        let tabs = snapshot.tabs.filter { $0.workspaceID == snapshot.focusedWorkspaceID }
+        guard tabs.indices.contains(index) else { return }
+        invoke(.focusTab(tabs[index].tabID), session: session)
+    }
+
+    private func cyclePane(by step: Int, session: HerdrSession) {
+        let panes = gridView.panes
+        guard panes.count > 1, let current = gridView.focusedPane,
+            let at = panes.firstIndex(where: { $0.id == current })
+        else { return }
+        let next = panes[(at + step + panes.count) % panes.count]
+        invoke(.focusPane(next.id), session: session)
+    }
+
+    /// A line over the terminal that clears itself.
+    private func notice(_ text: String) {
+        noticeToken += 1
+        let token = noticeToken
+        copyModeStatus.update(text)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.noticeToken == token else { return }
+                self.copyModeStatus.update(self.copyModeText)
+            }
         }
     }
 
@@ -539,8 +653,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         // Likewise client-side: the keymap is ours, so herdr has nothing to
         // say about it and no method to ask.
+        if case .settings = command {
+            showPreferences(nil)
+            return
+        }
+        if case .toggleSidebar = command {
+            sidebar.isHidden.toggle()
+            return
+        }
         if case .help = command {
-            help.show(over: window)
+            help.show(over: window, keymap: chords.keymap) { action in
+                self.handler(for: action, session: session) != nil
+            }
             return
         }
         guard let boot = bootID ?? session.lastSnapshot?.bootID,

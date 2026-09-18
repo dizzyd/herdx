@@ -68,6 +68,9 @@ final class TerminalGridView: NSView {
         didSet { if prefixArmed != oldValue { needsDisplay = true } }
     }
 
+    /// What the prefix is called, which the user may have changed.
+    var prefixLabel = "⌃B"
+
     /// What to write on each pane's frame, by pane id.
     var paneLabels: [String: String] = [:] {
         didSet { if paneLabels != oldValue { needsDisplay = true } }
@@ -572,7 +575,7 @@ final class TerminalGridView: NSView {
             .font: NSFont.systemFont(ofSize: labelSize, weight: .semibold),
             .foregroundColor: NSColor.white,
         ]
-        let text = NSAttributedString(string: "⌃B", attributes: attributes)
+        let text = NSAttributedString(string: prefixLabel, attributes: attributes)
         let size = text.size()
 
         let pill = CGRect(

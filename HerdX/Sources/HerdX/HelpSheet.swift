@@ -14,15 +14,28 @@ final class HelpSheet {
     /// the chrome palette is built for a surface that is dark because the
     /// terminal is. Painting a light dialog with it left the headings all but
     /// invisible.
-    func show(over parent: NSWindow) {
-        // Already up: a second ⌃B ? should not stack sheets.
+    func show(over parent: NSWindow, keymap: Keymap, supported: (Keymap.Action) -> Bool) {
+        // Already up: a second prefix-? should not stack sheets.
         guard window == nil else { return }
+
+        // Bindings HerdX cannot carry out are still the user's bindings, and
+        // leaving them out would make the list look complete when it is not.
+        let prefixed = keymap.bindings.filter(\.binding.usesPrefix).map { entry in
+            (
+                entry.binding.label,
+                supported(entry.action)
+                    ? entry.action.title : entry.action.title + "  —  not yet"
+            )
+        }
+        // herdr binds far more than fits in one column at a sensible window
+        // height, so the prefix list runs down two.
+        let split = (prefixed.count + 1) / 2
 
         let content = NSView()
         let columns = NSStackView(views: [
             Self.column(
-                title: "Prefix  ⌃B",
-                rows: ChordResolver.prefixBindings.map { ($0.label, $0.title) }),
+                title: "Prefix  " + keymap.prefixLabel, rows: Array(prefixed.prefix(split))),
+            Self.column(title: " ", rows: Array(prefixed.dropFirst(split))),
             Self.column(
                 title: "Menu",
                 rows: Command.menuLayout.compactMap { title, key, _ in
@@ -31,13 +44,13 @@ final class HelpSheet {
         ])
         columns.orientation = .horizontal
         columns.alignment = .top
-        columns.spacing = 40
+        columns.spacing = 28
         columns.translatesAutoresizingMaskIntoConstraints = false
 
         let note = NSTextField(
             labelWithString:
-                "⌃B arms the prefix; the next key completes the chord. "
-                + "The focused pane shows a mark while it is armed.")
+                "\(keymap.prefixLabel) arms the prefix; the next key completes the chord. "
+                + "These are herdr's own bindings, read from the server.")
         note.font = .systemFont(ofSize: 11)
         note.textColor = .secondaryLabelColor
         note.translatesAutoresizingMaskIntoConstraints = false
@@ -64,10 +77,14 @@ final class HelpSheet {
         ])
 
         let sheet = DismissableSheet(
-            contentRect: NSRect(x: 0, y: 0, width: 560, height: 430),
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 560),
             styleMask: [.titled], backing: .buffered, defer: false)
         sheet.title = "Keyboard Shortcuts"
         sheet.contentView = content
+        // Sized to what it holds: the list is the server's, so how long it runs
+        // is not something this file gets to assume.
+        content.layoutSubtreeIfNeeded()
+        sheet.setContentSize(content.fittingSize)
         window = sheet
 
         parent.beginSheet(sheet) { [weak self] _ in self?.window = nil }

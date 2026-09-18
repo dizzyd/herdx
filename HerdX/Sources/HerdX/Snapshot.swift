@@ -7,6 +7,8 @@ import Foundation
 struct Snapshot: Decodable {
     let bootID: String
     let revision: UInt64
+    /// The user's own keybindings, normalised by the server.
+    let serverKeybindingsToml: String?
     let focusedWorkspaceID: String?
     let focusedTabID: String?
     let focusedPaneID: String?
@@ -18,6 +20,7 @@ struct Snapshot: Decodable {
     enum CodingKeys: String, CodingKey {
         case bootID = "boot_id"
         case revision
+        case serverKeybindingsToml = "server_keybindings_toml"
         case focusedWorkspaceID = "focused_workspace_id"
         case focusedTabID = "focused_tab_id"
         case focusedPaneID = "focused_pane_id"

@@ -27,6 +27,11 @@ extension Command {
         case .copyMode: return 17
         case .closeTabWithID: return 18
         case .help: return 19
+        case .settings: return 20
+        case .detach: return 21
+        case .toggleSidebar: return 22
+        case .reloadConfig: return 23
+        case .closeWorkspace: return 24
         }
     }
 
