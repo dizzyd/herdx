@@ -49,6 +49,8 @@ struct Preferences {
     /// A whole palette rather than the two default colours: a kitty theme is
     /// twenty colours, and keeping only two of them would throw away the part
     /// that makes one theme look different from another.
+    /// How the sidebar is arranged, as herdr's own panel puts it.
+    var sidebarArrangement: String?
     var themeName: String?
     var themeColors: [String]?
 
@@ -62,6 +64,7 @@ struct Preferences {
         static let panePadding = "panePadding"
         static let paneLabelSize = "paneLabelSize"
         static let lineHeight = "lineHeight"
+        static let sidebarArrangement = "sidebarArrangement"
         static let themeName = "themeName"
         static let themeColors = "themeColors"
     }
@@ -103,6 +106,7 @@ struct Preferences {
                 panePadding: defaults.object(forKey: Key.panePadding) as? CGFloat ?? 6,
                 paneLabelSize: defaults.object(forKey: Key.paneLabelSize) as? CGFloat ?? 11,
                 lineHeight: defaults.object(forKey: Key.lineHeight) as? CGFloat ?? 1,
+                sidebarArrangement: defaults.string(forKey: Key.sidebarArrangement),
                 themeName: defaults.string(forKey: Key.themeName),
                 themeColors: defaults.stringArray(forKey: Key.themeColors))
         }
@@ -117,6 +121,7 @@ struct Preferences {
             defaults.set(newValue.panePadding, forKey: Key.panePadding)
             defaults.set(newValue.paneLabelSize, forKey: Key.paneLabelSize)
             defaults.set(newValue.lineHeight, forKey: Key.lineHeight)
+            defaults.set(newValue.sidebarArrangement, forKey: Key.sidebarArrangement)
             defaults.set(newValue.themeName, forKey: Key.themeName)
             defaults.set(newValue.themeColors, forKey: Key.themeColors)
         }

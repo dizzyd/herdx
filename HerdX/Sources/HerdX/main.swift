@@ -76,6 +76,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     /// Machines already offered a herdr install, so the offer is made once and
     /// not every time the endpoint retries.
     private var offeredInstall: Set<String> = []
+    /// Which agents have been looked at since they last changed, which the
+    /// snapshot cannot say because it is about this client's attention rather
+    /// than the session's state.
+    private var agentPriority = AgentPriority()
     /// What the machine catalog looked like when the session was built.
     private var knownMachines: String?
     private var ticks = 0
@@ -129,6 +133,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         sidebar.onSelectWorkspace = { [weak self] workspaceID, endpoint in
             self?.focus(.focusWorkspace(workspaceID), on: endpoint)
         }
+        sidebar.onSelectPane = { [weak self] paneID, endpoint in
+            self?.focus(.focusPane(paneID), on: endpoint)
+        }
+        sidebar.onArrangementChanged = { [weak self] arrangement in
+            guard let self else { return }
+            self.preferences.sidebarArrangement = arrangement.rawValue
+            Preferences.current = self.preferences
+        }
+        sidebar.show(
+            arrangement: preferences.sidebarArrangement
+                .flatMap(SidebarView.Arrangement.init(rawValue:)) ?? .spaces)
+
         sidebar.onSelectEndpoint = { [weak self] index in
             guard let self, let session = self.session else { return }
             session.setActiveEndpoint(index)
@@ -557,6 +573,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         // connection status changes on its own, and gating on snapshots left
         // a machine reading "connecting…" long after it was up. The sidebar
         // compares a signature and returns immediately when nothing moved.
+        // What is on screen is what counts as seen, so this is noted before
+        // anything is asked to order agents by it.
+        if let snapshot = session.lastSnapshot {
+            agentPriority.note(snapshot: snapshot, endpoint: session.activeEndpoint)
+        }
+        sidebar.priority = agentPriority
+
         let online = Set(session.endpoints.filter { $0.status == .online }.map(\.index))
         if !online.subtracting(themedEndpoints).isEmpty {
             themedEndpoints = online

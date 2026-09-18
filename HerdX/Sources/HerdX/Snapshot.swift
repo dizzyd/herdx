@@ -86,16 +86,29 @@ struct Snapshot: Decodable {
 
     struct Agent: Decodable {
         let paneID: String
+        let workspaceID: String
+        let tabID: String
+        let name: String?
         let displayAgent: String?
         let title: String?
         let agentStatus: AgentStatus
+        /// Bumped whenever the agent's state changes.
+        ///
+        /// herdr orders a priority list by attention and breaks ties with
+        /// this, newest first, so the thing that just started needing you is
+        /// above the thing that has needed you for an hour.
+        let stateChangeSeq: UInt64
         let focused: Bool
 
         enum CodingKeys: String, CodingKey {
             case paneID = "pane_id"
+            case workspaceID = "workspace_id"
+            case tabID = "tab_id"
+            case name
             case displayAgent = "display_agent"
             case title
             case agentStatus = "agent_status"
+            case stateChangeSeq = "state_change_seq"
             case focused
         }
     }

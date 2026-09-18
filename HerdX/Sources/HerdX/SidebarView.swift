@@ -11,7 +11,7 @@ final class SidebarRow: NSView {
         case endpoint(Int)
         case workspace(String, endpoint: Int)
         case tab(String)
-        case pane(String)
+        case pane(String, endpoint: Int)
     }
 
     let target: Target
@@ -196,8 +196,26 @@ final class SidebarView: NSView {
     var onSelectEndpoint: ((Int) -> Void)?
     /// Raised when a workspace is clicked, with the machine it belongs to.
     var onSelectWorkspace: ((String, Int) -> Void)?
+    /// Raised when an agent is clicked, with the machine it belongs to.
+    var onSelectPane: ((String, Int) -> Void)?
+
+    /// How the list is arranged, as herdr's own panel puts it.
+    enum Arrangement: String {
+        /// Machines, and the workspaces under them.
+        case spaces
+        /// Every agent across every machine, most in need of you first.
+        case priority
+    }
+    var arrangement: Arrangement = .spaces {
+        didSet { if arrangement != oldValue { lastSignature = nil } }
+    }
+    /// Supplied by the app, which is what watches snapshots go by.
+    var priority = AgentPriority() { didSet { lastSignature = nil } }
 
     private let stack = NSStackView()
+    private let modes = NSSegmentedControl()
+    /// Raised when the arrangement is switched, so it can be remembered.
+    var onArrangementChanged: ((Arrangement) -> Void)?
     /// What the rows were last built from, so they are not rebuilt needlessly.
     private var lastSignature: String?
     private var chrome = Chrome(theme: .dark)
@@ -211,20 +229,47 @@ final class SidebarView: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
+
+        modes.segmentCount = 2
+        modes.setLabel("Spaces", forSegment: 0)
+        modes.setLabel("Agents", forSegment: 1)
+        modes.segmentStyle = .rounded
+        modes.trackingMode = .selectOne
+        modes.selectedSegment = 0
+        modes.target = self
+        modes.action = #selector(modeChanged)
+        modes.translatesAutoresizingMaskIntoConstraints = false
+
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 2
         stack.edgeInsets = NSEdgeInsets(top: 12, left: 6, bottom: 12, right: 6)
         stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(modes)
         addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: topAnchor),
+            modes.topAnchor.constraint(equalTo: topAnchor, constant: 10),
+            modes.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            modes.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            stack.topAnchor.constraint(equalTo: modes.bottomAnchor),
             stack.leadingAnchor.constraint(equalTo: leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: trailingAnchor),
         ])
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
+
+    @objc private func modeChanged() {
+        arrangement = modes.selectedSegment == 1 ? .priority : .spaces
+        onArrangementChanged?(arrangement)
+        update(endpoints: endpoints, active: active)
+    }
+
+    /// Restores a remembered arrangement without announcing it back.
+    func show(arrangement: Arrangement) {
+        self.arrangement = arrangement
+        modes.selectedSegment = arrangement == .priority ? 1 : 0
+    }
 
     /// Sets the sidebar a shade back from the terminal, so the two halves of
     /// the window read as one surface rather than two apps.
@@ -243,18 +288,40 @@ final class SidebarView: NSView {
         // Snapshots are republished constantly and mostly change nothing the
         // sidebar shows; rebuilding every time would throw away hover state
         // mid-gesture.
-        let signature = endpoints.map { endpoint in
+        let machines = endpoints.map { endpoint -> String in
             let workspaces = endpoint.snapshot?.workspaces
                 .map { "\($0.workspaceID):\($0.label):\($0.branch ?? ""):\($0.focused):\($0.agentStatus)" }
                 .joined(separator: ",") ?? ""
             return "\(endpoint.id):\(endpoint.status):\(endpoint.error ?? ""):\(workspaces)"
-        }.joined(separator: "|") + "@\(active)+\(collapsed.sorted().joined(separator: ","))"
+        }.joined(separator: "|")
+
+        // The priority list is ordered by things the machine list does not
+        // show, so it needs its own reasons to be rebuilt.
+        var agents = ""
+        if arrangement == .priority {
+            let rows: [String] = endpoints.flatMap { endpoint -> [String] in
+                let list = endpoint.snapshot?.agents ?? []
+                return list.map { agent -> String in
+                    let seen = priority.hasSeen(agent, on: endpoint.index)
+                    return "\(agent.paneID):\(agent.agentStatus):\(agent.stateChangeSeq):\(seen)"
+                }
+            }
+            agents = rows.joined(separator: ",")
+        }
+        let collapsedKey = collapsed.sorted().joined(separator: ",")
+        let signature =
+            machines + "@\(active)+\(collapsedKey)+\(arrangement.rawValue)+" + agents
         guard lastSignature != signature else { return }
         lastSignature = signature
         self.endpoints = endpoints
         self.active = active
 
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+
+        if arrangement == .priority {
+            addAgentsByPriority(endpoints)
+            return
+        }
 
         for endpoint in endpoints {
             let isActive = endpoint.index == active
@@ -276,6 +343,44 @@ final class SidebarView: NSView {
                     selected: isActive && workspace.focused,
                     target: .workspace(workspace.workspaceID, endpoint: endpoint.index))
             }
+        }
+    }
+
+    /// Every agent on every machine, most in need of you first.
+    ///
+    /// Flat rather than grouped: the question this arrangement answers is
+    /// "what needs me", and an answer sorted by where things live is the one
+    /// the other arrangement already gives.
+    private func addAgentsByPriority(_ endpoints: [EndpointInfo]) {
+        let all = endpoints.flatMap { endpoint in
+            (endpoint.snapshot?.agents ?? []).map { (endpoint, $0) }
+        }
+        guard !all.isEmpty else {
+            add(
+                title: "No agents", subtitle: nil, status: .unknown, symbol: nil,
+                collapsed: nil, selected: false, target: .endpoint(0))
+            return
+        }
+
+        let ordered = priority.ordered(all, agent: { $0.1 }, endpoint: { $0.0.index })
+        for (endpoint, agent) in ordered {
+            let workspace = endpoint.snapshot?.workspaces
+                .first { $0.workspaceID == agent.workspaceID }?.label
+            let reason = priority.reason(agent, on: endpoint.index)
+            // Falls back to the workspace rather than to the pane id: an agent
+            // that has not named itself is still identified by the work it is
+            // doing, and "w2:p1" identifies nothing to anybody.
+            let named = [agent.name, agent.displayAgent, agent.title]
+                .compactMap { $0 }.first { !$0.isEmpty }
+            add(
+                title: named ?? workspace ?? agent.paneID,
+                subtitle: [reason, named == nil ? nil : workspace, endpoint.label]
+                    .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "),
+                status: agent.agentStatus,
+                symbol: nil,
+                collapsed: nil,
+                selected: agent.focused && endpoint.index == active,
+                target: .pane(agent.paneID, endpoint: endpoint.index))
         }
     }
 
@@ -380,7 +485,7 @@ final class SidebarView: NSView {
                     // first, otherwise the command goes to the wrong server.
                     self?.onSelectWorkspace?(id, endpoint)
                 case .tab(let id): self?.onSelect?(.focusTab(id))
-                case .pane(let id): self?.onSelect?(.focusPane(id))
+                case .pane(let id, let endpoint): self?.onSelectPane?(id, endpoint)
                 }
             },
             onToggle: onToggle)
