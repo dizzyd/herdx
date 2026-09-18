@@ -176,7 +176,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             split.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
         window.contentView = container
-        copyModeStatus.attach(to: window)
+        copyModeStatus.attach(to: window, over: gridView)
 
         // Lay out before connecting: the handshake carries a surface size, and
         // asking for one before the views have frames requests a 1x1 surface —

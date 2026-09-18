@@ -10,12 +10,14 @@ import AppKit
 /// ordering left to get wrong.
 @MainActor
 final class ModeStatus {
-    /// How far in from the terminal's bottom-left corner it sits.
-    private let inset = CGPoint(x: SidebarView.width + 12, y: 12)
-
     private let panel: NSPanel
     private let view = CopyModeStatusView()
     private weak var parent: NSWindow?
+    /// The terminal, which is what the strip is centred over.
+    ///
+    /// Measured rather than assumed: a fixed offset from the window's corner
+    /// does not know that the sidebar can be collapsed or the split dragged.
+    private weak var target: NSView?
 
     init() {
         panel = NSPanel(
@@ -41,11 +43,13 @@ final class ModeStatus {
         panel.contentView = content
     }
 
-    /// Remembers the window to sit above. The panel itself is not added until
-    /// there is something to show, because ordering a child window out detaches
-    /// it again and leaves it to be re-added anyway.
-    func attach(to parent: NSWindow) {
+    /// Remembers the window to sit above and the view to centre over. The
+    /// panel itself is not added until there is something to show, because
+    /// ordering a child window out detaches it again and leaves it to be
+    /// re-added anyway.
+    func attach(to parent: NSWindow, over target: NSView) {
         self.parent = parent
+        self.target = target
     }
 
     func apply(chrome: Chrome) { view.apply(chrome: chrome) }
@@ -77,15 +81,19 @@ final class ModeStatus {
         parent?.addChildWindow(panel, ordered: .above)
     }
 
-    /// Keeps it pinned to the terminal's corner as the window moves.
+    /// Centres it over the terminal as the window moves and resizes.
     ///
     /// Unconditional: guarding on the panel already being visible meant it was
     /// never placed at the one moment that matters, the frame before it is
     /// first shown, so it appeared in the corner of the display instead.
     func reposition() {
-        guard let parent else { return }
-        let frame = parent.frame
+        guard let parent, let target else { return }
+        let inWindow = target.convert(target.bounds, to: nil)
+        let onScreen = parent.convertToScreen(inWindow)
+        let size = panel.frame.size
         panel.setFrameOrigin(
-            NSPoint(x: frame.minX + inset.x, y: frame.minY + inset.y))
+            NSPoint(
+                x: (onScreen.midX - size.width / 2).rounded(),
+                y: (onScreen.midY - size.height / 2).rounded()))
     }
 }
