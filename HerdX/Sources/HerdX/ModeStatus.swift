@@ -41,10 +41,11 @@ final class ModeStatus {
         panel.contentView = content
     }
 
+    /// Remembers the window to sit above. The panel itself is not added until
+    /// there is something to show, because ordering a child window out detaches
+    /// it again and leaves it to be re-added anyway.
     func attach(to parent: NSWindow) {
         self.parent = parent
-        parent.addChildWindow(panel, ordered: .above)
-        panel.orderOut(nil)
     }
 
     func apply(chrome: Chrome) { view.apply(chrome: chrome) }
@@ -52,6 +53,12 @@ final class ModeStatus {
     /// Whether the strip is actually on screen, which is the only question
     /// worth asking about it.
     var isVisible: Bool { panel.isVisible }
+
+    /// Where it ended up, which is the other question worth asking: a panel
+    /// that is visible but off the window's edge looks the same from inside.
+    func describeFrame() -> String {
+        "visible=\(panel.isVisible) frame=\(panel.frame) child=\(panel.parent != nil)"
+    }
 
     /// Shows the strip, or hides it when there is nothing to say.
     func update(_ status: String?) {
@@ -63,15 +70,20 @@ final class ModeStatus {
         // Sized to the text before it is placed, or the first frame lands at
         // whatever the previous message measured.
         panel.contentView?.layoutSubtreeIfNeeded()
-        let size = view.fittingSize
-        panel.setContentSize(size)
+        panel.setContentSize(view.fittingSize)
         reposition()
-        panel.order(.above, relativeTo: parent?.windowNumber ?? 0)
+        // Adding it as a child orders it in as well, so this is both the
+        // attach and the show.
+        parent?.addChildWindow(panel, ordered: .above)
     }
 
     /// Keeps it pinned to the terminal's corner as the window moves.
+    ///
+    /// Unconditional: guarding on the panel already being visible meant it was
+    /// never placed at the one moment that matters, the frame before it is
+    /// first shown, so it appeared in the corner of the display instead.
     func reposition() {
-        guard let parent, panel.isVisible || panel.parent != nil else { return }
+        guard let parent else { return }
         let frame = parent.frame
         panel.setFrameOrigin(
             NSPoint(x: frame.minX + inset.x, y: frame.minY + inset.y))

@@ -1015,6 +1015,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 print("probe: sent \(probe.count) keys")
                 if ProcessInfo.processInfo.environment["HERDX_PROBE_RESIZE"] != nil {
                     self.enterResizeMode()
+                    print("probe: parent frame=\(self.window.frame)")
+                    print("probe: strip \(self.copyModeStatus.describeFrame())")
                 }
                 if ProcessInfo.processInfo.environment["HERDX_PROBE_CHORDS"] != nil {
                     self.reportUnreachableChords()
