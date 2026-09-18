@@ -22,6 +22,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     private var serverTitle: String?
     /// Held so a theme change can recolour their dividers.
     private var windowSplit: ChromeSplitView?
+    /// The width to restore the sidebar to when it is brought back.
+    private var sidebarWidth = SidebarView.width
     private var terminalSplit: ChromeSplitView?
     /// The terminal palette the chrome was last built from.
     private var terminalTheme: Theme = .dark
@@ -896,7 +898,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
             return
         }
         if case .toggleSidebar = command {
-            sidebar.isHidden.toggle()
+            toggleSidebar()
             return
         }
         // These take a required id that herdr will not infer from who is
@@ -962,6 +964,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         chords.reset()
         gridView.prefixArmed = false
         window.makeFirstResponder(gridView)
+    }
+
+    /// Collapses the sidebar out of the split, rather than hiding its contents
+    /// and leaving the space it was occupying behind.
+    private func toggleSidebar() {
+        guard let split = windowSplit else { return }
+        if split.isSubviewCollapsed(sidebar) {
+            split.setPosition(sidebarWidth, ofDividerAt: 0)
+        } else {
+            // Remembered, so bringing it back does not forget a width that was
+            // dragged to deliberately.
+            sidebarWidth = max(sidebar.frame.width, SidebarView.minimumWidth)
+            split.setPosition(0, ofDividerAt: 0)
+        }
+        split.layoutSubtreeIfNeeded()
+        // The terminal just changed width by a couple of hundred points, and
+        // the server composes to the size it was last told.
+        gridView.reportGridSize()
+        copyModeStatus.reposition()
+    }
+
+    /// Which subview the split may collapse. Without this `setPosition(0, …)`
+    /// is clamped by the minimum width and the sidebar merely gets narrow.
+    func splitView(_ splitView: NSSplitView, canCollapseSubview view: NSView) -> Bool {
+        view is SidebarView
     }
 
     /// How far the sidebar may be dragged. Without these the split view lets
