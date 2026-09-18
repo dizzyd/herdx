@@ -63,7 +63,7 @@ final class HelpSheet {
             done.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -20),
         ])
 
-        let sheet = NSWindow(
+        let sheet = DismissableSheet(
             contentRect: NSRect(x: 0, y: 0, width: 560, height: 430),
             styleMask: [.titled], backing: .buffered, defer: false)
         sheet.title = "Keyboard Shortcuts"
@@ -120,5 +120,16 @@ final class HelpSheet {
         case "\r": return text + "↩"
         default: return text + key.equivalent.uppercased()
         }
+    }
+}
+
+/// A sheet that escape closes.
+///
+/// Escape travels the responder chain as `cancelOperation`, and with no cancel
+/// button to land on it reached the window and stopped. A reference you opened
+/// to read should close the way every other transient panel on the Mac does.
+private final class DismissableSheet: NSWindow {
+    override func cancelOperation(_ sender: Any?) {
+        sheetParent?.endSheet(self)
     }
 }
