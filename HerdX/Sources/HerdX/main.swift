@@ -224,6 +224,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         gridView.reportGridSize()
 
         installCaptureHookIfRequested()
+        installInputProbeIfRequested()
 
         // A display-linked repaint would be tighter, but the core only bumps a
         // revision when a surface actually lands, so a cheap tick is enough.
@@ -608,6 +609,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// `screencapture -R`, which picks the wrong display on multi-monitor setups.
     private var capturePath: String? {
         ProcessInfo.processInfo.environment["HERDX_CAPTURE"]
+    }
+
+    /// Dev affordance: `HERDX_PROBE_INPUT=<text>` reports the input state and
+    /// then types that text, so the AppKit half of the keyboard path can be
+    /// tested without a human at the keyboard.
+    ///
+    /// Point it at a throwaway session with `HERDR_CLIENT_SOCKET_PATH`; it
+    /// types into whatever pane is focused.
+    private func installInputProbeIfRequested() {
+        guard let probe = ProcessInfo.processInfo.environment["HERDX_PROBE_INPUT"] else { return }
+        let delay = ProcessInfo.processInfo.environment["HERDX_PROBE_DELAY"]
+            .flatMap(Double.init) ?? 6
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                print("probe: window.isKeyWindow=\(self.window.isKeyWindow)")
+                print("probe: firstResponder=\(String(describing: self.window.firstResponder))")
+                print("probe: gridView.acceptsFirstResponder=\(self.gridView.acceptsFirstResponder)")
+                print("probe: gridView.session=\(self.gridView.session != nil)")
+                print("probe: focusedPaneFromSnapshot=\(self.gridView.focusedPaneFromSnapshot ?? "nil")")
+                print("probe: focusedPane=\(self.gridView.focusedPane ?? "nil")")
+                print("probe: panes=\(self.gridView.panes.map(\.id))")
+
+                let made = self.window.makeFirstResponder(self.gridView)
+                print("probe: makeFirstResponder=\(made)")
+
+                for character in probe {
+                    guard
+                        let event = NSEvent.keyEvent(
+                            with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                            windowNumber: self.window.windowNumber, context: nil,
+                            characters: String(character),
+                            charactersIgnoringModifiers: String(character),
+                            isARepeat: false, keyCode: 0)
+                    else { continue }
+                    self.gridView.keyDown(with: event)
+                }
+                print("probe: sent \(probe.count) keys")
+                // Give the keys time to reach the server, then leave: a probe
+                // that never exits leaves its output stuck in a pipe buffer.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                    fflush(stdout)
+                    NSApp.terminate(nil)
+                }
+            }
+        }
     }
 
     private func installCaptureHookIfRequested() {

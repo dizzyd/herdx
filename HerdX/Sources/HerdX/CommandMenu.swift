@@ -49,16 +49,23 @@ extension Command {
         ("Close Pane", Key(equivalent: "w", modifiers: [.command, .shift]), .closePane),
         ("Zoom Pane", Key(equivalent: "\r", modifiers: [.command, .shift]), .zoomPane),
         ("", Key(equivalent: "", modifiers: []), .newTab),
-        ("Select Pane Left", Key(equivalent: "\u{1C}", modifiers: [.command, .option]), .focusLeft),
-        ("Select Pane Right", Key(equivalent: "\u{1D}", modifiers: [.command, .option]), .focusRight),
-        ("Select Pane Up", Key(equivalent: "\u{1E}", modifiers: [.command, .option]), .focusUp),
-        ("Select Pane Down", Key(equivalent: "\u{1F}", modifiers: [.command, .option]), .focusDown),
+        // The arrows are the function-key codepoints AppKit matches menu key
+        // equivalents against. The ASCII cursor-control characters that were
+        // here instead are what a terminal sends, not what a menu compares, so
+        // these four items could never fire.
+        ("Select Pane Left", Key(equivalent: "\u{F702}", modifiers: [.command, .option]), .focusLeft),
+        ("Select Pane Right", Key(equivalent: "\u{F703}", modifiers: [.command, .option]), .focusRight),
+        ("Select Pane Up", Key(equivalent: "\u{F700}", modifiers: [.command, .option]), .focusUp),
+        ("Select Pane Down", Key(equivalent: "\u{F701}", modifiers: [.command, .option]), .focusDown),
         ("", Key(equivalent: "", modifiers: []), .newTab),
         ("Next Tab", Key(equivalent: "]", modifiers: [.command, .shift]), .nextTab),
         ("Previous Tab", Key(equivalent: "[", modifiers: [.command, .shift]), .previousTab),
         ("", Key(equivalent: "", modifiers: []), .newTab),
         ("New Workspace", Key(equivalent: "n", modifiers: [.command, .shift]), .newWorkspace),
         ("", Key(equivalent: "", modifiers: []), .newTab),
-        ("Copy Mode", Key(equivalent: "[", modifiers: [.command, .shift]), .copyMode),
+        // Not shift-command-bracket: that is Previous Tab, and AppKit gives a
+        // duplicate equivalent to whichever item it finds first, so copy mode
+        // was unreachable from the menu.
+        ("Copy Mode", Key(equivalent: "c", modifiers: [.command, .option]), .copyMode),
     ]
 }
