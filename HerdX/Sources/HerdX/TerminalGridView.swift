@@ -532,22 +532,28 @@ final class TerminalGridView: NSView {
     ///
     /// One frame per pane rather than a frame around the lot with a second one
     /// inside it: the earlier arrangement gave a split tab nested outlines for
-    /// one selection. The focused pane's frame is the accent and heavier, the
-    /// rest a hairline.
+    /// one selection. Where a tab is split, the focused pane's frame is the
+    /// accent and heavier and the rest are hairlines. Where it is not, the
+    /// accent would be answering a question nobody asked — there is only one
+    /// pane it could mean — so the lone frame stays quiet.
     ///
     /// The label rides the top border because what it says — the working
     /// directory, the agent and its state — belongs to that pane and not to the
     /// window. A single line above the tabs had to silently change meaning as
     /// focus moved between panes, with nothing on screen to show that it had.
     private func drawPaneBorders(in context: CGContext) {
+        // Which pane has focus only needs saying when there is a choice.
+        let split = panes.count > 1
+
         for pane in panes {
             let rect = paddedRect(of: pane)
             let focused = pane.id == focusedPane
+            let highlighted = focused && split
 
             context.addPath(
                 CGPath(roundedRect: rect, cornerWidth: 5, cornerHeight: 5, transform: nil))
-            context.setStrokeColor((focused ? chrome.accent : chrome.separator).cgColor)
-            context.setLineWidth(focused ? 1.5 : 1)
+            context.setStrokeColor((highlighted ? chrome.accent : chrome.separator).cgColor)
+            context.setLineWidth(highlighted ? 1.5 : 1)
             context.strokePath()
 
             drawPaneLabel(pane, on: rect, focused: focused, in: context)
