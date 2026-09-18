@@ -881,6 +881,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             sidebar.isHidden.toggle()
             return
         }
+        // These take a required id that herdr will not infer from who is
+        // asking, so the focused one is supplied here rather than in every
+        // caller. Sending none is rejected as a missing field.
+        if case .closeTab = command, let tab = session.lastSnapshot?.focusedTabID {
+            invoke(.closeTabWithID(tab), session: session, bootID: bootID)
+            return
+        }
+        if case .closePane = command, let pane = gridView.focusedPane {
+            invoke(.closePaneWithID(pane), session: session, bootID: bootID)
+            return
+        }
+        // herdr's tab.focus takes a tab id and has no relative form, so "the
+        // next one" is ours to work out.
+        if case .nextTab = command {
+            focusTab(offsetBy: 1, session: session)
+            return
+        }
+        if case .previousTab = command {
+            focusTab(offsetBy: -1, session: session)
+            return
+        }
         if case .help = command {
             help.show(over: window, keymap: chords.keymap) { action in
                 self.handler(for: action, session: session) != nil
@@ -1047,24 +1068,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     print("probe: parent frame=\(self.window.frame)")
                     print("probe: strip \(self.copyModeStatus.describeFrame())")
                 }
-                if ProcessInfo.processInfo.environment["HERDX_PROBE_REQUESTS"] != nil,
-                    let snapshot = self.session?.lastSnapshot
+                // Runs real commands against whatever session is attached and
+                // reports what the server made of them. Point it at a
+                // throwaway session: it creates and closes tabs.
+                if ProcessInfo.processInfo.environment["HERDX_PROBE_COMMANDS"] != nil,
+                    let session = self.session
                 {
-                    let tabs = snapshot.tabs.filter {
-                        $0.workspaceID == snapshot.focusedWorkspaceID
+                    let before = session.lastSnapshot?.focusedTabID ?? "nil"
+                    print("probe: tabs before=\(session.lastSnapshot?.tabs.count ?? 0) focused=\(before)")
+                    self.invoke(.newTab, session: session)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                        MainActor.assumeIsolated {
+                            let mid = session.lastSnapshot
+                            print("probe: after newTab tabs=\(mid?.tabs.count ?? 0) focused=\(mid?.focusedTabID ?? "nil")")
+                            self.invoke(.nextTab, session: session)
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                                MainActor.assumeIsolated {
+                                    let after = session.lastSnapshot
+                                    print("probe: after nextTab focused=\(after?.focusedTabID ?? "nil")")
+                                    self.invoke(.closeTab, session: session)
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                                        MainActor.assumeIsolated {
+                                            let end = session.lastSnapshot
+                                            print("probe: after closeTab tabs=\(end?.tabs.count ?? 0)")
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
-                    let at = tabs.firstIndex { $0.tabID == snapshot.focusedTabID } ?? 0
-                    let next = tabs.isEmpty ? nil : tabs[(at + 1) % tabs.count].tabID
-                    let samples: [Command] = [
-                        .focusTab(next ?? "?"), .newTab, .newWorkspace,
-                        .closeTabWithID(snapshot.focusedTabID ?? "?"),
-                        .closePaneWithID(self.gridView.focusedPane ?? "?"),
-                        .zoomPane, .reloadConfig,
-                    ]
-                    for command in samples {
-                        print("probe: \(command.method) params=\(command.params)")
-                    }
-                    print("probe: focused tab=\(snapshot.focusedTabID ?? "nil") next=\(next ?? "nil")")
                 }
                 if ProcessInfo.processInfo.environment["HERDX_PROBE_CHORDS"] != nil {
                     self.reportUnreachableChords()
