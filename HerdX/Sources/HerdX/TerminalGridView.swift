@@ -38,6 +38,18 @@ final class TerminalGridView: NSView {
     /// changes.
     private var panePadding: CGFloat = 6
 
+    /// Space between the view's edge and a pane's frame.
+    ///
+    /// Not a preference: each frame carries a label riding its top border, and
+    /// without a gap above the topmost frame there is nowhere for that label to
+    /// sit. It is the design's, not the reader's, so it is fixed.
+    private let frameInset: CGFloat = 8
+
+    /// What to write on each pane's frame, by pane id.
+    var paneLabels: [String: String] = [:] {
+        didSet { if paneLabels != oldValue { needsDisplay = true } }
+    }
+
     /// It changes how many cells fit, so the server has to be told.
     func apply(panePadding padding: CGFloat) {
         guard padding != panePadding else { return }
@@ -134,7 +146,7 @@ final class TerminalGridView: NSView {
         guard cellSize.width > 0, cellSize.height > 0 else { return (80, 24) }
         // The padding is drawn inside each pane, so leave room for it or the
         // last column and row would be pushed under the border.
-        let reserved = panePadding * 2
+        let reserved = (panePadding + frameInset) * 2
         let usable = CGSize(width: bounds.width - reserved, height: bounds.height - reserved)
         return (
             max(Int(usable.width / cellSize.width), 1),
@@ -298,7 +310,7 @@ final class TerminalGridView: NSView {
 
         if !panes.isEmpty, let session {
             context.saveGState()
-            context.translateBy(x: panePadding, y: panePadding)
+            context.translateBy(x: panePadding + frameInset, y: panePadding + frameInset)
             session.withGrid { grid in
                 for pane in panes {
                     let background = background(of: pane)
@@ -426,35 +438,73 @@ final class TerminalGridView: NSView {
     /// The focused pane gets the accent colour and the others a faint line, so
     /// which pane takes your keystrokes is obvious without a second outline
     /// competing with it.
-    /// Frames the terminal region, and the focused pane within it.
+    /// Frames each pane and writes what it is on its own border.
     ///
-    /// One outer frame rather than a box per pane: boxing each one gave a split
-    /// tab a stack of nested outlines. Unfocused panes get nothing at all —
-    /// the frame already says where the terminal ends, and the only edge worth
-    /// drawing inside it is the one around the pane taking your keystrokes.
+    /// One frame per pane rather than a frame around the lot with a second one
+    /// inside it: the earlier arrangement gave a split tab nested outlines for
+    /// one selection. The focused pane's frame is the accent and heavier, the
+    /// rest a hairline.
+    ///
+    /// The label rides the top border because what it says — the working
+    /// directory, the agent and its state — belongs to that pane and not to the
+    /// window. A single line above the tabs had to silently change meaning as
+    /// focus moved between panes, with nothing on screen to show that it had.
     private func drawPaneBorders(in context: CGContext) {
-        guard !panes.isEmpty else { return }
-        let rects = panes.map { (pane: $0, rect: paddedRect(of: $0)) }
-        let outer = rects.dropFirst().reduce(rects[0].rect) { $0.union($1.rect) }
+        for pane in panes {
+            let rect = paddedRect(of: pane)
+            let focused = pane.id == focusedPane
 
-        // The frame is quiet when it is only a frame, and the accent when the
-        // focused pane is the whole of it.
-        let focusedIsEverything = rects.count == 1
-        context.addPath(
-            CGPath(roundedRect: outer, cornerWidth: 5, cornerHeight: 5, transform: nil))
-        context.setStrokeColor(
-            (focusedIsEverything ? chrome.accent : chrome.separator).cgColor)
-        context.setLineWidth(focusedIsEverything ? 1.5 : 1)
-        context.strokePath()
-
-        if !focusedIsEverything, let focused = rects.first(where: { $0.pane.id == focusedPane }) {
             context.addPath(
-                CGPath(
-                    roundedRect: focused.rect, cornerWidth: 4, cornerHeight: 4, transform: nil))
-            context.setStrokeColor(chrome.accent.cgColor)
-            context.setLineWidth(1.5)
+                CGPath(roundedRect: rect, cornerWidth: 5, cornerHeight: 5, transform: nil))
+            context.setStrokeColor((focused ? chrome.accent : chrome.separator).cgColor)
+            context.setLineWidth(focused ? 1.5 : 1)
             context.strokePath()
+
+            drawPaneLabel(pane, on: rect, focused: focused, in: context)
         }
+    }
+
+    /// Writes a pane's label into a gap in its own top border.
+    private func drawPaneLabel(
+        _ pane: PaneView, on rect: CGRect, focused: Bool, in context: CGContext
+    ) {
+        guard let label = paneLabels[pane.id], !label.isEmpty else { return }
+
+        let style = NSMutableParagraphStyle()
+        style.lineBreakMode = .byTruncatingMiddle
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 10, weight: focused ? .semibold : .medium),
+            .foregroundColor: focused ? chrome.primary : chrome.secondary,
+            .paragraphStyle: style,
+        ]
+        let text = NSAttributedString(string: label, attributes: attributes)
+
+        // Truncation needs a width to truncate to, so the label is given what
+        // is left of the frame; a pane too narrow to say anything useful says
+        // nothing instead of an ellipsis.
+        let inset: CGFloat = 12
+        let available = rect.width - inset * 2
+        guard available > 40 else { return }
+        let size = text.size()
+        let width = min(size.width, available)
+        let height = size.height
+
+        let textRect = CGRect(
+            x: rect.minX + inset, y: rect.minY - height / 2, width: width, height: height)
+
+        // The border is cleared rather than painted over: above the top edge is
+        // the terminal's own ground, below it is this pane's, and filling both
+        // halves with one colour left a band of the wrong one on any pane whose
+        // background is not the dominant one.
+        let gap = textRect.insetBy(dx: -5, dy: 0)
+        context.setFillColor(chrome.content.cgColor)
+        context.fill(
+            CGRect(x: gap.minX, y: gap.minY, width: gap.width, height: rect.minY - gap.minY))
+        context.setFillColor(background(of: pane).cgColor)
+        context.fill(
+            CGRect(x: gap.minX, y: rect.minY, width: gap.width, height: gap.maxY - rect.minY))
+
+        text.draw(with: textRect, options: [.usesLineFragmentOrigin])
     }
 
     /// Paints the selection as a translucent overlay.
@@ -684,7 +734,7 @@ extension TerminalGridView {
     private func hit(_ event: NSEvent) -> (pane: PaneView, column: Int, row: Int)? {
         guard cellSize.width > 0, cellSize.height > 0 else { return nil }
         let point = convert(event.locationInWindow, from: nil)
-        let origin = panePadding
+        let origin = panePadding + frameInset
         let column = Int((point.x - origin) / cellSize.width)
         let row = Int((point.y - origin) / cellSize.height)
 
@@ -705,8 +755,8 @@ extension TerminalGridView {
             button: button,
             column: UInt16(max(column, 0)),
             row: UInt16(max(row, 0)),
-            pixel_x: UInt32(max(point.x - panePadding, 0)),
-            pixel_y: UInt32(max(point.y - panePadding, 0)),
+            pixel_x: UInt32(max(point.x - panePadding - frameInset, 0)),
+            pixel_y: UInt32(max(point.y - panePadding - frameInset, 0)),
             modifiers: KeyMapper.modifiers(event.modifierFlags),
             lines: UInt16(max(lines, 0)))
     }

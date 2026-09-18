@@ -47,7 +47,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var appliedSystemIsDark: Bool?
     private let copyModeStatus = CopyModeStatusView()
     private let tabBar = TabBarView()
-    private let header = HeaderView()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         preferences = Preferences.current
@@ -142,15 +141,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let terminalArea = ChromeSplitView()
         terminalArea.isVertical = false
         terminalArea.dividerStyle = .thin
-        // Header, tabs and terminal are one surface, so the seams between them
-        // should not be visible at all.
+        // Tabs and terminal are one surface, so the seam between them should
+        // not be visible at all.
         terminalArea.seamless = true
-        terminalArea.addArrangedSubview(header)
         terminalArea.addArrangedSubview(tabBar)
         terminalArea.addArrangedSubview(gridView)
-        terminalArea.setHoldingPriority(.init(270), forSubviewAt: 0)
-        terminalArea.setHoldingPriority(.init(260), forSubviewAt: 1)
-        terminalArea.setHoldingPriority(.init(250), forSubviewAt: 2)
+        terminalArea.setHoldingPriority(.init(260), forSubviewAt: 0)
+        terminalArea.setHoldingPriority(.init(250), forSubviewAt: 1)
         terminalSplit = terminalArea
 
         let split = ChromeSplitView()
@@ -309,11 +306,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         gridView.chrome = palette
         gridView.needsDisplay = true
         // The title bar is transparent, so the window's own colour is what
-        // shows above the sidebar and header.
+        // shows above the sidebar and tabs.
         window.backgroundColor = palette.surface
         sidebar.apply(chrome: palette)
         tabBar.apply(chrome: palette)
-        header.apply(chrome: palette)
         windowSplit?.apply(chrome: palette)
         terminalSplit?.apply(chrome: palette)
     }
@@ -440,6 +436,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         attempt(delay: 0.25)
     }
 
+    /// What each pane's frame says about itself.
+    ///
+    /// The working directory first, because that is what tells two shells in
+    /// the same project apart, then the agent and its state when a pane has
+    /// one. A pane with neither falls back to whatever herdr calls it.
+    private static func paneLabels(from snapshot: Snapshot?) -> [String: String] {
+        guard let snapshot else { return [:] }
+        let agents = Dictionary(
+            snapshot.agents.map { ($0.paneID, $0) }, uniquingKeysWith: { first, _ in first })
+
+        var labels: [String: String] = [:]
+        for pane in snapshot.panes {
+            var parts: [String] = []
+            if let cwd = pane.cwd, !cwd.isEmpty { parts.append(abbreviated(cwd)) }
+            if let agent = agents[pane.paneID] {
+                if let name = agent.displayAgent, !name.isEmpty { parts.append(name) }
+                parts.append(String(describing: agent.agentStatus))
+            } else if let label = pane.label, !label.isEmpty {
+                parts.append(label)
+            }
+            labels[pane.paneID] = parts.joined(separator: "  ·  ")
+        }
+        return labels
+    }
+
+    /// Home is where most work happens, so spelling it out wastes the width the
+    /// interesting end of the path needs.
+    private static func abbreviated(_ path: String) -> String {
+        let home = NSHomeDirectory()
+        if path == home { return "~" }
+        if path.hasPrefix(home + "/") { return "~" + path.dropFirst(home.count) }
+        return path
+    }
+
     private func tick() {
         guard let session else { return }
         let snapshotsChanged = session.pollEndpointSnapshots()
@@ -450,9 +480,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // compares a signature and returns immediately when nothing moved.
         sidebar.update(endpoints: session.endpoints, active: session.activeEndpoint)
         tabBar.update(with: session.lastSnapshot)
-        header.update(
-            snapshot: session.lastSnapshot,
-            machine: session.endpoints.first { $0.index == session.activeEndpoint }?.label)
+        gridView.paneLabels = Self.paneLabels(from: session.lastSnapshot)
 
         if snapshotsChanged {
             if let snapshot = session.lastSnapshot {
