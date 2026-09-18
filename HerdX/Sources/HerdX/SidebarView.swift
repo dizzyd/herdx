@@ -88,7 +88,10 @@ final class SidebarRow: NSView {
         leading.append(marker)
 
         let name = NSTextField(labelWithString: title)
-        name.font = .systemFont(ofSize: 12, weight: .semibold)
+        // A machine is a heading over the rows that matter, not one of them.
+        // Weighting both the same made the sidebar read as a flat list of
+        // equals, with the machines shouting loudest.
+        name.font = .systemFont(ofSize: 12, weight: collapsed == nil ? .semibold : .regular)
         name.textColor = chrome.primary
         name.lineBreakMode = .byTruncatingTail
         name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
