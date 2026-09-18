@@ -283,7 +283,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         terminalTheme = preferences.terminalTheme(matching: systemIsDark)
 
         gridView.theme = terminalTheme
-        gridView.apply(panePadding: preferences.panePadding)
+        gridView.apply(
+            panePadding: preferences.panePadding, labelSize: preferences.paneLabelSize)
 
         switch preferences.appearance {
         case .system: window.appearance = nil

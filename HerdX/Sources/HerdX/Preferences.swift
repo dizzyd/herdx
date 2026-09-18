@@ -40,6 +40,8 @@ struct Preferences {
     var foreground: NSColor?
     /// Space between a pane's border and its text, in points.
     var panePadding: CGFloat
+    /// Size of the label on a pane's frame, in points.
+    var paneLabelSize: CGFloat
 
     private enum Key {
         static let fontName = "fontName"
@@ -49,6 +51,7 @@ struct Preferences {
         static let background = "terminalBackground"
         static let foreground = "terminalForeground"
         static let panePadding = "panePadding"
+        static let paneLabelSize = "paneLabelSize"
     }
 
     /// Colours round-trip through `#rrggbb`, so they stay readable in defaults
@@ -85,7 +88,8 @@ struct Preferences {
                     .flatMap(Appearance.init(rawValue:)) ?? .system,
                 background: decode(defaults.string(forKey: Key.background)),
                 foreground: decode(defaults.string(forKey: Key.foreground)),
-                panePadding: defaults.object(forKey: Key.panePadding) as? CGFloat ?? 6)
+                panePadding: defaults.object(forKey: Key.panePadding) as? CGFloat ?? 6,
+                paneLabelSize: defaults.object(forKey: Key.paneLabelSize) as? CGFloat ?? 11)
         }
         set {
             let defaults = UserDefaults.standard
@@ -96,6 +100,7 @@ struct Preferences {
             defaults.set(encode(newValue.background), forKey: Key.background)
             defaults.set(encode(newValue.foreground), forKey: Key.foreground)
             defaults.set(newValue.panePadding, forKey: Key.panePadding)
+            defaults.set(newValue.paneLabelSize, forKey: Key.paneLabelSize)
         }
     }
 

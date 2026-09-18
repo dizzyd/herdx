@@ -15,6 +15,8 @@ final class PreferencesWindowController: NSWindowController {
     private let terminalPopUp = NSPopUpButton()
     private let paddingField = NSTextField()
     private let paddingStepper = NSStepper()
+    private let labelField = NSTextField()
+    private let labelStepper = NSStepper()
     private let backgroundWell = NSColorWell()
     private let foregroundWell = NSColorWell()
 
@@ -26,7 +28,7 @@ final class PreferencesWindowController: NSWindowController {
         self.onChange = onChange
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 440, height: 260),
+            contentRect: NSRect(x: 0, y: 0, width: 440, height: 292),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false)
@@ -92,6 +94,21 @@ final class PreferencesWindowController: NSWindowController {
         padding.orientation = .horizontal
         padding.spacing = 4
 
+        labelField.alignment = .right
+        labelField.target = self
+        labelField.action = #selector(labelSizeChanged)
+        labelField.widthAnchor.constraint(equalToConstant: 48).isActive = true
+        labelStepper.minValue = 8
+        labelStepper.maxValue = 18
+        labelStepper.increment = 1
+        labelStepper.valueWraps = false
+        labelStepper.target = self
+        labelStepper.action = #selector(labelSizeStepped)
+
+        let labelSize = NSStackView(views: [labelField, labelStepper, caption("points")])
+        labelSize.orientation = .horizontal
+        labelSize.spacing = 4
+
         for well in [backgroundWell, foregroundWell] {
             well.target = self
             well.action = #selector(colourChanged)
@@ -113,6 +130,7 @@ final class PreferencesWindowController: NSWindowController {
             [label("Terminal:"), terminalPopUp],
             [label("Colours:"), colours],
             [label("Pane padding:"), padding],
+            [label("Pane label:"), labelSize],
         ])
         grid.rowSpacing = 10
         grid.columnSpacing = 10
@@ -174,6 +192,8 @@ final class PreferencesWindowController: NSWindowController {
 
         paddingField.stringValue = String(format: "%.0f", preferences.panePadding)
         paddingStepper.doubleValue = Double(preferences.panePadding)
+        labelField.stringValue = String(format: "%.0f", preferences.paneLabelSize)
+        labelStepper.doubleValue = Double(preferences.paneLabelSize)
     }
 
     // MARK: - Actions
@@ -198,6 +218,16 @@ final class PreferencesWindowController: NSWindowController {
     /// does not apply to a terminal grid.
     @objc func validModesForFontPanel(_ panel: NSFontPanel) -> NSFontPanel.ModeMask {
         [.collection, .face, .size]
+    }
+
+    @objc private func labelSizeStepped() {
+        preferences.paneLabelSize = CGFloat(labelStepper.doubleValue)
+        apply()
+    }
+
+    @objc private func labelSizeChanged() {
+        preferences.paneLabelSize = CGFloat(labelField.doubleValue).clamped(to: 8...18)
+        apply()
     }
 
     @objc private func paddingStepped() {

@@ -45,22 +45,30 @@ final class TerminalGridView: NSView {
     /// sit. It is the design's, not the reader's, so it is fixed.
     private let frameInset: CGFloat = 8
 
+    private var labelSize: CGFloat = 11
+
+    private var labelFont: NSFont { .systemFont(ofSize: labelSize, weight: .semibold) }
+
     /// Clearance between a pane's top border and its first row of text.
     ///
     /// The label rides that border, so half of it hangs into the pane. Without
     /// a band of its own it hangs over the first row instead, which at a small
-    /// pane padding puts it on top of the text.
-    private let labelClearance: CGFloat = 10
+    /// pane padding puts it on top of the text. Taken from the label's own font
+    /// so a bigger label makes its own room rather than growing into the text.
+    private var labelClearance: CGFloat {
+        (labelFont.boundingRectForFont.height / 2).rounded(.up) + 4
+    }
 
     /// What to write on each pane's frame, by pane id.
     var paneLabels: [String: String] = [:] {
         didSet { if paneLabels != oldValue { needsDisplay = true } }
     }
 
-    /// It changes how many cells fit, so the server has to be told.
-    func apply(panePadding padding: CGFloat) {
-        guard padding != panePadding else { return }
+    /// Both change how many cells fit, so the server has to be told.
+    func apply(panePadding padding: CGFloat, labelSize size: CGFloat) {
+        guard padding != panePadding || size != labelSize else { return }
         panePadding = padding
+        labelSize = size
         reportGridSize()
         needsDisplay = true
     }
@@ -484,7 +492,7 @@ final class TerminalGridView: NSView {
         let style = NSMutableParagraphStyle()
         style.lineBreakMode = .byTruncatingMiddle
         let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 10, weight: focused ? .semibold : .medium),
+            .font: focused ? labelFont : .systemFont(ofSize: labelSize, weight: .medium),
             .foregroundColor: focused ? chrome.primary : chrome.secondary,
             .paragraphStyle: style,
         ]
