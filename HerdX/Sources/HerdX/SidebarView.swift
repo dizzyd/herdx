@@ -90,8 +90,15 @@ final class SidebarRow: NSView {
         let name = NSTextField(labelWithString: title)
         // A machine is a heading over the rows that matter, not one of them.
         // Weighting both the same made the sidebar read as a flat list of
-        // equals, with the machines shouting loudest.
-        name.font = .systemFont(ofSize: 12, weight: collapsed == nil ? .semibold : .regular)
+        // equals, with the machines shouting loudest — so a workspace keeps
+        // the weight and a machine is set in italic instead, which separates
+        // the two kinds of row without competing for attention.
+        if collapsed == nil {
+            name.font = .systemFont(ofSize: 12, weight: .semibold)
+        } else {
+            name.font = NSFontManager.shared.convert(
+                .systemFont(ofSize: 12, weight: .regular), toHaveTrait: .italicFontMask)
+        }
         name.textColor = chrome.primary
         name.lineBreakMode = .byTruncatingTail
         name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
