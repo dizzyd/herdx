@@ -1050,6 +1050,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 print("probe: focusedPaneFromSnapshot=\(self.gridView.focusedPaneFromSnapshot ?? "nil")")
                 print("probe: focusedPane=\(self.gridView.focusedPane ?? "nil")")
                 print("probe: panes=\(self.gridView.panes.map(\.id))")
+                if let snapshot = self.session?.lastSnapshot {
+                    print("probe: snapshot panes=\(snapshot.panes.map { "\($0.paneID)@\($0.tabID)" })")
+                    print("probe: zoomed tabs=\(snapshot.tabs.filter(\.zoomed).map(\.tabID))")
+                    print("probe: labels=\(self.gridView.paneLabels)")
+                }
 
                 let made = self.window.makeFirstResponder(self.gridView)
                 print("probe: makeFirstResponder=\(made)")
