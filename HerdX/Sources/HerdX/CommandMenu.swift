@@ -32,6 +32,15 @@ extension Command {
         case .toggleSidebar: return 22
         case .reloadConfig: return 23
         case .closeWorkspace: return 24
+        case .swapLeft: return 25
+        case .swapDown: return 26
+        case .swapUp: return 27
+        case .swapRight: return 28
+        case .editScrollback: return 29
+        case .renameTab: return 30
+        case .renamePane: return 31
+        case .renameWorkspace: return 32
+        case .resizePane: return 33
         }
     }
 

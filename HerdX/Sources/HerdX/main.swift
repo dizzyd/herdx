@@ -37,6 +37,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var pendingDigit = 0
     /// The profile the keymap was built from, so it is parsed once.
     private var appliedKeyProfile: String?
+    /// True while resize mode owns the keyboard.
+    private var resizing = false
 
     /// Runs without ever showing a window.
     ///
@@ -58,6 +60,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let copyModeStatus = CopyModeStatusView()
     private let tabBar = TabBarView()
     private let help = HelpSheet()
+    private let prompt = Prompt()
+    private let picker = Picker()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         preferences = Preferences.current
@@ -543,6 +547,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func installKeyMonitor() {
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, let session = self.session else { return event }
+            if self.resizeKey(event, session: session) { return nil }
             self.pendingDigit = Int(event.charactersIgnoringModifiers ?? "") ?? 0
             let (action, consumed) = self.chords.resolve(event)
             self.gridView.prefixArmed = self.chords.prefixArmed
@@ -606,8 +611,140 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case .cyclePanePrevious: return { self.cyclePane(by: -1, session: session) }
         case .copyMode: return { self.invoke(.copyMode, session: session) }
 
+        case .swapPaneLeft: return { self.invoke(.swapLeft, session: session) }
+        case .swapPaneDown: return { self.invoke(.swapDown, session: session) }
+        case .swapPaneUp: return { self.invoke(.swapUp, session: session) }
+        case .swapPaneRight: return { self.invoke(.swapRight, session: session) }
+
+        case .editScrollback:
+            guard let pane = gridView.focusedPane else { return nil }
+            return { self.invoke(.editScrollback(pane), session: session) }
+
+        case .renameTab:
+            guard let tab = snapshot?.tabs.first(where: { $0.tabID == snapshot?.focusedTabID })
+            else { return nil }
+            return {
+                self.prompt.ask(
+                    over: self.window, title: "Rename tab", value: tab.label
+                ) { self.invoke(.renameTab(tab.tabID, $0), session: session) }
+            }
+
+        case .renamePane:
+            guard let pane = snapshot?.panes.first(where: { $0.paneID == snapshot?.focusedPaneID })
+            else { return nil }
+            return {
+                self.prompt.ask(
+                    over: self.window, title: "Rename pane", value: pane.label ?? ""
+                ) { self.invoke(.renamePane(pane.paneID, $0), session: session) }
+            }
+
+        case .renameWorkspace:
+            guard let workspace = snapshot?.workspaces.first(where: \.focused) else { return nil }
+            return {
+                self.prompt.ask(
+                    over: self.window, title: "Rename workspace", value: workspace.label
+                ) { self.invoke(.renameWorkspace(workspace.workspaceID, $0), session: session) }
+            }
+
+        case .workspacePicker:
+            guard let snapshot, !snapshot.workspaces.isEmpty else { return nil }
+            return {
+                self.picker.show(
+                    over: self.window, title: "Workspaces",
+                    items: snapshot.workspaces.map { workspace in
+                        Picker.Item(
+                            title: workspace.label,
+                            detail: [workspace.branch, "\(workspace.agentStatus)"]
+                                .compactMap { $0 }.joined(separator: "  ·  ")
+                        ) { self.invoke(.focusWorkspace(workspace.workspaceID), session: session) }
+                    })
+            }
+
+        case .goto_:
+            guard let snapshot, !snapshot.workspaces.isEmpty else { return nil }
+            return { self.picker.show(over: self.window, title: "Go to", items: self.navigator(snapshot, session: session)) }
+
+        case .resizeMode:
+            return { self.enterResizeMode() }
+
         default: return nil
         }
+    }
+
+    /// herdr's resize mode: the arrows keep resizing until you leave.
+    ///
+    /// A mode rather than four bindings, because resizing is something you do
+    /// several times in a row and reaching for the prefix between each one is
+    /// the whole reason herdr has a mode for it.
+    private func enterResizeMode() {
+        resizing = true
+        copyModeStatus.update("resize  ←↓↑→ or hjkl  ·  esc to finish")
+    }
+
+    private func leaveResizeMode() {
+        resizing = false
+        copyModeStatus.update(copyModeText)
+    }
+
+    /// Handles a key while resize mode is up. Returns true when it consumed it.
+    private func resizeKey(_ event: NSEvent, session: HerdrSession) -> Bool {
+        guard resizing else { return false }
+        let direction: String?
+        switch (event.keyCode, event.charactersIgnoringModifiers?.lowercased()) {
+        case (123, _), (_, "h"): direction = "left"
+        case (124, _), (_, "l"): direction = "right"
+        case (126, _), (_, "k"): direction = "up"
+        case (125, _), (_, "j"): direction = "down"
+        default: direction = nil
+        }
+        guard let direction else {
+            // Anything that is not a resize ends the mode rather than being
+            // swallowed, so one stray key cannot leave the keyboard captured.
+            leaveResizeMode()
+            return event.keyCode == 53 || event.keyCode == 36
+        }
+        invoke(.resizePane(direction), session: session)
+        return true
+    }
+
+    /// Everything in the session, flattened for the navigator.
+    ///
+    /// Workspaces, then their tabs, then the panes inside them: a navigator is
+    /// for when you know the name but not where it lives, so the list has to
+    /// hold all three rather than make you pick a level first.
+    private func navigator(_ snapshot: Snapshot, session: HerdrSession) -> [Picker.Item] {
+        var items: [Picker.Item] = []
+        let agents = Dictionary(
+            snapshot.agents.map { ($0.paneID, $0) }, uniquingKeysWith: { first, _ in first })
+
+        for workspace in snapshot.workspaces {
+            items.append(
+                Picker.Item(title: workspace.label, detail: workspace.branch ?? "workspace") {
+                    self.invoke(.focusWorkspace(workspace.workspaceID), session: session)
+                })
+            for tab in snapshot.tabs where tab.workspaceID == workspace.workspaceID {
+                let name = tab.label.isEmpty ? "tab \(tab.number)" : tab.label
+                items.append(
+                    Picker.Item(title: name, detail: "\(workspace.label)  ·  tab") {
+                        self.invoke(.focusTab(tab.tabID), session: session)
+                    })
+                for pane in snapshot.panes where pane.tabID == tab.tabID {
+                    let agent = agents[pane.paneID]
+                    // Falls back to the id rather than to "pane": a list where
+                    // every third row says the same word is not a list.
+                    let title =
+                        [pane.label, agent?.title, agent?.displayAgent]
+                        .compactMap { $0 }.first { !$0.isEmpty } ?? pane.paneID
+                    items.append(
+                        Picker.Item(
+                            title: title,
+                            detail: [workspace.label, name, pane.cwd.map(Self.abbreviated)]
+                                .compactMap { $0 }.joined(separator: "  ·  ")
+                        ) { self.invoke(.focusPane(pane.paneID), session: session) })
+                }
+            }
+        }
+        return items
     }
 
     /// Focuses a tab or pane by its place in the current tab bar.
@@ -871,10 +1008,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             // see headlessly.
             let environment = ProcessInfo.processInfo.environment
             let settings = environment["HERDX_CAPTURE_SETTINGS"] != nil
-            let helpWanted = environment["HERDX_CAPTURE_HELP"] != nil
+            // The value names any action, so a sheet other than help can be
+            // photographed too.
+            let sheetAction = environment["HERDX_CAPTURE_HELP"]
+                .flatMap { Keymap.Action(rawValue: $0) ?? .help }
+            let helpWanted = sheetAction != nil
             if settings { self.showPreferences(nil) }
-            if helpWanted, let session = self.session {
-                self.invoke(.help, session: session)
+            if let sheetAction, let session = self.session {
+                self.perform(sheetAction, session: session)
             }
             let target: NSView? =
                 settings

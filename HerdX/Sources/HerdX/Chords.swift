@@ -23,6 +23,12 @@ enum Command {
     case toggleSidebar
     case reloadConfig
     case closeWorkspace(String)
+    case swapLeft, swapDown, swapUp, swapRight
+    case editScrollback(String)
+    case renameTab(String, String)
+    case renamePane(String, String)
+    case renameWorkspace(String, String)
+    case resizePane(String)
 
     var method: String {
         switch self {
@@ -38,6 +44,12 @@ enum Command {
         case .focusTab: return "tab.focus"
         case .focusWorkspace: return "workspace.focus"
         case .closeTabWithID: return "tab.close"
+        case .swapLeft, .swapDown, .swapUp, .swapRight: return "pane.swap"
+        case .editScrollback: return "pane.edit_scrollback"
+        case .renameTab: return "tab.rename"
+        case .renamePane: return "pane.rename"
+        case .renameWorkspace: return "workspace.rename"
+        case .resizePane: return "pane.resize"
         case .reloadConfig: return "server.reload_config"
         case .closeWorkspace: return "workspace.close"
         // Client-side: no endpoint method, because none of it is the server's
@@ -61,6 +73,17 @@ enum Command {
         case .focusWorkspace(let id): return ["workspace_id": id]
         case .closeTabWithID(let id): return ["tab_id": id]
         case .closeWorkspace(let id): return ["workspace_id": id]
+        case .swapLeft: return ["direction": "left"]
+        case .swapDown: return ["direction": "down"]
+        case .swapUp: return ["direction": "up"]
+        case .swapRight: return ["direction": "right"]
+        case .editScrollback(let id): return ["pane_id": id]
+        case .renameTab(let id, let label): return ["tab_id": id, "label": label]
+        case .renamePane(let id, let label): return ["pane_id": id, "label": label]
+        case .renameWorkspace(let id, let label): return ["workspace_id": id, "label": label]
+        // No amount: herdr picks its own step, which is the one its own
+        // resize mode moves by.
+        case .resizePane(let direction): return ["direction": direction]
         default: return [:]
         }
     }
