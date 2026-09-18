@@ -57,15 +57,10 @@ final class TabBarView: NSView {
         let tabs = snapshot.map { snapshot in
             snapshot.tabs.filter { $0.workspaceID == snapshot.focusedWorkspaceID }
         } ?? []
-        // A tab holding one pane is the ordinary case and says nothing worth
-        // the width, so only a split is counted out.
-        let panes = Dictionary(
-            grouping: snapshot?.panes ?? [], by: \.tabID
-        ).mapValues(\.count)
 
         let signature =
             tabs
-            .map { "\($0.tabID):\($0.label):\($0.focused):\($0.agentStatus):\(panes[$0.tabID] ?? 1)" }
+            .map { "\($0.tabID):\($0.label):\($0.focused):\($0.agentStatus)" }
             .joined(separator: "|")
         guard lastSignature != signature else { return }
         lastSignature = signature
@@ -73,7 +68,7 @@ final class TabBarView: NSView {
         for tab in tabs {
             stack.addArrangedSubview(
                 TabChip(
-                    tab: tab, paneCount: panes[tab.tabID] ?? 1, chrome: chrome,
+                    tab: tab, chrome: chrome,
                     onSelect: { [weak self] in self?.onSelectTab?(tab.tabID) },
                     onClose: { [weak self] in self?.onCloseTab?(tab.tabID) }))
         }
@@ -100,7 +95,7 @@ private final class TabChip: NSView {
     private let close = NSButton()
 
     init(
-        tab: Snapshot.Tab, paneCount: Int, chrome: Chrome, onSelect: @escaping () -> Void,
+        tab: Snapshot.Tab, chrome: Chrome, onSelect: @escaping () -> Void,
         onClose: @escaping () -> Void
     ) {
         self.onSelect = onSelect
@@ -123,29 +118,6 @@ private final class TabChip: NSView {
         label.textColor = focused ? chrome.primary : chrome.secondary
 
         var views: [NSView] = [dot, label]
-
-        if paneCount > 1 {
-            // A split glyph, not a bare number: beside a tab whose label is
-            // itself a number, "1 2" reads as one thing rather than a tab
-            // called 1 holding 2 panes.
-            let glyph = NSImageView(
-                image: NSImage(
-                    systemSymbolName: "rectangle.split.2x1",
-                    accessibilityDescription: "\(paneCount) panes")?
-                    .withSymbolConfiguration(.init(pointSize: 9, weight: .semibold))
-                    ?? NSImage())
-            glyph.contentTintColor = chrome.tertiary
-
-            let count = NSTextField(labelWithString: "\(paneCount)")
-            count.font = .systemFont(ofSize: 10, weight: .medium)
-            count.textColor = chrome.tertiary
-
-            let badge = NSStackView(views: [glyph, count])
-            badge.orientation = .horizontal
-            badge.spacing = 2
-            badge.toolTip = "\(paneCount) panes"
-            views.append(badge)
-        }
 
         close.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close tab")
         close.isBordered = false
