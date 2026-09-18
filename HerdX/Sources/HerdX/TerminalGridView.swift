@@ -59,6 +59,15 @@ final class TerminalGridView: NSView {
         (labelFont.boundingRectForFont.height / 2).rounded(.up) + 4
     }
 
+    /// True while `ctrl+b` has been pressed and the next key completes a chord.
+    ///
+    /// Shown on the focused pane's frame: an armed prefix silently eats the
+    /// next keystroke, and a mode you cannot see is indistinguishable from a
+    /// keyboard that has stopped working.
+    var prefixArmed = false {
+        didSet { if prefixArmed != oldValue { needsDisplay = true } }
+    }
+
     /// What to write on each pane's frame, by pane id.
     var paneLabels: [String: String] = [:] {
         didSet { if paneLabels != oldValue { needsDisplay = true } }
@@ -480,7 +489,36 @@ final class TerminalGridView: NSView {
             context.strokePath()
 
             drawPaneLabel(pane, on: rect, focused: focused, in: context)
+            if focused, prefixArmed {
+                drawPrefixIndicator(on: rect, in: context)
+            }
         }
+    }
+
+    /// Marks the focused pane's frame while a chord is half-entered.
+    ///
+    /// Filled rather than cleared like the label: this is a transient mode, and
+    /// it should read as something switched on rather than as another caption.
+    private func drawPrefixIndicator(on rect: CGRect, in context: CGContext) {
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: labelSize, weight: .semibold),
+            .foregroundColor: NSColor.white,
+        ]
+        let text = NSAttributedString(string: "⌃B", attributes: attributes)
+        let size = text.size()
+
+        let pill = CGRect(
+            x: rect.minX + 12, y: rect.minY - (size.height + 2) / 2,
+            width: size.width + 14, height: size.height + 2)
+        context.addPath(
+            CGPath(
+                roundedRect: pill, cornerWidth: pill.height / 2, cornerHeight: pill.height / 2,
+                transform: nil))
+        context.setFillColor(chrome.accent.cgColor)
+        context.fillPath()
+
+        text.draw(
+            at: CGPoint(x: pill.minX + 7, y: pill.minY + 1))
     }
 
     /// Writes a pane's label into a gap in its own top border.

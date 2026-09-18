@@ -520,6 +520,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, let session = self.session else { return event }
             let (command, consumed) = self.chords.resolve(event)
+            self.gridView.prefixArmed = self.chords.prefixArmed
             if let command { self.invoke(command, session: session) }
             return consumed ? nil : event
         }
@@ -547,6 +548,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc private func menuCommand(_ sender: NSMenuItem) {
         guard let session, let command = Command.allByTag[sender.tag] else { return }
         invoke(command, session: session)
+    }
+
+    /// Disarms a half-entered chord when the window stops listening.
+    ///
+    /// The prefix consumes the next keystroke wherever it arrives. Left armed
+    /// across a trip to another app, it eats the first key typed on the way
+    /// back, which reads as the keyboard having stopped working.
+    func windowDidResignKey(_ notification: Notification) {
+        chords.reset()
+        gridView.prefixArmed = false
     }
 
     private func buildMenu() {
@@ -635,6 +646,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 let made = self.window.makeFirstResponder(self.gridView)
                 print("probe: makeFirstResponder=\(made)")
 
+                // `HERDX_PROBE_ARM` leaves the chord prefix armed, so the
+                // indicator can be photographed.
+                if ProcessInfo.processInfo.environment["HERDX_PROBE_ARM"] != nil {
+                    self.gridView.prefixArmed = true
+                }
+
                 for character in probe {
                     guard
                         let event = NSEvent.keyEvent(
@@ -649,6 +666,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 print("probe: sent \(probe.count) keys")
                 // Give the keys time to reach the server, then leave: a probe
                 // that never exits leaves its output stuck in a pipe buffer.
+                // A capture hook, when there is one, needs the app to outlive
+                // the probe so it can photograph what the probe set up.
+                guard self.capturePath == nil else { return }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                     fflush(stdout)
                     NSApp.terminate(nil)
