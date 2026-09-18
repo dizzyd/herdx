@@ -125,6 +125,9 @@ char *hx_machines_json(void);
 /// Why an endpoint is not connected, if it has said. Free with hx_string_free.
 char *hx_endpoint_error(const HxSession *session, size_t index);
 
+/// Whether a machine is reachable but has no herdr installed.
+bool hx_endpoint_needs_install(const HxSession *session, size_t index);
+
 /// Adds a machine, or replaces the one with `id`. Returns the id, or NULL with
 /// the reason available from hx_machine_error.
 char *hx_machine_save(const char *id, const char *label, const char *target,

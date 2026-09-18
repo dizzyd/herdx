@@ -72,6 +72,8 @@ struct EndpointInfo {
     let isRemote: Bool
     /// Why it is not connected, when it has said so.
     let error: String?
+    /// Reachable, but with no herdr on it — a failure that has an answer.
+    let needsInstall: Bool
     var snapshot: Snapshot?
 }
 
@@ -131,6 +133,7 @@ final class HerdrSession {
                 }(),
                 isRemote: hx_endpoint_is_remote(handle, index),
                 error: Self.take(hx_endpoint_error(handle, index)),
+                needsInstall: hx_endpoint_needs_install(handle, index),
                 snapshot: snapshots[index])
         }
     }

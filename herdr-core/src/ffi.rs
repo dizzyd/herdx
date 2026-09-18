@@ -381,6 +381,9 @@ struct Shared {
     resync_pending: AtomicBool,
     snapshot_json: Mutex<Option<String>>,
     error: Mutex<Option<String>>,
+    /// Set when the far side answered but has no herdr on it, which is a
+    /// failure with an answer rather than one to only report.
+    needs_install: AtomicBool,
     events: Mutex<std::collections::VecDeque<String>>,
     assets: Mutex<AssetCache>,
     connected: AtomicBool,
@@ -551,6 +554,7 @@ fn spawn_endpoint(
         geometry: Mutex::new(geometry),
         resync_pending: AtomicBool::new(false),
         snapshot_json: Mutex::new(None),
+        needs_install: AtomicBool::new(false),
         error: Mutex::new(None),
         events: Mutex::new(std::collections::VecDeque::new()),
         assets: Mutex::new(AssetCache::default()),
@@ -603,6 +607,7 @@ fn spawn_endpoint(
                     thread_shared.connected.store(true, Ordering::Release);
                     thread_status.store(HX_ENDPOINT_ONLINE, Ordering::Release);
                     *thread_shared.error.lock().unwrap() = None;
+                    thread_shared.needs_install.store(false, Ordering::Release);
                     backoff = std::time::Duration::from_millis(250);
 
                     receive_loop(
@@ -616,8 +621,17 @@ fn spawn_endpoint(
                 Err(err) => {
                     // No label: whatever shows this already knows which
                     // machine it is asking about.
+                    let message = err.to_string();
+                    // Only ever set here, never cleared: the first attempt can
+                    // fail before ssh's stderr has been read, giving a bare
+                    // "unexpected end of stream", and a machine that has told
+                    // us herdr is missing has not gained it by failing more
+                    // vaguely the next time. Connecting clears it.
+                    if herdr_is_missing(&thread_endpoint, &message) {
+                        thread_shared.needs_install.store(true, Ordering::Release);
+                    }
                     *thread_shared.error.lock().unwrap() =
-                        Some(explain_attach_failure(&thread_endpoint, &err.to_string()));
+                        Some(explain_attach_failure(&thread_endpoint, &message));
                     thread_status.store(HX_ENDPOINT_OFFLINE, Ordering::Release);
                 }
             }
@@ -646,15 +660,22 @@ fn spawn_endpoint(
 /// connect. So a machine without it is a machine that needs that command run
 /// once, and saying so is more use than passing on the shell's own wording.
 fn explain_attach_failure(endpoint: &crate::endpoint::Endpoint, message: &str) -> String {
-    let missing = message.contains("command not found")
-        || message.contains("not found")
-        || message.contains("No such file or directory");
-    if let crate::endpoint::EndpointKind::Ssh { target, .. } = &endpoint.kind {
-        if missing {
-            return format!("herdr is not installed — run: herdr --remote {target}");
-        }
+    if herdr_is_missing(endpoint, message) {
+        return "herdr is not installed on this machine".to_owned();
     }
     message.to_owned()
+}
+
+/// Whether the far side answered but had no herdr to run.
+///
+/// ssh reached the machine and its shell replied; the only thing wrong is the
+/// binary. That is a failure with a remedy, so it is worth telling apart from
+/// one that just has to be reported.
+fn herdr_is_missing(endpoint: &crate::endpoint::Endpoint, message: &str) -> bool {
+    matches!(endpoint.kind, crate::endpoint::EndpointKind::Ssh { .. })
+        && (message.contains("command not found")
+            || message.contains("No such file or directory")
+            || message.contains("not found"))
 }
 
 /// Reads from one endpoint until it goes away.
@@ -1152,6 +1173,24 @@ pub unsafe extern "C" fn hx_pane_id(session: *const HxSession, id_index: u32) ->
 /// # Safety
 /// `session` must be live. The returned pointer must be released with
 /// `hx_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn hx_endpoint_needs_install(
+    session: *const HxSession,
+    index: usize,
+) -> bool {
+    let Some(session) = session.as_ref() else {
+        return false;
+    };
+    session
+        .endpoints
+        .get(index)
+        .is_some_and(|endpoint| endpoint.shared.needs_install.load(Ordering::Acquire))
+}
+
+/// Whether a machine is reachable but has no herdr installed.
+///
+/// # Safety
+/// `session` must be live.
 #[no_mangle]
 pub unsafe extern "C" fn hx_endpoint_error(
     session: *const HxSession,
@@ -1721,6 +1760,7 @@ mod tests {
             resync_pending: AtomicBool::new(false),
             snapshot_json: Mutex::new(None),
             error: Mutex::new(None),
+            needs_install: AtomicBool::new(false),
             events: Mutex::new(std::collections::VecDeque::new()),
             assets: Mutex::new(AssetCache::default()),
             connected: AtomicBool::new(false),

@@ -63,6 +63,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     /// machine that never heard it composes against its own default background
     /// — which is why switching to one turned the terminal a different colour.
     private var themedEndpoints: Set<Int> = []
+    /// Machines already offered a herdr install, so the offer is made once and
+    /// not every time the endpoint retries.
+    private var offeredInstall: Set<String> = []
     /// The appearance the current theme was resolved from.
     private var appliedSystemIsDark: Bool?
     private let copyModeStatus = ModeStatus()
@@ -543,6 +546,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
             themedEndpoints = online
         }
 
+        offerInstallIfNeeded(session)
         sidebar.update(endpoints: session.endpoints, active: session.activeEndpoint)
         tabBar.update(with: session.lastSnapshot)
         gridView.paneLabels = Self.paneLabels(from: session.lastSnapshot)
@@ -975,6 +979,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
 
     @objc private func showMachines(_ sender: Any?) {
         machinesWindow.present()
+    }
+
+    /// Offers to set herdr up on a machine that answered without it.
+    ///
+    /// Once per machine, because an endpoint retries on a backoff and an offer
+    /// that returned every few seconds would be a fault of its own. Declining
+    /// leaves the row saying what is wrong, and the Machines window still
+    /// offers it.
+    private func offerInstallIfNeeded(_ session: HerdrSession) {
+        // Nothing can answer a modal in a window that was never shown.
+        guard !AppDelegate.isHeadless else { return }
+        for endpoint in session.endpoints
+        where endpoint.needsInstall && !offeredInstall.contains(endpoint.id) {
+            offeredInstall.insert(endpoint.id)
+            guard let target = Machines.all().first(where: { $0.id == endpoint.id })?.target
+            else { continue }
+
+            let alert = NSAlert()
+            alert.messageText = "Set herdr up on “\(endpoint.label)”?"
+            alert.informativeText =
+                "\(target) is reachable but has no herdr installed, so HerdX cannot "
+                + "attach to it.\n\nHerdX will open a terminal running:\n\n"
+                + "    herdr --remote \(target)\n\n"
+                + "herdr downloads the build matching that machine and asks you to "
+                + "confirm before changing anything."
+            alert.addButton(withTitle: "Open Terminal")
+            alert.addButton(withTitle: "Not Now")
+            if alert.runModal() == .alertFirstButtonReturn {
+                installHerdr(on: target)
+            }
+        }
     }
 
     /// Opens a local tab running herdr's own remote installer.
