@@ -602,6 +602,7 @@ fn spawn_endpoint(
                     *outbound.lock().unwrap() = conn.take_writer();
                     thread_shared.connected.store(true, Ordering::Release);
                     thread_status.store(HX_ENDPOINT_ONLINE, Ordering::Release);
+                    *thread_shared.error.lock().unwrap() = None;
                     backoff = std::time::Duration::from_millis(250);
 
                     receive_loop(
@@ -613,8 +614,9 @@ fn spawn_endpoint(
                     *outbound.lock().unwrap() = None;
                 }
                 Err(err) => {
-                    *thread_shared.error.lock().unwrap() =
-                        Some(format!("{}: {err}", thread_endpoint.label));
+                    // No label: whatever shows this already knows which
+                    // machine it is asking about.
+                    *thread_shared.error.lock().unwrap() = Some(format!("{err}"));
                     thread_status.store(HX_ENDPOINT_OFFLINE, Ordering::Release);
                 }
             }
@@ -1122,21 +1124,29 @@ pub unsafe extern "C" fn hx_pane_id(session: *const HxSession, id_index: u32) ->
 
 
 
+/// Why one endpoint is not connected, if it has said.
+///
+/// Read rather than taken: this is what a machine's row shows for as long as it
+/// is failing, and draining it would make the reason flicker past once and
+/// leave "not connected" standing on its own.
+///
 /// # Safety
-/// `session` must be live.
+/// `session` must be live. The returned pointer must be released with
+/// `hx_string_free`.
 #[no_mangle]
-pub unsafe extern "C" fn hx_last_error(session: *const HxSession) -> *mut c_char {
+pub unsafe extern "C" fn hx_endpoint_error(
+    session: *const HxSession,
+    index: usize,
+) -> *mut c_char {
     let Some(session) = session.as_ref() else {
         return std::ptr::null_mut();
     };
-    // Every endpoint, not just the active one: a machine failing in the
-    // background is exactly the failure you cannot see any other way.
-    for endpoint in &session.endpoints {
-        if let Some(message) = endpoint.shared.error.lock().unwrap().take() {
-            return string_or_null(Some(message));
-        }
-    }
-    std::ptr::null_mut()
+    string_or_null(
+        session
+            .endpoints
+            .get(index)
+            .and_then(|endpoint| endpoint.shared.error.lock().unwrap().clone()),
+    )
 }
 
 /// # Safety

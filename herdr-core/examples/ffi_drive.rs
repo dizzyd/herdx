@@ -145,8 +145,11 @@ fn main() {
                 }
             }
 
-            while let Some(error) = Some(text(hx_last_error(session))).filter(|e| !e.is_empty()) {
-                println!("   error: {error}");
+            for index in 0..count {
+                let error = text(hx_endpoint_error(session, index));
+                if !error.is_empty() {
+                    println!("   [{index}] error: {error}");
+                }
             }
             for index in 0..count {
                 loop {

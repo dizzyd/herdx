@@ -564,9 +564,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         }
         updatePlaceholder(session: session)
         gridView.refreshIfNeeded()
-        if let error = session.takeError() {
-            NSLog("herdr: %@", error)
-        }
         // Endpoints reconnect individually inside the core, so a machine
         // being unreachable is shown in the sidebar rather than treated as a
         // reason to rebuild the session.

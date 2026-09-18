@@ -27,6 +27,8 @@ final class SidebarRow: NSView {
     init(
         title: String,
         subtitle: String?,
+        /// The whole of a message the subtitle only summarises.
+        detail: String? = nil,
         status: Snapshot.AgentStatus,
         symbol: String?,
         collapsed: Bool?,
@@ -45,6 +47,7 @@ final class SidebarRow: NSView {
 
         wantsLayer = true
         layer?.cornerRadius = 6
+        toolTip = detail
 
         // Both kinds of row use the same two columns, so a workspace's dot
         // sits under its machine's glyph and their names start at the same x.
@@ -231,7 +234,7 @@ final class SidebarView: NSView {
             let workspaces = endpoint.snapshot?.workspaces
                 .map { "\($0.workspaceID):\($0.label):\($0.branch ?? ""):\($0.focused):\($0.agentStatus)" }
                 .joined(separator: ",") ?? ""
-            return "\(endpoint.id):\(endpoint.status):\(workspaces)"
+            return "\(endpoint.id):\(endpoint.status):\(endpoint.error ?? ""):\(workspaces)"
         }.joined(separator: "|") + "@\(active)+\(collapsed.sorted().joined(separator: ","))"
         guard lastSignature != signature else { return }
         lastSignature = signature
@@ -273,7 +276,12 @@ final class SidebarView: NSView {
         let subtitle: String
         switch endpoint.status {
         case .connecting: subtitle = "connecting…"
-        case .offline: subtitle = "not connected"
+        case .offline:
+            // The reason, not just the fact. ssh explains itself perfectly
+            // well — an unknown host key, a refused key, no herdr on the far
+            // side — and throwing that away left every failure looking the
+            // same.
+            subtitle = endpoint.error.map(Self.reason) ?? "not connected"
         case .online:
             let count = endpoint.snapshot?.workspaces.count ?? 0
             let spaces = count == 1 ? "1 space" : "\(count) spaces"
@@ -285,6 +293,7 @@ final class SidebarView: NSView {
         add(
             title: endpoint.label,
             subtitle: subtitle,
+            detail: endpoint.error,
             status: Self.machineStatus(endpoint),
             symbol: endpoint.isRemote ? "server.rack" : "desktopcomputer",
             collapsed: collapsed.contains(endpoint.id),
@@ -301,6 +310,31 @@ final class SidebarView: NSView {
             })
     }
 
+    /// The part of a failure worth putting in a row.
+    ///
+    /// ssh writes several lines and the last is the one that says what
+    /// happened; our own wrapper adds a prefix that describes the symptom
+    /// rather than the cause. The whole text goes in the tooltip.
+    private static func reason(_ message: String) -> String {
+        let last =
+            message.split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .last { !$0.isEmpty } ?? message
+        // Looped, not a single pass: the wrappers nest, and stopping after the
+        // first left "ssh: " still on the front.
+        var trimmed = Substring(last)
+        var stripping = true
+        while stripping {
+            stripping = false
+            for prefix in ["unexpected end of stream: ", "ssh: "]
+            where trimmed.hasPrefix(prefix) {
+                trimmed = trimmed.dropFirst(prefix.count)
+                stripping = true
+            }
+        }
+        return String(trimmed)
+    }
+
     /// A machine's dot reflects its agents, falling back to its connection.
     private static func machineStatus(_ endpoint: EndpointInfo) -> Snapshot.AgentStatus {
         guard endpoint.status == .online else { return .unknown }
@@ -313,6 +347,7 @@ final class SidebarView: NSView {
     private func add(
         title: String,
         subtitle: String?,
+        detail: String? = nil,
         status: Snapshot.AgentStatus,
         symbol: String?,
         collapsed: Bool?,
@@ -321,8 +356,9 @@ final class SidebarView: NSView {
         onToggle: (() -> Void)? = nil
     ) {
         let row = SidebarRow(
-            title: title, subtitle: subtitle, status: status, symbol: symbol,
-            collapsed: collapsed, selected: selected, chrome: chrome, target: target,
+            title: title, subtitle: subtitle, detail: detail, status: status,
+            symbol: symbol, collapsed: collapsed, selected: selected, chrome: chrome,
+            target: target,
             onSelect: { [weak self] target in
                 switch target {
                 case .endpoint(let index): self?.onSelectEndpoint?(index)

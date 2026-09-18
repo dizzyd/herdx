@@ -70,6 +70,8 @@ struct EndpointInfo {
     let label: String
     let status: Status
     let isRemote: Bool
+    /// Why it is not connected, when it has said so.
+    let error: String?
     var snapshot: Snapshot?
 }
 
@@ -128,6 +130,7 @@ final class HerdrSession {
                     }
                 }(),
                 isRemote: hx_endpoint_is_remote(handle, index),
+                error: Self.take(hx_endpoint_error(handle, index)),
                 snapshot: snapshots[index])
         }
     }
@@ -257,11 +260,6 @@ final class HerdrSession {
             events.append(event)
         }
         return events
-    }
-
-    func takeError() -> String? {
-        guard let handle else { return nil }
-        return Self.take(hx_last_error(handle))
     }
 
     func send(key: UInt16, codepoint: UInt32 = 0, modifiers: UInt8 = 0, to pane: String) {

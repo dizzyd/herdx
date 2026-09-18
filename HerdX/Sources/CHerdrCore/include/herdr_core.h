@@ -122,6 +122,9 @@ char *hx_endpoint_label(const HxSession *session, size_t index);
 /// hx_string_free.
 char *hx_machines_json(void);
 
+/// Why an endpoint is not connected, if it has said. Free with hx_string_free.
+char *hx_endpoint_error(const HxSession *session, size_t index);
+
 /// Adds a machine, or replaces the one with `id`. Returns the id, or NULL with
 /// the reason available from hx_machine_error.
 char *hx_machine_save(const char *id, const char *label, const char *target,
@@ -138,7 +141,6 @@ size_t hx_active_endpoint(const HxSession *session);
 bool hx_set_active_endpoint(HxSession *session, size_t index);
 char *hx_endpoint_snapshot_json(const HxSession *session, size_t index);
 char *hx_next_endpoint_event(const HxSession *session, size_t index);
-char *hx_last_error(const HxSession *session);
 char *hx_connect_error(void);
 void hx_string_free(char *s);
 
