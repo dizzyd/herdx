@@ -99,8 +99,16 @@ struct Keymap {
 
         /// How it reads in the help, without the prefix, which is stated once.
         var label: String {
-            (control ? "⌃" : "") + (option ? "⌥" : "") + (shift ? "⇧" : "")
-                + (command ? "⌘" : "") + key.label
+            let modifiers = (control ? "⌃" : "") + (option ? "⌥" : "") + (command ? "⌘" : "")
+            // A shifted letter is written as the capital. ⇧X is how a menu
+            // spells it, but in a column of single keys the capital says the
+            // same thing in one glyph, and it is the key you actually press.
+            if case .character(let key) = key, shift, key.count == 1,
+                key.first?.isLetter == true
+            {
+                return modifiers + key.uppercased()
+            }
+            return modifiers + (shift ? "⇧" : "") + key.label
         }
 
         /// Whether the event is this chord.
