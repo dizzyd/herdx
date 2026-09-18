@@ -91,23 +91,23 @@ final class SidebarRow: NSView {
         name.lineBreakMode = .byTruncatingTail
         name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
+        // Beside the name, not beneath it. A branch is a qualifier on the
+        // workspace rather than a second thing to read, and stacking the two
+        // made every row twice as tall as it needed to be.
         let caption = NSTextField(labelWithString: subtitle ?? "")
         caption.font = .systemFont(ofSize: 11)
         caption.textColor = chrome.tertiary
         caption.lineBreakMode = .byTruncatingTail
-        caption.setContentCompressionResistancePriority(.defaultLow - 1, for: .horizontal)
+        caption.alignment = .right
         caption.isHidden = (subtitle ?? "").isEmpty
+        // The name keeps its width and the qualifier gives way, because a
+        // truncated name is the one thing that makes a row useless.
+        caption.setContentCompressionResistancePriority(.defaultLow - 1, for: .horizontal)
+        caption.setContentHuggingPriority(.defaultHigh, for: .horizontal)
 
-        let lines = NSStackView(views: [name, caption])
-        lines.orientation = .vertical
-        lines.alignment = .leading
-        lines.spacing = 1
-
-        let row = NSStackView(views: leading + [lines])
+        let row = NSStackView(views: leading + [name, caption])
         row.orientation = .horizontal
-        // The glyph sits beside the pair of lines, aligned with the first of
-        // them rather than floating in the middle of both.
-        row.alignment = .top
+        row.alignment = .centerY
         row.spacing = 6
 
         row.translatesAutoresizingMaskIntoConstraints = false
@@ -115,13 +115,9 @@ final class SidebarRow: NSView {
         NSLayoutConstraint.activate([
             row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
             row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            row.topAnchor.constraint(equalTo: topAnchor, constant: 5),
-            row.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -5),
+            row.topAnchor.constraint(equalTo: topAnchor, constant: 4),
+            row.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
         ])
-        // The glyph column aligns with the name, not the top of the row's box.
-        for view in leading {
-            view.centerYAnchor.constraint(equalTo: name.centerYAnchor).isActive = true
-        }
         updateBackground()
     }
 
@@ -252,8 +248,8 @@ final class SidebarView: NSView {
             for workspace in snapshot.workspaces {
                 add(
                     title: workspace.label,
-                    subtitle: [endpoint.label, workspace.branch]
-                        .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "),
+                    // Not the machine: the row it sits under is the machine.
+                    subtitle: workspace.branch,
                     status: workspace.agentStatus,
                     symbol: nil,
                     collapsed: nil,
