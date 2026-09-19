@@ -116,6 +116,13 @@ All are development-only and read from the environment.
 question, and its first line says which. `ffi_drive` and `input` exist to tell a
 core bug from a UI bug.
 
+None of these runs is hermetic. They attach to whatever session they can find,
+and they write the app's **real** settings: the probe that proved Settings was
+clobbering the theme left a theme behind in `dev.herdr.herdx`. Export first —
+`defaults export dev.herdr.herdx <file>` — and know that `defaults import`
+**merges** rather than replaces, so keys the run added survive the restore and
+have to be removed by name. Check what you put back, rather than assuming.
+
 ## Things herdr does that are not obvious
 
 - **One host theme per session.** herdr applies the *foreground* client's
@@ -146,6 +153,16 @@ core bug from a UI bug.
 - **herdr installs itself on a remote machine** only via `herdr --remote` or
   `herdr machine add`, and refuses unless stdin is a terminal. Do not work
   around that; run it in a pane, which is a terminal.
+- **Agent state can be reported, not only detected.** herdr works out what an
+  agent is doing by matching pane output against the manifests in
+  `vendor/herdr/src/detect/manifests/`, but `herdr pane report-agent --source
+  <id> --agent <label> --state working|idle|blocked <pane_id>` sets it outright.
+  That is how to exercise anything keyed on agent status — the sidebar order,
+  the sounds — with no agent running and no tokens spent. `herdr agent list`
+  says whether it took: a climbing `state_change_seq` is the proof. The wire
+  splits herdr's one idle state in two, so read `api_helpers::pane_agent_status`
+  before believing a transition: `done` is finished-and-unseen, `idle` is
+  finished-and-seen.
 
 ## Conventions in this codebase
 
