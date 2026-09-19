@@ -34,6 +34,9 @@ pub struct Attachment {
 #[derive(Default)]
 struct Log {
     attachments: Vec<Attachment>,
+    /// A handle on each connection, so a test can drop them the way a restarted
+    /// server or a dying ssh would.
+    live: Vec<UnixStream>,
 }
 
 pub struct MockServer {
@@ -91,6 +94,14 @@ impl MockServer {
         self.log.lock().unwrap().attachments.len()
     }
 
+    /// Drops every connection, leaving the socket accepting: what a client sees
+    /// when the server it was attached to restarts.
+    pub fn disconnect_all(&self) {
+        for stream in &self.log.lock().unwrap().live {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
+    }
+
     /// Waits for `condition` to hold, or gives up and returns false.
     ///
     /// Polled rather than signalled: what is being waited for is another
@@ -136,6 +147,9 @@ fn serve(mut stream: UnixStream, log: Arc<Mutex<Log>>) {
             hello,
             closed: false,
         });
+        if let Ok(handle) = stream.try_clone() {
+            log.live.push(handle);
+        }
         log.attachments.len() - 1
     };
 

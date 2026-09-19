@@ -406,6 +406,23 @@ impl PendingResponses {
 }
 
 impl Shared {
+    fn new(geometry: Geometry, surface_active: bool) -> Self {
+        Self {
+            grid: Mutex::new(Grid::default()),
+            boot_id: Mutex::new(None),
+            desired_surface: AtomicBool::new(surface_active),
+            applied_surface: AtomicBool::new(surface_active),
+            geometry: Mutex::new(geometry),
+            resync_pending: AtomicBool::new(false),
+            snapshot_json: Mutex::new(None),
+            needs_install: AtomicBool::new(false),
+            error: Mutex::new(None),
+            events: Mutex::new(std::collections::VecDeque::new()),
+            assets: Mutex::new(AssetCache::default()),
+            connected: AtomicBool::new(false),
+        }
+    }
+
     fn push(&self, event: Event) {
         let Ok(json) = serde_json::to_string(&event) else {
             return;
@@ -671,6 +688,40 @@ pub unsafe extern "C" fn hx_session_connect(
     }))
 }
 
+/// The hello for one attachment, built from what is true right now.
+///
+/// Not from what was true at startup. The window gets resized and machines get
+/// switched between while an endpoint is away, and a hello carrying the values
+/// it was first given asks the server to compose a surface for a window that is
+/// no longer that size — or for a machine the user has since switched to, as an
+/// inactive one.
+fn attach_hello(shared: &Shared) -> herdr_protocol::protocol::endpoint::EndpointClientHello {
+    let geometry = *shared.geometry.lock().unwrap();
+    crate::client::hello_with_surface(
+        geometry.cols,
+        geometry.rows,
+        geometry.cell_width_px,
+        geometry.cell_height_px,
+        shared.desired_surface.load(Ordering::Acquire),
+    )
+}
+
+/// Resets the bookkeeping that belongs to a connection rather than to an
+/// endpoint, now that there is a new one.
+///
+/// The server tracks surface state per connection and knows only what this
+/// hello just told it, so `applied_surface` describes the hello — not whatever
+/// the previous connection had been asked for. Leaving it stale is what could
+/// leave a switched-to machine composing nothing: the two already agreed, so
+/// nothing was ever sent.
+fn begin_attachment(shared: &Shared, announced_surface: bool) {
+    shared
+        .applied_surface
+        .store(announced_surface, Ordering::Release);
+    // A resync asked of the connection that just died will never be answered.
+    shared.resync_pending.store(false, Ordering::Release);
+}
+
 /// Starts one endpoint's connection and receive loop on its own thread.
 fn spawn_endpoint(
     endpoint: crate::endpoint::Endpoint,
@@ -678,20 +729,7 @@ fn spawn_endpoint(
     geometry: Geometry,
     socket: std::path::PathBuf,
 ) -> EndpointState {
-    let shared = Arc::new(Shared {
-        grid: Mutex::new(Grid::default()),
-        boot_id: Mutex::new(None),
-        desired_surface: AtomicBool::new(surface_active),
-        applied_surface: AtomicBool::new(surface_active),
-        geometry: Mutex::new(geometry),
-        resync_pending: AtomicBool::new(false),
-        snapshot_json: Mutex::new(None),
-        needs_install: AtomicBool::new(false),
-        error: Mutex::new(None),
-        events: Mutex::new(std::collections::VecDeque::new()),
-        assets: Mutex::new(AssetCache::default()),
-        connected: AtomicBool::new(false),
-    });
+    let shared = Arc::new(Shared::new(geometry, surface_active));
     let status = Arc::new(std::sync::atomic::AtomicU8::new(HX_ENDPOINT_CONNECTING));
     let halt = Arc::new(Halt::default());
     let (tx, rx) = std::sync::mpsc::channel::<ClientMessage>();
@@ -727,13 +765,7 @@ fn spawn_endpoint(
         let mut backoff = std::time::Duration::from_millis(250);
 
         while !thread_halt.stopped() {
-            let hello = crate::client::hello_with_surface(
-                geometry.cols,
-                geometry.rows,
-                geometry.cell_width_px,
-                geometry.cell_height_px,
-                surface_active,
-            );
+            let hello = attach_hello(&thread_shared);
 
             match crate::client::EndpointConnection::attach_interruptible(
                 &thread_endpoint,
@@ -743,11 +775,16 @@ fn spawn_endpoint(
             ) {
                 Ok(mut conn) => {
                     *writer_for_loop.lock().unwrap() = conn.take_writer();
+                    begin_attachment(&thread_shared, hello.surface_active);
                     thread_shared.connected.store(true, Ordering::Release);
                     thread_status.store(HX_ENDPOINT_ONLINE, Ordering::Release);
                     *thread_shared.error.lock().unwrap() = None;
                     thread_shared.needs_install.store(false, Ordering::Release);
                     backoff = std::time::Duration::from_millis(250);
+
+                    // Catches a switch that landed while the handshake was in
+                    // flight, and so is not described by the hello.
+                    apply_surface_state(&thread_shared, &thread_outbound);
 
                     receive_loop(
                         conn,
@@ -1807,6 +1844,73 @@ mod tests {
             popup: None,
             graphics: Default::default(),
         }
+    }
+
+    fn window(cols: u16, rows: u16) -> Geometry {
+        Geometry {
+            cols,
+            rows,
+            cell_width_px: 8,
+            cell_height_px: 16,
+        }
+    }
+
+    #[test]
+    fn a_hello_describes_the_window_at_the_moment_it_is_built() {
+        let shared = Shared::new(window(80, 24), true);
+
+        // What a resize does while an endpoint is away.
+        *shared.geometry.lock().unwrap() = window(132, 43);
+        let hello = attach_hello(&shared);
+
+        assert_eq!((hello.surface_size.cols, hello.surface_size.rows), (132, 43));
+        assert!(hello.surface_active);
+    }
+
+    #[test]
+    fn a_hello_describes_the_surface_state_wanted_now() {
+        let shared = Shared::new(window(80, 24), true);
+
+        // What switching to another machine does.
+        shared.desired_surface.store(false, Ordering::Release);
+        assert!(!attach_hello(&shared).surface_active);
+
+        shared.desired_surface.store(true, Ordering::Release);
+        assert!(attach_hello(&shared).surface_active);
+    }
+
+    #[test]
+    fn a_new_attachment_forgets_what_the_last_one_was_told() {
+        // Switched away from while offline: the endpoint wants no surface, and
+        // the dead connection had been told so.
+        let shared = Shared::new(window(80, 24), false);
+        shared.applied_surface.store(false, Ordering::Release);
+
+        // Then switched back to, still offline, so nothing could be sent.
+        shared.desired_surface.store(true, Ordering::Release);
+
+        let hello = attach_hello(&shared);
+        assert!(hello.surface_active, "the hello must ask for the surface");
+        begin_attachment(&shared, hello.surface_active);
+
+        assert!(
+            shared.applied_surface.load(Ordering::Acquire),
+            "the hello is what the new server was told, so that is what is applied"
+        );
+    }
+
+    #[test]
+    fn a_new_attachment_drops_a_resync_the_old_one_never_answered() {
+        let shared = Shared::new(window(80, 24), true);
+        shared.resync_pending.store(true, Ordering::Release);
+
+        begin_attachment(&shared, true);
+
+        assert!(
+            !shared.resync_pending.load(Ordering::Acquire),
+            "a resync asked of a connection that died is never coming back, and \
+             holding the flag suppresses the one this connection needs"
+        );
     }
 
     fn patch(base: u64, revision: u64, rows: Vec<PaneSurfacePatchRow>) -> PaneSurfacePatch {
