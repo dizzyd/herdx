@@ -719,6 +719,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
 
         self.session = session
         agentSounds.isEnabled = preferences.agentSounds
+        // Endpoint indices are about to mean different machines; what this
+        // remembers about the old ones would be answers to the wrong questions.
+        agentPriority.forget()
         // A session torn down and stood up again arrives with every agent as it
         // is now, which is first sight rather than a hundred state changes.
         agentSounds.forget()

@@ -14,18 +14,35 @@ import Foundation
 /// Ties go to whichever changed state most recently, so the thing that just
 /// started needing you sits above the thing that has needed you for an hour.
 struct AgentPriority: Equatable {
+    /// Compared on what is drawn, not on what is remembered.
+    ///
+    /// `previous` changes whenever any agent on any machine changes state, and
+    /// the sidebar rebuilds itself whenever this value differs — which would
+    /// destroy a row under the cursor as an unrelated machine's agent ticked
+    /// over. Only `seen` and `finishedUnseen` can change what a dot shows.
+    static func == (lhs: AgentPriority, rhs: AgentPriority) -> Bool {
+        lhs.seen == rhs.seen && lhs.finishedUnseen == rhs.finishedUnseen
+    }
+
     /// Which agents have been looked at since they last changed.
     ///
     /// herdr keeps this itself; the snapshot does not carry it, because it is
     /// about this client's attention rather than the session's state. So it is
     /// tracked here the only way it can be: an agent counts as seen once its
-    /// pane has been the focused one at or after the change.
+    /// *tab* has been the focused one at or after the change, with the app in
+    /// front. By tab rather than by pane because that is what is on screen, and
+    /// because the finish sound is suppressed on the same basis — the two are
+    /// meant to be answering one question.
     /// Keyed by machine as well as pane: pane ids are only unique within a
     /// server, and two machines really do both have a `w1:p1`.
     private var seen: [String: UInt64] = [:]
     /// The last status seen for each agent, so a *change* can be told from a
     /// state that was already true when this client attached.
-    private var previous: [String: Snapshot.AgentStatus] = [:]
+    ///
+    /// Held per endpoint and replaced wholesale, not merged: a pane that goes
+    /// away has to take its history with it, or the next pane handed the same
+    /// id inherits it and appears to have finished something.
+    private var previous: [Int: [String: Snapshot.AgentStatus]] = [:]
     /// Agents that finished while nobody was looking, by the change that did it.
     ///
     /// Witnessed rather than inferred: an agent that was already idle when the
@@ -44,19 +61,43 @@ struct AgentPriority: Equatable {
     /// behind an editor, which is how a finish you were away for arrives
     /// already acknowledged.
     mutating func observe(snapshot: Snapshot, endpoint: Int, watching: Bool) {
+        let before = previous[endpoint] ?? [:]
+        previous[endpoint] = Dictionary(
+            snapshot.agents.map { ($0.paneID, $0.agentStatus) }, uniquingKeysWith: { first, _ in first })
+
         for agent in snapshot.agents {
             let id = key(agent.paneID, on: endpoint)
-            let was = previous[id]
-            previous[id] = agent.agentStatus
+            let was = before[agent.paneID]
             let finished = agent.agentStatus == .idle || agent.agentStatus == .done
             if finished, was == .working || was == .blocked {
                 finishedUnseen[id] = agent.stateChangeSeq
             }
-            if watching, agent.paneID == snapshot.focusedPaneID {
+            // Everything in the focused tab is on screen, which is the same
+            // reason the finish sound stays quiet for it.
+            if watching, agent.tabID == snapshot.focusedTabID {
                 seen[id] = agent.stateChangeSeq
                 finishedUnseen[id] = nil
             }
         }
+
+        // A pane that is gone keeps nothing here. Left alone these grow for the
+        // life of the process, and a reused id would read as its predecessor.
+        let live = Set(snapshot.agents.map { key($0.paneID, on: endpoint) })
+        let mine = "\(endpoint):"
+        seen = seen.filter { !$0.key.hasPrefix(mine) || live.contains($0.key) }
+        finishedUnseen = finishedUnseen.filter { !$0.key.hasPrefix(mine) || live.contains($0.key) }
+    }
+
+    /// Drops everything, for a session that is being stood up again.
+    ///
+    /// The keys carry an endpoint *index*, and the machine at a given index is
+    /// not the same machine after a session switch or after the machines are
+    /// attached — so carrying this across a rebuild would answer questions
+    /// about one server with another server's history.
+    mutating func forget() {
+        seen = [:]
+        previous = [:]
+        finishedUnseen = [:]
     }
 
     func hasSeen(_ agent: Snapshot.Agent, on endpoint: Int) -> Bool {
@@ -97,10 +138,16 @@ struct AgentPriority: Equatable {
     ) -> Snapshot.AgentStatus {
         guard !agents.isEmpty else { return fallback }
         let shown = agents.map { displayStatus($0, on: endpoint) }
+        // The order is `rank`'s, which is herdr's: a finish nobody has seen
+        // outranks work still in progress, because it is the one asking for
+        // you. Checking working first would hide the very thing this is for.
         if shown.contains(.blocked) { return .blocked }
-        if shown.contains(.working) { return .working }
         if shown.contains(.done) { return .done }
-        return shown.contains(.idle) ? .idle : .unknown
+        if shown.contains(.working) { return .working }
+        // Not `.unknown`: a group whose agents are all unclassified still has
+        // whatever the row itself reported, and falling through to unknown drew
+        // an online machine the same grey as a disconnected one.
+        return shown.contains(.idle) ? .idle : fallback
     }
 
     /// herdr's attention ranking.
