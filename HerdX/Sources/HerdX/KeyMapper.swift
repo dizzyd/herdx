@@ -42,6 +42,21 @@ enum KeyMapper {
             return nil
         }
 
+        // Option on its own is the awkward one, because it is two things at
+        // once. On a US layout it composes for five keys and produces an
+        // ordinary character for the rest: asking the layout, ⌥E ⌥U ⌥I ⌥N and
+        // ⌥` come back with no characters at all and a dead-key state set,
+        // while ⌥B is "∫" and ⌥A is "å" with no state.
+        //
+        // So the event itself says which it is. No characters means the layout
+        // has begun a composition and is waiting for the key it combines with;
+        // that has to reach the input context or é cannot be typed here. One
+        // that produced text is an Alt chord and stays one, which is what keeps
+        // Meta-B and Meta-F reaching readline as word movement.
+        if controlish == [.option], event.characters?.isEmpty != false {
+            return nil
+        }
+
         return Mapped(kind: UInt16(HX_KEY_CHAR), codepoint: scalar.value, modifiers: mods)
     }
 
