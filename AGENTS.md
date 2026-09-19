@@ -47,7 +47,13 @@ acceptable.
 ./scripts/check.sh      # cargo test + bundle — run before every commit
 ./scripts/bundle.sh     # assembles build/HerdX.app
 ./scripts/package.sh    # signs and notarizes a release .dmg (see RELEASING.md)
+./scripts/icon.sh       # redraws assets/HerdX.icns — only when the icon changes
 ```
+
+The icon is a drawing (`scripts/icon.swift`), not an exported image, so its
+colours can follow the palettes in `Palette.swift`. `bundle.sh` copies the
+committed `.icns` and stops if it is missing: an app wearing the generic bundle
+icon looks broken, and nothing else in the build would mention it.
 
 `bundle.sh` deletes the SwiftPM product before building. SwiftPM does not know
 about `libherdr_core.a` — it arrives through a raw `-L` flag and is not a

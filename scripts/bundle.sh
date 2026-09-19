@@ -77,6 +77,15 @@ cp "$BUILT" "$APP/Contents/MacOS/HerdX"
 # repo does nothing for someone who only ever sees the .dmg.
 cp "$ROOT/LICENSE" "$ROOT/NOTICE" "$APP/Contents/Resources/"
 
+# Committed rather than drawn here: see scripts/icon.sh. Missing is worth
+# stopping for — an app that ships the generic bundle icon looks broken, and
+# nothing else in the build would say a word about it.
+[ -f "$ROOT/assets/HerdX.icns" ] || {
+  echo "assets/HerdX.icns is missing; run scripts/icon.sh" >&2
+  exit 1
+}
+cp "$ROOT/assets/HerdX.icns" "$APP/Contents/Resources/"
+
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -86,6 +95,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleDisplayName</key><string>HerdX</string>
   <key>CFBundleIdentifier</key><string>dev.herdr.herdx</string>
   <key>CFBundleExecutable</key><string>HerdX</string>
+  <key>CFBundleIconFile</key><string>HerdX</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundleVersion</key><string>$BUILD_NUMBER</string>
