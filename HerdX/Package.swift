@@ -22,5 +22,6 @@ let package = Package(
                 .linkedLibrary("herdr_core"),
             ]
         ),
+        .testTarget(name: "HerdXTests", dependencies: ["HerdX"]),
     ]
 )

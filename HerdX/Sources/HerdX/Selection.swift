@@ -15,16 +15,44 @@ struct Selection {
         }
     }
 
+    /// Whether this selection covers cells, or only marks where a click landed.
+    ///
+    /// Endpoints are inclusive, so a one-character word is a selection whose
+    /// anchor and cursor are the same cell — by coordinates alone
+    /// indistinguishable from a press that has not been dragged anywhere. The
+    /// difference is not in the geometry but in how the selection was made, so
+    /// that is what gets recorded.
+    enum Origin {
+        /// A press, so far. Nothing is selected until it is dragged.
+        case click
+        /// A span chosen outright: a drag, a double-click, a triple-click.
+        case span
+    }
+
     let paneID: String
     var anchor: Point
     var cursor: Point
+    var origin: Origin = .span
 
     /// Reading order, top-left first.
     var ordered: (start: Point, end: Point) {
         anchor <= cursor ? (anchor, cursor) : (cursor, anchor)
     }
 
-    var isEmpty: Bool { anchor == cursor }
+    /// Whether there is nothing here to highlight or copy.
+    ///
+    /// A single cell is not nothing: double-clicking a one-character word
+    /// selects it, and that used to produce no highlight and copy nothing.
+    var isEmpty: Bool { origin == .click && anchor == cursor }
+
+    /// Records that the cursor has been dragged away from where it started,
+    /// which turns a press into a selection.
+    mutating func extend(to point: Point) {
+        cursor = point
+        if point != anchor {
+            origin = .span
+        }
+    }
 
     /// The selected span on one absolute row, clipped to the pane's width.
     ///

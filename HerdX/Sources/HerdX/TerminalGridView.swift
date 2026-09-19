@@ -990,7 +990,8 @@ extension TerminalGridView {
                 selection = Selection(
                     paneID: hit.pane.id,
                     anchor: start,
-                    cursor: start)
+                    cursor: start,
+                    origin: .click)
             }
             needsDisplay = true
             if !hit.pane.focused { onFocusPane?(hit.pane.id) }
@@ -1011,7 +1012,7 @@ extension TerminalGridView {
 
     override func mouseDragged(with event: NSEvent) {
         if selection != nil, let hit = hit(event) {
-            selection?.cursor = point(in: hit.pane, column: hit.column, row: hit.row)
+            selection?.extend(to: point(in: hit.pane, column: hit.column, row: hit.row))
             needsDisplay = true
             return
         }
