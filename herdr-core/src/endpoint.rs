@@ -371,11 +371,48 @@ pub(crate) struct Transport;
 /// both are gone.
 pub(crate) struct ChildGuard(std::sync::Mutex<Child>);
 
+impl ChildGuard {
+    /// Kills the ssh process now, without waiting for the last half to drop.
+    ///
+    /// Both halves hold a reference, and one of them is parked inside a
+    /// blocking read on the child's own stdout — so waiting for the refcount to
+    /// fall to zero waits for the thing the kill is meant to interrupt.
+    fn kill(&self) {
+        if let Ok(mut child) = self.0.lock() {
+            let _ = child.kill();
+        }
+    }
+}
+
 impl Drop for ChildGuard {
     fn drop(&mut self) {
         if let Ok(mut child) = self.0.lock() {
             let _ = child.kill();
             let _ = child.wait();
+        }
+    }
+}
+
+/// Breaks a blocked read on a connection, from another thread.
+///
+/// A receive loop spends nearly all of its life parked in `read`, and nothing
+/// short of the far end speaking will return from it. Disposing of a session
+/// has to be able to, or freeing one leaves its thread, its socket and its ssh
+/// process running until the machine happens to say something.
+pub(crate) enum Interrupt {
+    Local(std::os::unix::net::UnixStream),
+    Ssh(std::sync::Arc<ChildGuard>),
+}
+
+impl Interrupt {
+    pub fn wake(&self) {
+        match self {
+            // Shuts the socket down for every clone of it, which is what makes
+            // the reader's blocked `read` return rather than this one's.
+            Self::Local(stream) => {
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+            }
+            Self::Ssh(child) => child.kill(),
         }
     }
 }
@@ -420,12 +457,13 @@ impl Transport {
     pub fn connect(
         endpoint: &Endpoint,
         socket: &std::path::Path,
-    ) -> io::Result<(ReadHalf, WriteHalf)> {
+    ) -> io::Result<(ReadHalf, WriteHalf, Interrupt)> {
         match &endpoint.kind {
             EndpointKind::Local => {
                 let stream = std::os::unix::net::UnixStream::connect(socket)?;
                 let writer = stream.try_clone()?;
-                Ok((ReadHalf::Local(stream), WriteHalf::Local(writer)))
+                let interrupt = Interrupt::Local(stream.try_clone()?);
+                Ok((ReadHalf::Local(stream), WriteHalf::Local(writer), interrupt))
             }
             EndpointKind::Ssh { target, session } => start_ssh(target, session),
         }
@@ -458,7 +496,7 @@ fn shell_quoted(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-fn start_ssh(target: &str, session: &str) -> io::Result<(ReadHalf, WriteHalf)> {
+fn start_ssh(target: &str, session: &str) -> io::Result<(ReadHalf, WriteHalf, Interrupt)> {
     let mut command = Command::new("ssh");
     command
         // Fail rather than hang waiting for a password or a host-key prompt:
@@ -511,8 +549,9 @@ fn start_ssh(target: &str, session: &str) -> io::Result<(ReadHalf, WriteHalf)> {
         },
         WriteHalf::Ssh {
             stdin,
-            _child: guard,
+            _child: std::sync::Arc::clone(&guard),
         },
+        Interrupt::Ssh(guard),
     ))
 }
 

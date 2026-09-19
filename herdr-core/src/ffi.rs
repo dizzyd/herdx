@@ -437,6 +437,72 @@ pub const HX_ENDPOINT_CONNECTING: u8 = 0;
 pub const HX_ENDPOINT_ONLINE: u8 = 1;
 pub const HX_ENDPOINT_OFFLINE: u8 = 2;
 
+/// A one-way stop signal for an endpoint's threads.
+///
+/// A flag alone would not do. The reconnect loop spends most of a failed
+/// endpoint's life asleep in its backoff and the rest of it parked in a
+/// blocking read, and disposal can afford to wait for neither.
+#[derive(Default)]
+struct Halt {
+    state: Mutex<HaltState>,
+    woken: std::sync::Condvar,
+}
+
+/// Both halves of stopping under one lock.
+///
+/// Held together rather than separately because a connection begun a moment
+/// before disposal would otherwise publish its interrupt just after disposal
+/// looked for one, and then block in a read with nothing left to break it.
+#[derive(Default)]
+struct HaltState {
+    stopped: bool,
+    interrupt: Option<crate::endpoint::Interrupt>,
+}
+
+impl Halt {
+    /// Takes the means to break the connection now being made, or refuses it
+    /// because this endpoint is already being disposed of.
+    fn arm(&self, interrupt: crate::endpoint::Interrupt) -> bool {
+        let mut state = self.state.lock().unwrap();
+        if state.stopped {
+            return false;
+        }
+        state.interrupt = Some(interrupt);
+        true
+    }
+
+    /// Forgets a connection that has ended on its own.
+    fn disarm(&self) {
+        self.state.lock().unwrap().interrupt = None;
+    }
+
+    fn stop(&self) {
+        let interrupt = {
+            let mut state = self.state.lock().unwrap();
+            state.stopped = true;
+            state.interrupt.take()
+        };
+        self.woken.notify_all();
+        if let Some(interrupt) = interrupt {
+            interrupt.wake();
+        }
+    }
+
+    fn stopped(&self) -> bool {
+        self.state.lock().unwrap().stopped
+    }
+
+    /// Sleeps for `duration`, returning early — and false — once stopped.
+    fn rest(&self, duration: std::time::Duration) -> bool {
+        let state = self.state.lock().unwrap();
+        if state.stopped {
+            return false;
+        }
+        let (state, _) = self.woken.wait_timeout(state, duration).unwrap();
+        !state.stopped
+    }
+}
+
 /// One attached machine.
 struct EndpointState {
     endpoint: crate::endpoint::Endpoint,
@@ -445,6 +511,35 @@ struct EndpointState {
     /// with a slow ssh handshake.
     outbound: std::sync::mpsc::Sender<ClientMessage>,
     status: Arc<std::sync::atomic::AtomicU8>,
+    /// Stops the reconnect loop, wakes it out of its backoff and breaks it out
+    /// of a blocking read.
+    halt: Arc<Halt>,
+    /// The live connection's write half, so disposal can close it.
+    writer: Arc<Mutex<Option<crate::endpoint::WriteHalf>>>,
+    /// The reconnect thread and the writer thread, joined on disposal.
+    workers: Vec<std::thread::JoinHandle<()>>,
+}
+
+/// Ends an endpoint rather than abandoning it.
+///
+/// Without this, freeing a session left every connection it had running: the
+/// reconnect loop kept its socket, its thread and its ssh process, and brought
+/// them back the moment the far side dropped. Switching machines a few times
+/// was enough to accumulate clients nothing could see or stop.
+impl Drop for EndpointState {
+    fn drop(&mut self) {
+        self.halt.stop();
+        // The writer thread ends when the last sender goes; ours is one of
+        // them, and there is no way to drop a field in place but to swap it.
+        let (unused, _) = std::sync::mpsc::channel();
+        drop(std::mem::replace(&mut self.outbound, unused));
+        for worker in self.workers.drain(..) {
+            let _ = worker.join();
+        }
+        // The read half died with the thread that held it; this is the write
+        // half, and dropping it is what lets ChildGuard reap an ssh child.
+        *self.writer.lock().unwrap() = None;
+    }
 }
 
 pub struct HxSession {
@@ -464,6 +559,20 @@ pub struct HxSession {
     front: Grid,
     /// Image bytes copied out for the caller, for the same reason.
     front_asset: Vec<u8>,
+}
+
+/// Ends every endpoint before the session's own handles go.
+///
+/// The order is the point. `outbound` is a clone of the active endpoint's
+/// sender, and that endpoint cannot finish shutting down while a sender it
+/// owns is still held — so this is explicit rather than left to whatever order
+/// the fields happen to be declared in.
+impl Drop for HxSession {
+    fn drop(&mut self) {
+        let (unused, _) = std::sync::mpsc::channel();
+        drop(std::mem::replace(&mut self.outbound, unused));
+        self.endpoints.clear();
+    }
 }
 
 impl HxSession {
@@ -584,6 +693,7 @@ fn spawn_endpoint(
         connected: AtomicBool::new(false),
     });
     let status = Arc::new(std::sync::atomic::AtomicU8::new(HX_ENDPOINT_CONNECTING));
+    let halt = Arc::new(Halt::default());
     let (tx, rx) = std::sync::mpsc::channel::<ClientMessage>();
 
     // Outbound messages are funnelled through one queue that survives
@@ -592,7 +702,7 @@ fn spawn_endpoint(
         None::<crate::endpoint::WriteHalf>,
     ));
     let writer_slot = Arc::clone(&outbound);
-    std::thread::spawn(move || {
+    let writer_thread = std::thread::spawn(move || {
         for message in rx {
             let mut slot = writer_slot.lock().unwrap();
             if let Some(writer) = slot.as_mut() {
@@ -611,10 +721,12 @@ fn spawn_endpoint(
     let thread_status = Arc::clone(&status);
     let thread_endpoint = endpoint.clone();
     let thread_outbound = tx.clone();
-    std::thread::spawn(move || {
+    let thread_halt = Arc::clone(&halt);
+    let writer_for_loop = Arc::clone(&outbound);
+    let connect_thread = std::thread::spawn(move || {
         let mut backoff = std::time::Duration::from_millis(250);
 
-        loop {
+        while !thread_halt.stopped() {
             let hello = crate::client::hello_with_surface(
                 geometry.cols,
                 geometry.rows,
@@ -623,9 +735,14 @@ fn spawn_endpoint(
                 surface_active,
             );
 
-            match crate::client::EndpointConnection::attach(&thread_endpoint, &socket, &hello) {
+            match crate::client::EndpointConnection::attach_interruptible(
+                &thread_endpoint,
+                &socket,
+                &hello,
+                &|interrupt| thread_halt.arm(interrupt),
+            ) {
                 Ok(mut conn) => {
-                    *outbound.lock().unwrap() = conn.take_writer();
+                    *writer_for_loop.lock().unwrap() = conn.take_writer();
                     thread_shared.connected.store(true, Ordering::Release);
                     thread_status.store(HX_ENDPOINT_ONLINE, Ordering::Release);
                     *thread_shared.error.lock().unwrap() = None;
@@ -638,7 +755,8 @@ fn spawn_endpoint(
                         Arc::clone(&thread_status),
                         thread_outbound.clone(),
                     );
-                    *outbound.lock().unwrap() = None;
+                    *writer_for_loop.lock().unwrap() = None;
+                    thread_halt.disarm();
                 }
                 Err(err) => {
                     // No label: whatever shows this already knows which
@@ -655,16 +773,22 @@ fn spawn_endpoint(
                     *thread_shared.error.lock().unwrap() =
                         Some(explain_attach_failure(&thread_endpoint, &message));
                     thread_status.store(HX_ENDPOINT_OFFLINE, Ordering::Release);
+                    thread_halt.disarm();
                 }
             }
 
             // Each endpoint reconnects on its own. A machine that is asleep
             // must not stop the others from working, which is what a
             // session-wide retry would do.
-            std::thread::sleep(backoff);
+            if !thread_halt.rest(backoff) {
+                break;
+            }
             backoff = (backoff * 2).min(std::time::Duration::from_secs(10));
             thread_status.store(HX_ENDPOINT_CONNECTING, Ordering::Release);
         }
+
+        thread_shared.connected.store(false, Ordering::Release);
+        thread_status.store(HX_ENDPOINT_OFFLINE, Ordering::Release);
     });
 
     EndpointState {
@@ -672,6 +796,9 @@ fn spawn_endpoint(
         shared,
         outbound: tx,
         status,
+        halt,
+        writer: outbound,
+        workers: vec![connect_thread, writer_thread],
     }
 }
 

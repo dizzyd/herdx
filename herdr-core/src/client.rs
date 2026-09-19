@@ -122,7 +122,31 @@ impl EndpointConnection {
         socket: &Path,
         hello: &EndpointClientHello,
     ) -> io::Result<Self> {
-        let (mut reader, mut writer) = crate::endpoint::Transport::connect(endpoint, socket)?;
+        Self::attach_interruptible(endpoint, socket, hello, &|_| true)
+    }
+
+    /// `attach`, handing `arm` the means to break a blocked read as soon as
+    /// there is a transport to break.
+    ///
+    /// Before the handshake, not after: a machine that went away between the
+    /// connect and the welcome leaves us parked in that read, and that is
+    /// exactly the window in which someone switching machines wants this
+    /// connection to stop existing.
+    ///
+    /// `arm` returns false when whatever owns this connection has already been
+    /// disposed of, in which case there is no point completing a handshake for
+    /// it.
+    pub(crate) fn attach_interruptible(
+        endpoint: &crate::endpoint::Endpoint,
+        socket: &Path,
+        hello: &EndpointClientHello,
+        arm: &dyn Fn(crate::endpoint::Interrupt) -> bool,
+    ) -> io::Result<Self> {
+        let (mut reader, mut writer, handle) =
+            crate::endpoint::Transport::connect(endpoint, socket)?;
+        if !arm(handle) {
+            return Err(io::Error::other("endpoint was closed while connecting"));
+        }
 
         let data = serde_json::to_string(hello).map_err(io::Error::other)?;
         write_message(
