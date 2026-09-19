@@ -245,12 +245,19 @@ final class TerminalGridView: NSView {
     }
 
     /// Discards the current surface, for when the machine underneath changes.
+    ///
+    /// Everything keyed by something the old machine named has to go, not only
+    /// what is drawn. Pane ids are unique within a server and no further, so a
+    /// focused pane left over from the machine just left is not a stale
+    /// reference on the new one — it is a live pane belonging to other work,
+    /// and typing would go to it.
     func forgetSurface() {
         lastRevision = .max
         panes = []
         paneBackgrounds = [:]
         selection = nil
         copyMode = nil
+        focusedPaneFromSnapshot = nil
         paneViews.values.forEach { $0.removeFromSuperview() }
         paneViews.removeAll()
         needsDisplay = true

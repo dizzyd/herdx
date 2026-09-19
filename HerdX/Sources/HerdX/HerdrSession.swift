@@ -77,17 +77,43 @@ struct EndpointInfo {
     var snapshot: Snapshot?
 }
 
+/// The snapshot each machine has last sent, and which machine's is current.
+///
+/// A type of its own because switching machines got this wrong and nothing
+/// else: the transport changed while the cached snapshot went on describing
+/// the machine just left. Commands built from it carried that machine's boot
+/// id, which the new server rejects, and named pane ids that are not unique
+/// across servers — so `w1:p1` on the new machine is somebody else's live pane
+/// rather than a dead reference.
+struct SnapshotCache {
+    private(set) var active = 0
+    private var byEndpoint: [Int: Snapshot] = [:]
+
+    /// The active machine's snapshot, or nothing until it has sent one.
+    var current: Snapshot? { byEndpoint[active] }
+
+    subscript(endpoint index: Int) -> Snapshot? { byEndpoint[index] }
+
+    mutating func record(_ snapshot: Snapshot, forEndpoint index: Int) {
+        byEndpoint[index] = snapshot
+    }
+
+    /// Moves to another machine, so `current` is that machine's or nothing.
+    mutating func activate(_ index: Int) { active = index }
+}
+
 /// Owns the connection to the herdr server.
 ///
 /// The Rust core runs the socket on its own thread; this type is the polling
 /// face of it. All calls must come from the main thread.
 final class HerdrSession {
     private var handle: OpaquePointer?
-    private(set) var lastSnapshot: Snapshot?
     /// Callbacks awaiting a reply, keyed by request id.
     private var pendingReplies: [String: (String) -> Void] = [:]
-    /// The latest snapshot from each endpoint, keyed by index.
-    private var snapshots: [Int: Snapshot] = [:]
+    private(set) var snapshots = SnapshotCache()
+
+    /// The active machine's snapshot, which is what a command is built from.
+    var lastSnapshot: Snapshot? { snapshots.current }
 
     enum ConnectError: Error, LocalizedError {
         case failed(String)
@@ -114,9 +140,13 @@ final class HerdrSession {
             handle = hx_session_connect(
                 UInt16(cols), UInt16(rows), UInt32(cellWidth), UInt32(cellHeight), nil, machines)
         }
-        guard handle != nil else {
+        guard let handle else {
             throw ConnectError.failed(Self.take(hx_connect_error()) ?? "could not reach herdr")
         }
+        // Not necessarily the first: the core opens on whichever machine herdr
+        // had selected, and the cache has to agree from the start or the first
+        // snapshot is filed against the wrong one.
+        snapshots.activate(hx_active_endpoint(handle))
     }
 
     /// The socket a session with no `socketPath` connects to.
@@ -151,19 +181,26 @@ final class HerdrSession {
                 isRemote: hx_endpoint_is_remote(handle, index),
                 error: Self.take(hx_endpoint_error(handle, index)),
                 needsInstall: hx_endpoint_needs_install(handle, index),
-                snapshot: snapshots[index])
+                snapshot: snapshots[endpoint: index])
         }
     }
 
     /// The server boot an endpoint is on, which its commands must carry.
     func bootID(forEndpoint index: Int) -> String? {
-        snapshots[index]?.bootID
+        snapshots[endpoint: index]?.bootID
     }
 
+    /// Switches which machine the window shows and takes input for.
+    ///
+    /// The cached snapshot moves with it. Leaving it behind meant that until
+    /// the new machine sent one, every command carried the old machine's boot
+    /// id — which the new server rejects — and named panes by ids that mean
+    /// something else over there.
     @discardableResult
     func setActiveEndpoint(_ index: Int) -> Bool {
-        guard let handle else { return false }
-        return hx_set_active_endpoint(handle, index)
+        guard let handle, hx_set_active_endpoint(handle, index) else { return false }
+        snapshots.activate(index)
+        return true
     }
 
     /// Picks up new snapshots from every endpoint, not only the active one:
@@ -181,8 +218,7 @@ final class HerdrSession {
                 let data = json.data(using: .utf8),
                 let snapshot = try? decoder.decode(Snapshot.self, from: data)
             else { continue }
-            snapshots[index] = snapshot
-            if index == hx_active_endpoint(handle) { lastSnapshot = snapshot }
+            snapshots.record(snapshot, forEndpoint: index)
             changed = true
         }
         return changed

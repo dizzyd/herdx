@@ -160,10 +160,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
 
         sidebar.onSelectEndpoint = { [weak self] index in
             guard let self, let session = self.session else { return }
-            session.setActiveEndpoint(index)
-            // The new machine's surface has not arrived; drop the old one so
-            // the previous machine's output is not shown under a new name.
-            self.gridView.forgetSurface()
+            self.switchTo(endpoint: index, session: session)
             self.focusTerminal()
         }
 
@@ -1100,14 +1097,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     /// whichever one happened to be active a moment ago.
     private func focus(_ command: Command, on endpoint: Int) {
         guard let session else { return }
-        if endpoint != session.activeEndpoint {
-            session.setActiveEndpoint(endpoint)
-            // The new machine's surface has not arrived; drop the old one so
-            // the previous machine's output is not shown under a new name.
-            gridView.forgetSurface()
-        }
+        switchTo(endpoint: endpoint, session: session)
         invoke(command, session: session, bootID: session.bootID(forEndpoint: endpoint))
         focusTerminal()
+    }
+
+    /// Switches which machine the window is showing.
+    ///
+    /// One place, because the per-machine state has to move together: the
+    /// transport, the snapshot commands are built from, and the pane input
+    /// goes to. Doing two of the three left commands carrying the old
+    /// machine's boot id and typing addressed to a pane id that names
+    /// somebody else's work on the new server.
+    private func switchTo(endpoint index: Int, session: HerdrSession) {
+        guard index != session.activeEndpoint else { return }
+        session.setActiveEndpoint(index)
+        // The new machine's surface has not arrived; drop the old one so the
+        // previous machine's output is not shown under a new name.
+        gridView.forgetSurface()
+        // Whatever the new machine last said, which may be nothing yet. The
+        // next snapshot fills it in either way.
+        gridView.focusedPaneFromSnapshot = session.lastSnapshot?.focusedPaneID
     }
 
     /// Everything in the session, flattened for the navigator.
