@@ -16,6 +16,11 @@ final class KeymapTests: XCTestCase {
             charactersIgnoringModifiers: characters, isARepeat: false, keyCode: keyCode)!
     }
 
+    /// An arrow, which is a key code rather than a character the profile spells.
+    private func arrow(_ keyCode: UInt16) -> NSEvent {
+        keystroke("\u{F700}", keyCode: keyCode)
+    }
+
     private func bindings(
         of action: Keymap.Action, in keymap: Keymap
     ) -> [Keymap.Binding] {
@@ -355,6 +360,26 @@ final class KeymapTests: XCTestCase {
 
         _ = resolver.resolve(keystroke("b", flags: [.control]))
         XCTAssertEqual(resolver.resolve(keystroke("p", flags: [.option])).0, .previousAgent)
+    }
+
+    func testTheUpArrowIsItsOwnActionSoItCanDoMoreThanKDoes() {
+        let keymap = Keymap(profile: """
+            [keys]
+            prefix = "ctrl+b"
+            focus_pane_up = "prefix+k"
+            """)!
+        let resolver = ChordResolver()
+        resolver.keymap = keymap
+
+        _ = resolver.resolve(keystroke("b", flags: [.control]))
+        XCTAssertEqual(
+            resolver.resolve(arrow(126)).0, .focusAbove,
+            "the arrow has to be told apart from k, or the handler cannot treat it differently")
+
+        _ = resolver.resolve(keystroke("b", flags: [.control]))
+        XCTAssertEqual(
+            resolver.resolve(keystroke("k")).0, .focusPaneUp,
+            "and k stays exactly the pane move herdr bound it to")
     }
 
     func testTheUsersOwnBindingKeepsTheKeyTheAdditionWanted() {

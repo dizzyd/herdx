@@ -43,6 +43,9 @@ struct Keymap {
         case focusAgent = "focus_agent"
         /// HerdX's own: go straight to whatever most needs you.
         case focusTopAgent = "focus_top_agent"
+        /// HerdX's own: the pane above or below, or the sidebar row above or
+        /// below when the tab holds only one pane.
+        case focusAbove = "focus_above", focusBelow = "focus_below"
 
         /// How the action reads in the help.
         var title: String {
@@ -431,9 +434,12 @@ struct Keymap {
 extension Keymap {
     /// Bindings HerdX adds where herdr leaves the key unbound.
     ///
-    /// The arrows do what hjkl already does. herdr's own keymap is built for
-    /// hands that stay on the home row; a Mac app is also used by people who
-    /// reach for the arrow keys, and there is no reason both cannot work.
+    /// The arrows do what hjkl already does — except up and down, which do a
+    /// little more. In a tab with one pane there is no pane above to move to,
+    /// so the key would do nothing at all; there it walks the sidebar instead,
+    /// which is the list of places to work already on screen. Left and right
+    /// stay plain pane moves, and hjkl is left exactly as herdr bound it, so
+    /// the extra behaviour only ever lands on a key herdr had not spent.
     ///
     /// The agent keys are here because herdr leaves all of them unset — its
     /// next_agent and previous_agent ship with no binding at all — so nothing
@@ -443,8 +449,8 @@ extension Keymap {
     /// bindings, and the jump gets the letter it is named after.
     static let additions = """
         focus_pane_left = "prefix+left"
-        focus_pane_down = "prefix+down"
-        focus_pane_up = "prefix+up"
+        focus_below = "prefix+down"
+        focus_above = "prefix+up"
         focus_pane_right = "prefix+right"
         focus_top_agent = "prefix+a"
         next_agent = "prefix+alt+n"

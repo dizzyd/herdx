@@ -7,7 +7,7 @@ import AppKit
 /// single line forced "paperless-go" and "paperless-go" to be told apart by a
 /// truncated suffix.
 final class SidebarRow: NSView {
-    enum Target {
+    enum Target: Equatable {
         case endpoint(Int)
         case workspace(String, endpoint: Int)
         case tab(String)
@@ -20,7 +20,9 @@ final class SidebarRow: NSView {
     /// selecting it.
     private let onToggle: (() -> Void)?
     private var hovered = false
-    private let selected: Bool
+    /// Read by the arrow keys, which need to know where the selection is to
+    /// move it.
+    let selected: Bool
     private let chrome: Chrome
     private var trackingArea: NSTrackingArea?
 
@@ -288,6 +290,15 @@ final class SidebarView: NSView {
     /// snapshot to change.
     private var endpoints: [EndpointInfo] = []
     private var active = 0
+    /// Where the last click or arrow key sent the selection, until the server
+    /// agrees.
+    ///
+    /// A row draws itself selected because the *server* says its workspace or
+    /// pane is focused, and that answer is a round trip away. Without somewhere
+    /// to note the intent, two presses in quick succession both start from the
+    /// row you were on when you pressed the first, and the second goes nowhere
+    /// — which on a held arrow key is most of them.
+    private var pendingSelection: SidebarRow.Target?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -400,31 +411,39 @@ final class SidebarView: NSView {
 
         if arrangement == .priority {
             addAgentsByPriority(endpoints)
-            return
+        } else {
+            for endpoint in endpoints {
+                let isActive = endpoint.index == active
+                addMachine(endpoint, isActive: isActive)
+                guard !collapsed.contains(endpoint.id), let snapshot = endpoint.snapshot else {
+                    continue
+                }
+                for workspace in snapshot.workspaces {
+                    add(
+                        title: workspace.label,
+                        // Not the machine: the row it sits under is the machine.
+                        subtitle: workspace.branch,
+                        status: priority.status(
+                            of: snapshot.agents.filter { $0.workspaceID == workspace.workspaceID },
+                            on: endpoint.index, fallback: workspace.agentStatus),
+                        symbol: nil,
+                        collapsed: nil,
+                        // Only the machine you are looking at has a selected
+                        // workspace; the others are focused on their own server,
+                        // which is not the same as being what you are looking at.
+                        selected: isActive && workspace.focused,
+                        target: .workspace(workspace.workspaceID, endpoint: endpoint.index))
+                }
+            }
         }
 
-        for endpoint in endpoints {
-            let isActive = endpoint.index == active
-            addMachine(endpoint, isActive: isActive)
-            guard !collapsed.contains(endpoint.id), let snapshot = endpoint.snapshot else {
-                continue
-            }
-            for workspace in snapshot.workspaces {
-                add(
-                    title: workspace.label,
-                    // Not the machine: the row it sits under is the machine.
-                    subtitle: workspace.branch,
-                    status: priority.status(
-                        of: snapshot.agents.filter { $0.workspaceID == workspace.workspaceID },
-                        on: endpoint.index, fallback: workspace.agentStatus),
-                    symbol: nil,
-                    collapsed: nil,
-                    // Only the machine you are looking at has a selected
-                    // workspace; the others are focused on their own server,
-                    // which is not the same as being what you are looking at.
-                    selected: isActive && workspace.focused,
-                    target: .workspace(workspace.workspaceID, endpoint: endpoint.index))
-            }
+        // The server has caught up, so the intent is no longer worth holding on
+        // to — and holding it past this point would start the next key from a
+        // row the user has since moved off with the mouse.
+        if let pendingSelection,
+            navigableRows.contains(where: { $0.selected && $0.target == pendingSelection })
+        {
+            self.pendingSelection = nil
         }
     }
 
@@ -569,6 +588,76 @@ final class SidebarView: NSView {
             of: endpoint.snapshot?.agents ?? [], on: endpoint.index, fallback: .idle)
     }
 
+    /// Goes wherever a row points. Shared by the mouse and the arrow keys so
+    /// that a key cannot come to mean something a click does not.
+    private func select(_ target: SidebarRow.Target) {
+        pendingSelection = target
+        switch target {
+        case .endpoint(let index): onSelectEndpoint?(index)
+        case .workspace(let id, let endpoint):
+            // Clicking a workspace on another machine switches to it first,
+            // otherwise the command goes to the wrong server.
+            onSelectWorkspace?(id, endpoint)
+        case .tab(let id): onSelect?(.focusTab(id))
+        case .pane(let id, let endpoint): onSelectPane?(id, endpoint)
+        }
+    }
+
+    /// The rows an arrow key moves between, in the order they are drawn.
+    ///
+    /// Read back off the rows themselves rather than worked out again. The
+    /// sidebar already decides this order twice over — machines and their
+    /// workspaces in one arrangement, agents by priority in the other — and a
+    /// second copy of that decision is a second thing to keep in step. It comes
+    /// with the collapsed machines already gone and the band headings already
+    /// out, those being a different class of view entirely.
+    ///
+    /// Machines are left out because an arrow is a move between places to work,
+    /// and a machine is the heading over them rather than one of them.
+    private var navigableRows: [SidebarRow] {
+        stack.arrangedSubviews.compactMap { $0 as? SidebarRow }.filter {
+            if case .endpoint = $0.target { return false }
+            return true
+        }
+    }
+
+    /// Where a step lands, or nothing when it would go nowhere.
+    ///
+    /// Clamped, not wrapped, unlike cycling through agents: this is a spatial
+    /// move through a list you can see, and a list that jumps from its last row
+    /// to its first is one you can fall off the end of without noticing.
+    /// Landing where you already are counts as going nowhere.
+    static func step(from current: Int?, by offset: Int, count: Int) -> Int? {
+        guard count > 0 else { return nil }
+        guard let current else { return offset > 0 ? 0 : count - 1 }
+        let next = min(max(current + offset, 0), count - 1)
+        return next == current ? nil : next
+    }
+
+    /// Moves the selection one row, exactly as clicking that row would.
+    ///
+    /// Works while the sidebar is collapsed, which is deliberate: it is put
+    /// away by sliding the split to nothing rather than by being torn down, so
+    /// the rows are still there and still in order, and a key that stopped
+    /// working because a panel was hidden would be a key that stopped working
+    /// for no reason the user can see.
+    @discardableResult
+    func step(by offset: Int) -> Bool {
+        let rows = navigableRows
+        // The intended selection outranks the drawn one while they disagree,
+        // which is the whole window between pressing the key and the snapshot
+        // that proves it worked.
+        let current = rows.firstIndex { row in
+            if let pendingSelection { return row.target == pendingSelection }
+            return row.selected
+        }
+        guard let next = Self.step(from: current, by: offset, count: rows.count) else {
+            return false
+        }
+        select(rows[next].target)
+        return true
+    }
+
     private func add(
         title: String,
         subtitle: String?,
@@ -584,17 +673,7 @@ final class SidebarView: NSView {
             title: title, subtitle: subtitle, detail: detail, status: status,
             symbol: symbol, collapsed: collapsed, selected: selected, chrome: chrome,
             target: target,
-            onSelect: { [weak self] target in
-                switch target {
-                case .endpoint(let index): self?.onSelectEndpoint?(index)
-                case .workspace(let id, let endpoint):
-                    // Clicking a workspace on another machine switches to it
-                    // first, otherwise the command goes to the wrong server.
-                    self?.onSelectWorkspace?(id, endpoint)
-                case .tab(let id): self?.onSelect?(.focusTab(id))
-                case .pane(let id, let endpoint): self?.onSelectPane?(id, endpoint)
-                }
-            },
+            onSelect: { [weak self] target in self?.select(target) },
             onToggle: onToggle)
         row.translatesAutoresizingMaskIntoConstraints = false
         stack.addArrangedSubview(row)

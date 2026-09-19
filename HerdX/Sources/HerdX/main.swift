@@ -1053,12 +1053,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         // Zero jumps to whatever most needs you; the other two cycle. All three
         // walk the same order the Agents sidebar is in, so the key and the list
         // cannot disagree about what "next" means.
+        case .focusAbove: return { self.stepUpOrDown(by: -1, session: session) }
+        case .focusBelow: return { self.stepUpOrDown(by: 1, session: session) }
+
         case .focusTopAgent: return { self.focusAgent(by: 0, session: session) }
         case .nextAgent: return { self.focusAgent(by: 1, session: session) }
         case .previousAgent: return { self.focusAgent(by: -1, session: session) }
 
         default: return nil
         }
+    }
+
+    /// The up and down arrows, which belong to the panes when there are panes
+    /// to move between and to the sidebar when there are not.
+    ///
+    /// A tab holding one pane has nothing above or below it, so the key would
+    /// otherwise be dead — and dead in a way that looks like a broken keyboard
+    /// rather than like a key with nothing to do.
+    private func stepUpOrDown(by offset: Int, session: HerdrSession) {
+        if (session.lastSnapshot?.panesInFocusedTab ?? 0) > 1 {
+            invoke(offset < 0 ? .focusUp : .focusDown, session: session)
+            return
+        }
+        // Silent when there is nowhere to go: at the ends of the list the key
+        // genuinely has nothing to do, and saying so every time would be noise
+        // on a key that is held down.
+        sidebar.step(by: offset)
     }
 
     /// Moves to another agent, in the order the Agents sidebar shows.

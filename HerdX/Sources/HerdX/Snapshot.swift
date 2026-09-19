@@ -38,6 +38,18 @@ struct Snapshot: Decodable {
         }
     }
 
+    /// How many panes share the focused tab.
+    ///
+    /// What decides whether an arrow key belongs to the panes or to the
+    /// sidebar. Counted rather than measured: the surface carries geometry and
+    /// could answer "is there a pane above me" outright, but that answer has to
+    /// agree with herdr's own idea of which pane is above, and a key that
+    /// silently disagrees is worse than one that only claims the easy case.
+    var panesInFocusedTab: Int {
+        guard let focusedTabID else { return panes.count }
+        return panes.filter { $0.tabID == focusedTabID }.count
+    }
+
     struct Workspace: Decodable {
         let workspaceID: String
         let number: Int
