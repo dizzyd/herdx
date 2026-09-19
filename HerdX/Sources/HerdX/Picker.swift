@@ -13,6 +13,17 @@ final class Picker: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         let choose: () -> Void
     }
 
+    /// How the list is put on screen.
+    enum Presentation {
+        /// Drops out of the title bar, modal to the window. The shape for a
+        /// list you read off the list.
+        case sheet
+        /// Floats over the window instead. macOS blurs the window behind a
+        /// sheet, and a palette can only be judged against the terminal it is
+        /// about to colour — behind a sheet there is nothing to judge.
+        case floating
+    }
+
     /// Raised as the highlight moves, for a list whose entries are worth
     /// seeing before they are chosen.
     private var onHighlight: ((Item) -> Void)?
@@ -22,6 +33,9 @@ final class Picker: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     private var chose = false
 
     private var window: NSWindow?
+    /// The window the list is in, for the capture probe: headlessly there is
+    /// nothing else to photograph it through.
+    var presented: NSWindow? { window }
     private let search = NSSearchField()
     private let table = NSTableView()
     private var all: [Item] = []
@@ -29,6 +43,7 @@ final class Picker: NSObject, NSTableViewDataSource, NSTableViewDelegate {
 
     func show(
         over parent: NSWindow, title: String, items: [Item],
+        as presentation: Presentation = .sheet,
         onHighlight: ((Item) -> Void)? = nil, onCancel: (() -> Void)? = nil
     ) {
         guard window == nil else { return }
@@ -77,27 +92,56 @@ final class Picker: NSObject, NSTableViewDataSource, NSTableViewDelegate {
             scroll.heightAnchor.constraint(equalToConstant: 320),
         ])
 
-        let sheet = PickerSheet(
+        let chooser = PickerWindow(
             contentRect: NSRect(x: 0, y: 0, width: 460, height: 400),
-            styleMask: [.titled], backing: .buffered, defer: false)
-        sheet.title = title
-        sheet.contentView = content
-        sheet.onChoose = { [weak self] in self?.chooseSelected() }
-        window = sheet
+            styleMask: presentation == .sheet ? [.titled] : [.titled, .closable],
+            backing: .buffered, defer: false)
+        chooser.title = title
+        chooser.contentView = content
+        chooser.onChoose = { [weak self] in self?.chooseSelected() }
+        window = chooser
 
-        parent.beginSheet(sheet) { [weak self] _ in
-            guard let self else { return }
-            self.window = nil
-            // Closed without choosing: whatever the highlight was showing is
-            // not what anyone asked for.
-            if !self.chose { self.onCancel?() }
-            self.onHighlight = nil
-            self.onCancel = nil
+        switch presentation {
+        case .sheet:
+            parent.beginSheet(chooser) { [weak self] _ in self?.finish() }
+        case .floating:
+            // A child window so it travels with the window it is about and
+            // stays above it, and a panel so taking the keys does not make the
+            // window behind look switched off.
+            chooser.isFloatingPanel = true
+            chooser.hidesOnDeactivate = false
+            chooser.becomesKeyOnlyIfNeeded = false
+            // An ordinary Mac window, so it takes the light/dark appearance the
+            // window was given rather than any of the chrome's colours.
+            chooser.appearance = parent.appearance
+            chooser.delegate = self
+            parent.addChildWindow(chooser, ordered: .above)
+            // Where the sheet would have come down, so it is the same place to
+            // look — and everything below it is the theme, unblurred.
+            chooser.setFrameTopLeftPoint(
+                NSPoint(
+                    x: parent.frame.midX - chooser.frame.width / 2,
+                    y: parent.contentRect(forFrameRect: parent.frame).maxY))
+            // Headlessly the window behind this one was never ordered in, and a
+            // list on its own is exactly the window nobody asked to see. It
+            // still lays out, so a capture can still photograph it.
+            if parent.isVisible { chooser.makeKeyAndOrderFront(nil) }
         }
         highlightChanged()
         // The search field takes the keys, so typing filters straight away and
         // the arrows still reach the list.
-        sheet.makeFirstResponder(search)
+        chooser.makeFirstResponder(search)
+    }
+
+    /// Runs once, however the list was closed.
+    private func finish() {
+        guard window != nil else { return }
+        window = nil
+        // Closed without choosing: whatever the highlight was showing is not
+        // what anyone asked for.
+        if !chose { onCancel?() }
+        onHighlight = nil
+        onCancel = nil
     }
 
     // MARK: - Table
@@ -149,8 +193,12 @@ final class Picker: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     }
 
     private func close() {
-        guard let window, let parent = window.sheetParent else { return }
-        parent.endSheet(window)
+        guard let window else { return }
+        if let parent = window.sheetParent {
+            parent.endSheet(window)
+        } else {
+            window.close()
+        }
     }
 }
 
@@ -187,11 +235,36 @@ extension Picker: NSSearchFieldDelegate {
     }
 }
 
-/// A sheet that escape closes and return commits.
-private final class PickerSheet: NSWindow {
+extension Picker: NSWindowDelegate {
+    /// The floating form has a close button and can be closed by the window
+    /// list, neither of which goes through `close()`.
+    func windowWillClose(_ notification: Notification) {
+        guard let window, notification.object as AnyObject === window else { return }
+        if let parent = window.parent {
+            parent.removeChildWindow(window)
+            // Handing the keys back explicitly: a sheet returns them to its
+            // parent, a closing child window leaves whichever window AppKit
+            // picks with them, and the terminal not taking keys after a theme
+            // was chosen reads as the keyboard having died.
+            DispatchQueue.main.async { parent.makeKey() }
+        }
+        finish()
+    }
+}
+
+/// A list window that escape closes and return commits.
+///
+/// An `NSPanel` in both forms: as a sheet it behaves as one either way, and as
+/// a floating chooser it has to take the keys without the window underneath
+/// going grey.
+private final class PickerWindow: NSPanel {
     var onChoose: (() -> Void)?
 
     override func cancelOperation(_ sender: Any?) {
-        sheetParent?.endSheet(self)
+        if let parent = sheetParent {
+            parent.endSheet(self)
+        } else {
+            close()
+        }
     }
 }

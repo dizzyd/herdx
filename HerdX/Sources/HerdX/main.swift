@@ -1028,11 +1028,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         }
     }
 
-    /// Picks a theme, showing each one as the highlight passes over it.
-    ///
-    /// Applied on the way past rather than only on Return: a palette is a thing
-    /// you judge by looking at it, and a list of names tells you nothing about
-    /// which one you want.
     /// Switches the sidebar between machines and agents.
     @objc private func toggleArrangement(_ sender: Any?) {
         let next: SidebarView.Arrangement =
@@ -1045,6 +1040,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         if let session { sidebar.update(endpoints: session.endpoints, active: session.activeEndpoint) }
     }
 
+    /// Picks a theme, showing each one as the highlight passes over it.
+    ///
+    /// Applied on the way past rather than only on Return: a palette is a thing
+    /// you judge by looking at it, and a list of names tells you nothing about
+    /// which one you want.
     @objc private func showThemes(_ sender: Any?) {
         let installed = ThemeLibrary.installed()
         guard !installed.isEmpty else {
@@ -1069,6 +1069,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         themePicker.show(
             over: window, title: "Themes",
             items: described,
+            // Floating rather than a sheet: the window behind a sheet is
+            // blurred, and a blurred terminal is the one thing that cannot
+            // show what a palette does.
+            as: .floating,
             onHighlight: { [weak self] item in
                 guard let self,
                     let entry = installed.first(where: { $0.name == item.title }),
@@ -1609,7 +1613,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
             }
             let target: NSView? =
                 themesWanted
-                ? self.window.attachedSheet?.contentView
+                ? self.themePicker.presented?.contentView
                 : machinesWanted
                 ? (self.machinesWindow.window?.attachedSheet?.contentView
                     ?? self.machinesWindow.window?.contentView)
