@@ -1883,6 +1883,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
                     self.reportUnreachableChords()
                 }
 
+                // Types the text, which is what this probe is for and what it
+                // has always said it did. Through `keyDown` rather than
+                // `send(text:)`: the point is to exercise the AppKit half —
+                // the responder, the key mapping, and the input context that
+                // printable keys now go through — rather than the FFI call at
+                // the end of it.
+                if !probe.isEmpty {
+                    self.window.makeFirstResponder(self.gridView)
+                    print("probe: typing \(probe.count) characters")
+                    for character in probe {
+                        let text = String(character)
+                        guard
+                            let event = NSEvent.keyEvent(
+                                with: .keyDown, location: .zero, modifierFlags: [],
+                                timestamp: ProcessInfo.processInfo.systemUptime,
+                                windowNumber: self.window.windowNumber, context: nil,
+                                characters: text, charactersIgnoringModifiers: text,
+                                isARepeat: false, keyCode: 0)
+                        else { continue }
+                        self.gridView.keyDown(with: event)
+                    }
+                    print("probe: hasMarkedText=\(self.gridView.hasMarkedText())")
+                }
+
                 // Give the keys time to reach the server, then leave: a probe
                 // that never exits leaves its output stuck in a pipe buffer.
                 // A capture hook, when there is one, needs the app to outlive

@@ -162,6 +162,13 @@ final class TerminalGridView: NSView {
     /// Decoded images for the machine currently being shown; see `ImageCache`.
     var imageCache = ImageCache()
 
+    /// Text an input method is still composing; see `NSTextInputClient`.
+    ///
+    /// Held here rather than sent: the server knows nothing about a
+    /// composition, and a pane handed each candidate keystroke would run them
+    /// as input.
+    var markedText: String?
+
     /// Active copy mode, if any.
     var copyMode: CopyMode?
     /// Numbers each copy-mode session, so a reply that arrives after the
@@ -181,7 +188,12 @@ final class TerminalGridView: NSView {
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
 
+    /// Kept whole for the composition overlay, which is drawn as text rather
+    /// than cell by cell so an input method's candidates get font fallback.
+    private(set) var baseFont: NSFont
+
     init(font: NSFont, lineHeight: CGFloat) {
+        baseFont = font
         glyphs = GlyphRunDrawer(base: font, lineHeight: lineHeight)
         cellSize = glyphs.cellSize
         super.init(frame: .zero)
@@ -191,6 +203,7 @@ final class TerminalGridView: NSView {
 
     /// Swaps the font, which changes the cell size and therefore the grid.
     func apply(font: NSFont, lineHeight: CGFloat) {
+        baseFont = font
         glyphs = GlyphRunDrawer(base: font, lineHeight: lineHeight)
         cellSize = glyphs.cellSize
         syncPaneViews()
@@ -268,6 +281,7 @@ final class TerminalGridView: NSView {
         selection = nil
         copyMode = nil
         focusedPaneFromSnapshot = nil
+        markedText = nil
         imageCache.empty()
         paneViews.values.forEach { $0.removeFromSuperview() }
         paneViews.removeAll()
@@ -485,6 +499,7 @@ final class TerminalGridView: NSView {
                 drawSelection(grid, in: context)
                 drawCopyModeCursor(in: context)
                 drawCursor(grid, in: context)
+                drawMarkedText(grid, in: context)
                 drawPaneBorders(in: context)
             }
             context.restoreGState()
@@ -881,6 +896,51 @@ final class TerminalGridView: NSView {
         }
     }
 
+    /// Draws the composition in progress, at the cursor.
+    ///
+    /// It is not in the surface — the server has never been told about it — so
+    /// it is painted over whatever cells it covers, and underlined the way
+    /// every other Mac text view marks text that is not committed yet.
+    ///
+    /// Drawn as text rather than through the cell path: a candidate is usually
+    /// exactly the kind of script the base font does not carry, and it is one
+    /// short string once a frame rather than a grid.
+    private func drawMarkedText(_ grid: GridView, in context: CGContext) {
+        guard let markedText, !markedText.isEmpty else { return }
+        let origin = CGPoint(
+            x: CGFloat(grid.cursor.x) * cellSize.width,
+            y: CGFloat(grid.cursor.y) * cellSize.height)
+        let text = NSAttributedString(
+            string: markedText,
+            attributes: [
+                .font: baseFont,
+                .foregroundColor: theme.foreground,
+                .underlineStyle: NSUnderlineStyle.single.rawValue,
+            ])
+        // Cleared first: the cells underneath still hold whatever the pane
+        // last drew there, and a composition over the top of it is unreadable.
+        let size = text.size()
+        context.setFillColor(theme.background.cgColor)
+        context.fill(
+            CGRect(x: origin.x, y: origin.y, width: size.width, height: cellSize.height))
+        text.draw(at: origin)
+    }
+
+    /// Where the cursor is in this view, for placing a candidate window.
+    ///
+    /// The first cell when there is no surface to ask: a candidate list has to
+    /// go somewhere, and the corner of the terminal is a better guess than the
+    /// corner of the screen, which is where AppKit puts it otherwise.
+    func cursorRect() -> NSRect {
+        let cell = session?.withGrid { grid in
+            CGPoint(x: CGFloat(grid.cursor.x), y: CGFloat(grid.cursor.y))
+        } ?? .zero
+        return NSRect(
+            x: contentOrigin.x + cell.x * cellSize.width,
+            y: contentOrigin.y + cell.y * cellSize.height,
+            width: cellSize.width, height: cellSize.height)
+    }
+
     private func drawCursor(_ grid: GridView, in context: CGContext) {
         guard grid.cursor.visible, window?.isKeyWindow == true else { return }
         let rect = CGRect(
@@ -908,12 +968,21 @@ final class TerminalGridView: NSView {
         if copyMode != nil, handleCopyModeKey(event) { return }
 
         guard let session, let pane = focusedPane else { return }
+
+        // While an input method is composing, every key is its business:
+        // return commits a candidate, the arrows move through the list, escape
+        // abandons it. None of that is the pane's until it is committed.
+        if hasMarkedText() {
+            interpretKeyEvents([event])
+            return
+        }
+
         guard let mapped = KeyMapper.map(event) else {
-            // Anything we do not classify travels as committed text, which lets
-            // IME and dead keys work without us re-implementing composition.
-            if let text = event.characters, !text.isEmpty {
-                session.send(text: text, to: pane)
-            }
+            // Not a key with a semantic name, so it is text — and text an
+            // input method may still be building towards. `event.characters`
+            // here is the keystroke, not what it is composing, so it goes to
+            // the input context and only `insertText` reaches the pane.
+            interpretKeyEvents([event])
             return
         }
         session.send(
