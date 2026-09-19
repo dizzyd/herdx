@@ -54,6 +54,8 @@ struct Preferences {
     /// The herdr session to attach to, by name. Nil opens whichever one the
     /// core would pick on its own.
     var sessionName: String?
+    /// Whether an agent changing state makes a sound.
+    var agentSounds: Bool
     /// Sessions that attach the local server alone.
     ///
     /// Named rather than counted: a session is remembered by the name it is
@@ -77,6 +79,7 @@ struct Preferences {
         static let sidebarArrangement = "sidebarArrangement"
         static let sessionName = "sessionName"
         static let localOnlySessions = "localOnlySessions"
+        static let agentSounds = "agentSounds"
         static let themeName = "themeName"
         static let themeColors = "themeColors"
     }
@@ -120,6 +123,7 @@ struct Preferences {
                 lineHeight: defaults.object(forKey: Key.lineHeight) as? CGFloat ?? 1,
                 sidebarArrangement: defaults.string(forKey: Key.sidebarArrangement),
                 sessionName: defaults.string(forKey: Key.sessionName),
+                agentSounds: defaults.object(forKey: Key.agentSounds) as? Bool ?? true,
                 localOnlySessions: defaults.stringArray(forKey: Key.localOnlySessions) ?? [],
                 themeName: defaults.string(forKey: Key.themeName),
                 themeColors: defaults.stringArray(forKey: Key.themeColors))
@@ -137,6 +141,7 @@ struct Preferences {
             defaults.set(newValue.lineHeight, forKey: Key.lineHeight)
             defaults.set(newValue.sidebarArrangement, forKey: Key.sidebarArrangement)
             defaults.set(newValue.sessionName, forKey: Key.sessionName)
+            defaults.set(newValue.agentSounds, forKey: Key.agentSounds)
             defaults.set(newValue.localOnlySessions, forKey: Key.localOnlySessions)
             defaults.set(newValue.themeName, forKey: Key.themeName)
             defaults.set(newValue.themeColors, forKey: Key.themeColors)

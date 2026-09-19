@@ -102,6 +102,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     private let picker = Picker()
     private let themePicker = Picker()
     private let sessionMenu = NSMenu(title: "Session")
+    private let agentSounds = AgentSounds()
     private lazy var machinesWindow = MachinesWindowController(
         onChange: { [weak self] in self?.reattach() },
         onInstall: { [weak self] machine in self?.installHerdr(on: machine) })
@@ -449,6 +450,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
                 MainActor.assumeIsolated {
                     guard let self else { return }
                     self.preferences = updated
+                    self.agentSounds.isEnabled = updated.agentSounds
                     self.gridView.apply(
                         font: updated.font, lineHeight: updated.lineHeight)
                     self.applyTheme()
@@ -716,6 +718,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         }
 
         self.session = session
+        agentSounds.isEnabled = preferences.agentSounds
+        // A session torn down and stood up again arrives with every agent as it
+        // is now, which is first sight rather than a hundred state changes.
+        agentSounds.forget()
         gridView.session = session
         // Already active when the session arrives, which is the ordinary case:
         // the notification fired before there was anything to tell.
@@ -861,6 +867,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         gridView.paneLabels = Self.paneLabels(from: session.lastSnapshot)
 
         if snapshotsChanged {
+            // Every machine, not just the one on screen: an agent that needs
+            // you on another machine is the whole reason they are all attached.
+            for endpoint in session.endpoints {
+                guard let snapshot = endpoint.snapshot else { continue }
+                agentSounds.update(
+                    snapshot, endpoint: endpoint.index,
+                    focused: endpoint.index == session.activeEndpoint && NSApp.isActive)
+            }
             if let snapshot = session.lastSnapshot {
                 // The user's own bindings, including a prefix they may have
                 // changed. Until one arrives the resolver runs on herdr's

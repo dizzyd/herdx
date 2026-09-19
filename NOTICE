@@ -21,6 +21,15 @@ corresponding herdr module so that the vendored code compiles against them:
   platform.rs   one `cfg!()`-derived constant
   sound.rs      the `Sound` discriminant
 
+HerdX.app also ships two of herdr's assets unmodified, copied from the
+submodule by `scripts/bundle.sh`:
+
+  Contents/Resources/sounds/done.mp3
+  Contents/Resources/sounds/request.mp3
+
+They are herdr's notification sounds, played here on the same agent state
+changes that herdr's own client plays them on.
+
 The submodule is pinned; `herdr-protocol/src/lib.rs` records which herdr
 release, and `herdr-protocol/tests/protocol.rs` fails if upstream's
 definitions drift away from the stand-ins.

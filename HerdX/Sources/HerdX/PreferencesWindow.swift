@@ -20,6 +20,7 @@ final class PreferencesWindowController: NSWindowController {
     private let lineField = NSTextField()
     private let lineStepper = NSStepper()
     private let themeLabel = NSTextField(labelWithString: "")
+    private let soundsCheck = NSButton()
     private let matchButton = NSButton()
     private let matchNote = NSTextField(labelWithString: "")
     /// Colours another client attached to the same session is using, when there
@@ -192,6 +193,14 @@ final class PreferencesWindowController: NSWindowController {
         match.alignment = .leading
         match.spacing = 4
 
+        // herdr's own two sounds, played on the same state changes its client
+        // plays them on. The switch is HerdX's: herdr's `[ui.sound]` config is
+        // read by herdr's client, not published to this one.
+        soundsCheck.setButtonType(.switch)
+        soundsCheck.title = "Play a sound when an agent finishes or needs you"
+        soundsCheck.target = self
+        soundsCheck.action = #selector(soundsChanged)
+
         let grid = NSGridView(views: [
             [label("Font:"), font],
             [NSGridCell.emptyContentView, fontNote],
@@ -203,6 +212,7 @@ final class PreferencesWindowController: NSWindowController {
             [label("Pane padding:"), padding],
             [label("Pane label:"), labelSize],
             [label("Line height:"), lineHeight],
+            [label("Sounds:"), soundsCheck],
         ])
         grid.rowSpacing = 10
         grid.columnSpacing = 10
@@ -286,6 +296,7 @@ final class PreferencesWindowController: NSWindowController {
                 + "same session."
         }
 
+        soundsCheck.state = preferences.agentSounds ? .on : .off
         lineField.stringValue = String(format: "%.0f", preferences.lineHeight * 100)
         lineStepper.doubleValue = Double(preferences.lineHeight * 100)
     }
@@ -312,6 +323,11 @@ final class PreferencesWindowController: NSWindowController {
     /// does not apply to a terminal grid.
     @objc func validModesForFontPanel(_ panel: NSFontPanel) -> NSFontPanel.ModeMask {
         [.collection, .face, .size]
+    }
+
+    @objc private func soundsChanged() {
+        preferences.agentSounds = soundsCheck.state == .on
+        apply()
     }
 
     @objc private func lineHeightStepped() {

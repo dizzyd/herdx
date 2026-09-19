@@ -86,6 +86,15 @@ cp "$ROOT/LICENSE" "$ROOT/NOTICE" "$APP/Contents/Resources/"
 }
 cp "$ROOT/assets/HerdX.icns" "$APP/Contents/Resources/"
 
+# herdr's own notification audio, so both clients make the same noise for the
+# same thing. From the pinned submodule rather than a copy of a copy; see NOTICE.
+mkdir -p "$APP/Contents/Resources/sounds"
+for sound in done request; do
+  src="$ROOT/vendor/herdr/assets/sounds/$sound.mp3"
+  [ -f "$src" ] || { echo "missing $src; is the submodule checked out?" >&2; exit 1; }
+  cp "$src" "$APP/Contents/Resources/sounds/"
+done
+
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
