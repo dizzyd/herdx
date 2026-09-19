@@ -61,7 +61,12 @@ struct Chrome {
         case .working: return isDark ? Theme.rgb(102, 178, 242) : Theme.rgb(20, 110, 200)
         case .blocked: return isDark ? Theme.rgb(242, 166, 64) : Theme.rgb(186, 106, 10)
         case .done: return isDark ? Theme.rgb(115, 204, 128) : Theme.rgb(30, 140, 60)
-        case .idle, .unknown: return tertiary
+        // Finished, and you have looked at it. herdr paints this green as well,
+        // and the reason is worth keeping: an agent that is fine is not the
+        // same thing as no agent at all, which is what grey says. The ring
+        // rather than the disc is what keeps `done` the louder of the two.
+        case .idle: return isDark ? Theme.rgb(86, 152, 100) : Theme.rgb(52, 120, 70)
+        case .unknown: return tertiary
         }
     }
 
