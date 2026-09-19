@@ -164,6 +164,10 @@ final class TerminalGridView: NSView {
 
     /// Active copy mode, if any.
     var copyMode: CopyMode?
+    /// Numbers each copy-mode session, so a reply that arrives after the
+    /// session that asked for it has ended can be told apart from one that
+    /// belongs to the session now on screen.
+    var copyModeGeneration = 0
     /// Raised with the status text when copy mode starts, changes or ends.
     var onCopyModeChanged: ((String?) -> Void)?
     /// Raised to run a copy-mode request that needs a reply.
@@ -232,6 +236,15 @@ final class TerminalGridView: NSView {
         if let reported = reportedGridSize, reported == size { return }
         reportedGridSize = size
         onResize(size.cols, size.rows)
+    }
+
+    /// Sets the panes directly, with no surface to read them from.
+    ///
+    /// `refreshIfNeeded` is how this happens for real, out of the core's grid.
+    /// This is for the tests, which have no server on the other side to compose
+    /// one — named so that nothing mistakes it for the real path.
+    func setPanesForTesting(_ panes: [PaneView]) {
+        self.panes = panes
     }
 
     /// Tells the server the current size, whatever it last heard.

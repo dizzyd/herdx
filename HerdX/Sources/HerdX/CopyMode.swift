@@ -14,6 +14,14 @@ struct CopyMode {
         case search(forward: Bool, query: String)
     }
 
+    /// Tells one copy-mode session from the next.
+    ///
+    /// Motions and searches are answered by the server, and a reply can arrive
+    /// after copy mode has been left and entered again — on another pane, or on
+    /// another machine. From inside the callback the two are indistinguishable
+    /// by anything else: the pane id can repeat across servers, and the same
+    /// pane can be entered twice. So each entry gets a number nothing else has.
+    let generation: Int
     var paneID: String
     var contentRevision: UInt64
     var cursor: Selection.Point
@@ -27,6 +35,15 @@ struct CopyMode {
         guard let anchor else { return nil }
         return Selection(
             paneID: paneID, anchor: anchor, cursor: cursor)
+    }
+
+    /// Whether `other` is the session this one issued a request from.
+    ///
+    /// A reply that fails this belongs to a copy mode nobody is looking at any
+    /// more: applying it moves the cursor now on screen to a result found
+    /// somewhere else, or replaces its selection with one.
+    func isSameSession(as other: CopyMode) -> Bool {
+        generation == other.generation && paneID == other.paneID
     }
 
     /// What to show in the status strip.

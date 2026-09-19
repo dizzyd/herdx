@@ -6,7 +6,9 @@ extension TerminalGridView {
         guard let pane = panes.first(where: { $0.id == focusedPane }) ?? panes.first else {
             return
         }
+        copyModeGeneration += 1
         var mode = CopyMode(
+            generation: copyModeGeneration,
             paneID: pane.id,
             contentRevision: pane.contentRevision,
             cursor: Selection.Point(row: pane.viewportTopRow, column: 0))
@@ -175,12 +177,22 @@ extension TerminalGridView {
         exitCopyMode()
     }
 
+    /// The copy mode on screen, if it is still the one `issued` came from.
+    ///
+    /// Every reply goes through this. A reply that arrives after copy mode was
+    /// left and entered again belongs to nothing on screen, and applying it
+    /// moves the new session's cursor to a result found in the old one's pane.
+    private func session(matching issued: CopyMode) -> CopyMode? {
+        guard let mode = copyMode, mode.isSameSession(as: issued) else { return nil }
+        return mode
+    }
+
     private func runMotion(_ motion: CopyMode.Motion) {
-        guard let mode = copyMode else { return }
+        guard let issued = copyMode else { return }
         let id = "motion-\(UUID().uuidString)"
-        guard let request = mode.motionRequest(motion, id: id) else { return }
+        guard let request = issued.motionRequest(motion, id: id) else { return }
         onCopyModeRequest?(request, id) { [weak self] body in
-            guard let self, var mode = self.copyMode,
+            guard let self, var mode = self.session(matching: issued),
                 let point = Self.cursor(fromReply: body)
             else { return }
             mode.cursor = point
@@ -202,19 +214,23 @@ extension TerminalGridView {
             mode.contentRevision = pane.contentRevision
             copyMode = mode
         }
+        let issued = mode
         let id = "search-\(UUID().uuidString)"
         guard let request = mode.searchRequest(query: query, forward: forward, id: id) else {
             return
         }
         onCopyModeRequest?(request, id) { [weak self] body in
-            guard let self else { return }
+            // Checked before the retry as well as before the result: retrying
+            // a search for a copy mode nobody is in asks the server a question
+            // whose answer has nowhere to go.
+            guard let self, self.session(matching: issued) != nil else { return }
             if !retrying, Self.isStale(body) {
                 self.runSearch(query: query, forward: forward, retrying: true)
                 return
             }
-            guard var mode = self.copyMode, let match = Self.firstMatch(fromReply: body) else {
-                return
-            }
+            guard var mode = self.session(matching: issued),
+                let match = Self.firstMatch(fromReply: body)
+            else { return }
             mode.cursor = match.start
             mode.anchor = match.end
             mode.lastQuery = query
