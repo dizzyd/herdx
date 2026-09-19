@@ -159,11 +159,8 @@ final class TerminalGridView: NSView {
     /// One child view per pane, keyed by pane id.
     private var paneViews: [String: PaneContentView] = [:]
 
-    /// Decoded images, keyed by asset id.
-    ///
-    /// Decoding is far too expensive to redo per frame, and the server only
-    /// sends an asset's bytes once, so results are kept until the asset is gone.
-    private var imageCache: [UInt64: CGImage] = [:]
+    /// Decoded images for the machine currently being shown; see `ImageCache`.
+    var imageCache = ImageCache()
 
     /// Active copy mode, if any.
     var copyMode: CopyMode?
@@ -258,6 +255,7 @@ final class TerminalGridView: NSView {
         selection = nil
         copyMode = nil
         focusedPaneFromSnapshot = nil
+        imageCache.empty()
         paneViews.values.forEach { $0.removeFromSuperview() }
         paneViews.removeAll()
         needsDisplay = true
@@ -273,7 +271,7 @@ final class TerminalGridView: NSView {
         lastRevision = latest.revision
         panes = latest.panes
         recomputePaneBackgrounds()
-        pruneImageCache(keeping: latest.placements)
+        imageCache.prune(keeping: latest.placements)
         syncPaneViews()
         needsDisplay = true
     }
@@ -510,12 +508,6 @@ final class TerminalGridView: NSView {
     /// Done on every surface rather than while drawing, because a scene that
     /// has lost all its placements never draws and would otherwise hold its
     /// images for the life of the session.
-    private func pruneImageCache(keeping placements: [Placement]) {
-        guard !imageCache.isEmpty else { return }
-        let live = Set(placements.map(\.assetID))
-        imageCache = imageCache.filter { live.contains($0.key) }
-    }
-
     /// Draws the images the server placed in this pane.
     ///
     /// Placements come already clipped and in surface cell coordinates, and the

@@ -47,3 +47,32 @@ enum ImageDecoder {
             intent: .defaultIntent)
     }
 }
+
+/// Decoded images, held so they are not decoded again every frame.
+///
+/// An asset's bytes arrive once and decoding is far too expensive to repeat,
+/// so a result is kept until the scene stops placing it.
+///
+/// Belongs to one machine. The core allocates asset ids per endpoint, each
+/// starting at 1, so asset 1 on the machine you switch to is a different
+/// picture entirely — and pruning cannot notice, because that number is still
+/// live. Changing machines has to empty it.
+struct ImageCache {
+    private var images: [UInt64: CGImage] = [:]
+
+    var count: Int { images.count }
+
+    subscript(assetID: UInt64) -> CGImage? {
+        get { images[assetID] }
+        set { images[assetID] = newValue }
+    }
+
+    /// Drops anything the current scene no longer places.
+    mutating func prune(keeping placements: [Placement]) {
+        guard !images.isEmpty else { return }
+        let live = Set(placements.map(\.assetID))
+        images = images.filter { live.contains($0.key) }
+    }
+
+    mutating func empty() { images.removeAll() }
+}
