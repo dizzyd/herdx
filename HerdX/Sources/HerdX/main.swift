@@ -20,6 +20,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     private var lastConnectError: String?
     /// A title set by a program inside a pane, which outranks ours.
     private var serverTitle: String?
+    /// The session the window is attached to, for the title.
+    private var sessionTitle: String?
+    /// The branch of the focused workspace, when it has one.
+    private var branchTitle: String?
+    /// A transient line — reconnecting, waiting for a server — which replaces
+    /// the ordinary context until it clears.
+    private var statusTitle: String?
     /// Held so a theme change can recolour their dividers.
     private var windowSplit: ChromeSplitView?
     /// The width to restore the sidebar to when it is brought back.
@@ -179,7 +186,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         // and that inset shifted the terminal's dirty rect by exactly the title
         // bar's height so it never painted.
         window.titlebarAppearsTransparent = true
-        window.titleVisibility = .hidden
 
 
 
@@ -240,7 +246,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         if !connect() {
             // A server that is not running yet is not fatal: herdr sessions
             // outlive their clients, so wait for one instead of giving up.
-            window.subtitle = "waiting for herdr… (\(lastConnectError ?? "no server"))"
+            statusTitle = "waiting for herdr… (\(lastConnectError ?? "no server"))"
+            applyTitle()
             reconnect()
         }
 
@@ -337,14 +344,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         }
     }
 
+    /// The title says which session; the subtitle says what is inside it.
+    ///
+    /// One window is one herdr session, so that is the window-level fact and it
+    /// goes on the title line. A workspace, a branch, or a title a program set
+    /// describes what is on screen underneath — context, and read as such.
     private func applyTitle() {
-        if let serverTitle, !serverTitle.isEmpty {
-            window.title = serverTitle
-        } else if let workspaceTitle {
-            window.title = "HerdX — \(workspaceTitle)"
-        } else {
-            window.title = "HerdX"
+        window.title = sessionTitle ?? "HerdX"
+        if let statusTitle {
+            window.subtitle = statusTitle
+            return
         }
+        let inside = serverTitle?.isEmpty == false ? serverTitle : workspaceTitle
+        window.subtitle = [inside, branchTitle]
+            .compactMap { $0 }
+            .filter { !$0.isEmpty }
+            .joined(separator: "  ·  ")
     }
 
     private var systemIsDark: Bool {
@@ -443,17 +458,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         preferencesWindow?.window?.makeKeyAndOrderFront(nil)
     }
 
+    /// The session to attach to, and what to call it.
+    ///
+    /// Nothing chooses one yet, so this only puts a name to whatever the core
+    /// will connect to — which is the part the title needs.
+    private func resolvedSession() -> (name: String?, socket: String?) {
+        let socket = HerdrSession.defaultSocketPath
+        return (SessionCatalog.list().first { $0.clientSocket == socket }?.name, nil)
+    }
+
     /// Opens a session and hands it to the views. Returns false if no server.
     @discardableResult
     private func connect() -> Bool {
         let size = gridView.gridSize
         let cell = gridView.cellSize
+        let chosen = resolvedSession()
+        sessionTitle = chosen.name
         let session: HerdrSession
         do {
             session = try HerdrSession(
                 cols: size.cols, rows: size.rows,
                 cellWidth: Int(cell.width), cellHeight: Int(cell.height),
-                socketPath: nil)
+                socketPath: chosen.socket)
         } catch {
             lastConnectError = error.localizedDescription
             return false
@@ -488,7 +514,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
                 cellWidth: Int(self.gridView.cellSize.width),
                 cellHeight: Int(self.gridView.cellSize.height))
         }
-        window.subtitle = ""
+        statusTitle = nil
+        applyTitle()
         publishedTheme = nil
         publish(theme: preferences.terminalTheme(matching: systemIsDark), force: true)
         // The view is laid out by now, so tell the server the real size; the
@@ -508,8 +535,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         session = nil
         gridView.session = nil
         serverTitle = nil
+        statusTitle = "reconnecting…"
         applyTitle()
-        window.subtitle = "reconnecting…"
 
         // Back off so a server that is down does not get hammered, but stay
         // responsive enough that a restart feels instant.
@@ -618,7 +645,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
                 gridView.focusedPaneFromSnapshot = snapshot.focusedPaneID
                 if let focused = snapshot.workspaces.first(where: \.focused) {
                     workspaceTitle = focused.label
-                    window.subtitle = focused.branch ?? ""
+                    branchTitle = focused.branch
                 }
             }
             applyTitle()
@@ -1318,7 +1345,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         publishedTheme = nil
         knownMachines = nil
         if !connect() {
-            window.subtitle = "waiting for herdr… (\(lastConnectError ?? "no server"))"
+            statusTitle = "waiting for herdr… (\(lastConnectError ?? "no server"))"
             reconnect()
         }
         applyTitle()
