@@ -1345,7 +1345,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
                     (theme.background.isDarkish ? "dark" : "light") + "  ·  "
                         + (Preferences.encode(theme.background) ?? "")
                 } ?? "unreadable"
-            return Picker.Item(title: entry.name, detail: detail) {}
+            return Picker.Item(title: entry.name, detail: detail) { [weak self] in
+                guard let self, let theme else { return }
+                // Applied here as well as on highlight: what is on screen is a
+                // preview, and a preview is not what was chosen.
+                self.preview(theme: theme, named: entry.name)
+            }
         }
 
         themePicker.show(

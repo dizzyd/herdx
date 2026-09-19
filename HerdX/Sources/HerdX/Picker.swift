@@ -44,6 +44,11 @@ final class Picker: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     private let table = NSTableView()
     private var all: [Item] = []
     private var shown: [Item] = []
+    /// The row the highlight was last raised for.
+    ///
+    /// A selection change is reported twice when the code that moved the
+    /// highlight also announces it, and a theme preview repaints the window.
+    private var highlighted: Int?
 
     override init() {
         super.init()
@@ -89,6 +94,7 @@ final class Picker: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         // Reused between presentations, so whatever the last one was left
         // holding — a filter, a highlight, the previous list — has to go.
         search.stringValue = ""
+        highlighted = nil
         table.reloadData()
         if shown.isEmpty {
             table.deselectAll(nil)
@@ -202,7 +208,21 @@ final class Picker: NSObject, NSTableViewDataSource, NSTableViewDelegate {
                 $0.title.lowercased().contains(query) || $0.detail.lowercased().contains(query)
             }
         table.reloadData()
+        // Row 0 after filtering is a different item from row 0 before it, so
+        // the highlight has moved even where the index has not.
+        highlighted = nil
         if !shown.isEmpty { table.selectRowIndexes([0], byExtendingSelection: false) }
+        highlightChanged()
+    }
+
+    /// Clicking a row moves the highlight, and nothing else was telling anyone.
+    ///
+    /// Only the keyboard went through `move`, so a list whose entries are
+    /// previewed as they are highlighted showed the keyboard's idea of where
+    /// the highlight was — and double-clicking a row committed that instead of
+    /// the row under the pointer.
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        guard notification.object as AnyObject === table else { return }
         highlightChanged()
     }
 
@@ -212,12 +232,20 @@ final class Picker: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         let item = shown[row]
         chose = true
         close()
+        // After closing, so what a chooser puts on screen is not undone by the
+        // cancellation path — and explicitly, rather than trusting whatever a
+        // preview last left behind.
         item.choose()
     }
 
     private func highlightChanged() {
-        guard let onHighlight, shown.indices.contains(table.selectedRow) else { return }
-        onHighlight(shown[table.selectedRow])
+        guard shown.indices.contains(table.selectedRow) else {
+            highlighted = nil
+            return
+        }
+        guard table.selectedRow != highlighted else { return }
+        highlighted = table.selectedRow
+        onHighlight?(shown[table.selectedRow])
     }
 
     private func close() {

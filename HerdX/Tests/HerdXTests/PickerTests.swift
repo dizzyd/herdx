@@ -78,9 +78,78 @@ final class PickerTests: XCTestCase {
         dismiss(picker)
     }
 
+    func testReopeningHighlightsTheFirstRowOfTheNewList() {
+        let picker = Picker()
+        var highlighted: [String] = []
 
+        picker.show(
+            over: parent, title: "First", items: items(["a", "b", "c"]), as: .floating,
+            onHighlight: { highlighted.append($0.title) })
+        XCTAssertEqual(highlighted, ["a"])
+        dismiss(picker)
 
+        highlighted = []
+        picker.show(
+            over: parent, title: "Second", items: items(["x", "y"]), as: .floating,
+            onHighlight: { highlighted.append($0.title) })
 
+        XCTAssertEqual(
+            highlighted, ["x"],
+            "row 0 of a new list is a new item even though the index did not move")
+        dismiss(picker)
+    }
+
+    func testSelectingARowWithTheMouseRaisesTheHighlight() {
+        let picker = Picker()
+        var highlighted: [String] = []
+
+        picker.show(
+            over: parent, title: "Themes", items: items(["a", "b", "c"]), as: .floating,
+            onHighlight: { highlighted.append($0.title) })
+        XCTAssertEqual(highlighted, ["a"])
+
+        // What a click does: the table changes its own selection and tells its
+        // delegate. Nothing calls the picker's own move().
+        picker.list.selectRowIndexes([2], byExtendingSelection: false)
+
+        XCTAssertEqual(
+            highlighted, ["a", "c"],
+            "clicking a row moved the highlight and nobody was told")
+        dismiss(picker)
+    }
+
+    func testAHighlightIsNotRaisedTwiceForTheSameRow() {
+        let picker = Picker()
+        var highlighted: [String] = []
+
+        picker.show(
+            over: parent, title: "Themes", items: items(["a", "b"]), as: .floating,
+            onHighlight: { highlighted.append($0.title) })
+        picker.list.selectRowIndexes([1], byExtendingSelection: false)
+        picker.list.selectRowIndexes([1], byExtendingSelection: false)
+
+        XCTAssertEqual(highlighted, ["a", "b"], "each row previews once")
+        dismiss(picker)
+    }
+
+    func testChoosingARunsThatRowsOwnAction() {
+        let picker = Picker()
+        var chosen: [String] = []
+        var highlighted: [String] = []
+
+        picker.show(
+            over: parent, title: "Themes",
+            items: items(["a", "b", "c"], chose: { chosen.append($0) }), as: .floating,
+            onHighlight: { highlighted.append($0.title) })
+
+        // Double-clicking row 2: the table selects it, then sends its double
+        // action. The row that runs must be the one under the pointer.
+        picker.list.selectRowIndexes([2], byExtendingSelection: false)
+        picker.list.sendAction(picker.list.doubleAction, to: picker.list.target)
+
+        XCTAssertEqual(chosen, ["c"])
+        XCTAssertEqual(highlighted.last, "c")
+    }
 
     func testCancellingDoesNotRunAnyRowsAction() {
         let picker = Picker()
