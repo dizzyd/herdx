@@ -65,17 +65,26 @@ fn client_state_dir() -> PathBuf {
     state_dir().join("client")
 }
 
+/// The local server on its own.
+///
+/// A window does not have to carry the machines: a session made to be new has
+/// nothing to do with whatever another machine is running, and herdr's catalog
+/// is about which machines exist, not which ones every window must show.
+pub fn local() -> Endpoint {
+    Endpoint {
+        id: "local".into(),
+        label: "Local".into(),
+        kind: EndpointKind::Local,
+    }
+}
+
 /// Every endpoint to attach to: the local server first, then enabled machines.
 ///
 /// Disabled profiles are skipped rather than shown greyed out; herdr treats
 /// disabling as "do not connect", and a row that can never come online is just
 /// noise.
 pub fn discover() -> Vec<Endpoint> {
-    let mut endpoints = vec![Endpoint {
-        id: "local".into(),
-        label: "Local".into(),
-        kind: EndpointKind::Local,
-    }];
+    let mut endpoints = vec![local()];
 
     let path = client_state_dir().join("endpoints.json");
     let Ok(text) = std::fs::read_to_string(&path) else {

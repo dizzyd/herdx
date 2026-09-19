@@ -15,7 +15,7 @@ fn text(ptr: *mut std::ffi::c_char) -> String {
 
 fn main() {
     unsafe {
-        let session = hx_session_connect(100, 28, 8, 18, std::ptr::null());
+        let session = hx_session_connect(100, 28, 8, 18, std::ptr::null(), true);
         if session.is_null() {
             println!("connect failed: {}", text(hx_connect_error()));
             return;

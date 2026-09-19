@@ -480,6 +480,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         return (sessions.first { $0.clientSocket == socket }?.name, nil)
     }
 
+    /// Whether a session attaches the saved machines as well as the local
+    /// server.
+    ///
+    /// Yes by default: a machine in herdr's catalog is there to be attached,
+    /// and that is what every window did before there was a choice. A session
+    /// HerdX made is the exception, because pulling another machine's session
+    /// into a window made to be new is not what new means. An unknown session —
+    /// one the core picked for itself — keeps the default.
+    private func attachesMachines(_ name: String?) -> Bool {
+        guard let name else { return true }
+        return !preferences.localOnlySessions.contains(name)
+    }
+
+    /// Attaches or drops the saved machines for the session in the window.
+    @objc private func toggleMachines(_ sender: Any?) {
+        guard let name = sessionTitle else { return }
+        if attachesMachines(name) {
+            preferences.localOnlySessions.append(name)
+        } else {
+            preferences.localOnlySessions.removeAll { $0 == name }
+        }
+        Preferences.current = preferences
+        reattach()
+    }
+
     /// Attaches to another session.
     ///
     /// The socket is settled when the endpoints are spawned, so there is no
@@ -535,6 +560,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         guard SessionCatalog.start(name) else {
             alert("Could not start “\(name)”", "herdr would not run.")
             return
+        }
+        // A session made to be new starts local. The machines are a menu item
+        // away, and a window that arrives carrying another machine's session is
+        // not what anyone means by new.
+        if !preferences.localOnlySessions.contains(name) {
+            preferences.localOnlySessions.append(name)
+            Preferences.current = preferences
         }
         notice("starting \(name)…")
         waitForSession(named: name, until: Date().addingTimeInterval(10))
@@ -650,6 +682,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         stop.target = self
         stop.isEnabled = sessionTitle != nil
         menu.addItem(stop)
+
+        // Only worth offering where there is a machine to attach; with an empty
+        // catalog it is a switch with nothing on the other end.
+        if Machines.all().contains(where: \.enabled) {
+            menu.addItem(.separator())
+            let machines = NSMenuItem(
+                title: "Attach Machines", action: #selector(toggleMachines(_:)),
+                keyEquivalent: "")
+            machines.target = self
+            machines.state = attachesMachines(sessionTitle) ? .on : .off
+            machines.isEnabled = sessionTitle != nil
+            menu.addItem(machines)
+        }
     }
 
     /// Opens a session and hands it to the views. Returns false if no server.
@@ -664,7 +709,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
             session = try HerdrSession(
                 cols: size.cols, rows: size.rows,
                 cellWidth: Int(cell.width), cellHeight: Int(cell.height),
-                socketPath: chosen.socket)
+                socketPath: chosen.socket, machines: attachesMachines(chosen.name))
         } catch {
             lastConnectError = error.localizedDescription
             return false

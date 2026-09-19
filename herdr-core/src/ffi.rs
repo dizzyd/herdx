@@ -492,7 +492,8 @@ impl HxSession {
 /// whatever `hx_default_socket_path` would say, which is what honours
 /// `HERDR_SOCKET_PATH` and friends for a client that has not picked a session.
 /// A machine reached over ssh has its own session, named in herdr's catalog,
-/// and is unaffected.
+/// and is unaffected — `attach_machines` decides only whether it is attached at
+/// all, since a machine's session has nothing to do with the local one.
 ///
 /// # Safety
 /// The returned pointer must be released with `hx_session_free`.
@@ -503,6 +504,7 @@ pub unsafe extern "C" fn hx_session_connect(
     cell_width_px: u32,
     cell_height_px: u32,
     socket_path: *const c_char,
+    attach_machines: bool,
 ) -> *mut HxSession {
     let socket = match socket_path.as_ref() {
         None => default_socket_path(),
@@ -511,7 +513,11 @@ pub unsafe extern "C" fn hx_session_connect(
             _ => default_socket_path(),
         },
     };
-    let discovered = crate::endpoint::discover();
+    let discovered = if attach_machines {
+        crate::endpoint::discover()
+    } else {
+        vec![crate::endpoint::local()]
+    };
     let selection = crate::endpoint::saved_selection();
     let active = selection
         .and_then(|id| discovered.iter().position(|e| e.id == id))

@@ -99,15 +99,20 @@ final class HerdrSession {
 
     /// `socketPath` is the herdr session to attach to; nil takes the one the
     /// core would pick, which is what honours `HERDR_SOCKET_PATH`.
-    init(cols: Int, rows: Int, cellWidth: Int, cellHeight: Int, socketPath: String?) throws {
+    /// `machines` false attaches the local server alone.
+    init(
+        cols: Int, rows: Int, cellWidth: Int, cellHeight: Int, socketPath: String?,
+        machines: Bool
+    ) throws {
         if let socketPath {
             handle = socketPath.withCString {
                 hx_session_connect(
-                    UInt16(cols), UInt16(rows), UInt32(cellWidth), UInt32(cellHeight), $0)
+                    UInt16(cols), UInt16(rows), UInt32(cellWidth), UInt32(cellHeight), $0,
+                    machines)
             }
         } else {
             handle = hx_session_connect(
-                UInt16(cols), UInt16(rows), UInt32(cellWidth), UInt32(cellHeight), nil)
+                UInt16(cols), UInt16(rows), UInt32(cellWidth), UInt32(cellHeight), nil, machines)
         }
         guard handle != nil else {
             throw ConnectError.failed(Self.take(hx_connect_error()) ?? "could not reach herdr")

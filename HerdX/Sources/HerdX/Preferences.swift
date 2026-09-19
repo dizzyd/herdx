@@ -54,6 +54,13 @@ struct Preferences {
     /// The herdr session to attach to, by name. Nil opens whichever one the
     /// core would pick on its own.
     var sessionName: String?
+    /// Sessions that attach the local server alone.
+    ///
+    /// Named rather than counted: a session is remembered by the name it is
+    /// listed under, so the choice survives being switched away from and
+    /// relaunched into. Everything not in here attaches the saved machines,
+    /// which is what a machine in herdr's catalog is for.
+    var localOnlySessions: [String]
     var themeName: String?
     var themeColors: [String]?
 
@@ -69,6 +76,7 @@ struct Preferences {
         static let lineHeight = "lineHeight"
         static let sidebarArrangement = "sidebarArrangement"
         static let sessionName = "sessionName"
+        static let localOnlySessions = "localOnlySessions"
         static let themeName = "themeName"
         static let themeColors = "themeColors"
     }
@@ -112,6 +120,7 @@ struct Preferences {
                 lineHeight: defaults.object(forKey: Key.lineHeight) as? CGFloat ?? 1,
                 sidebarArrangement: defaults.string(forKey: Key.sidebarArrangement),
                 sessionName: defaults.string(forKey: Key.sessionName),
+                localOnlySessions: defaults.stringArray(forKey: Key.localOnlySessions) ?? [],
                 themeName: defaults.string(forKey: Key.themeName),
                 themeColors: defaults.stringArray(forKey: Key.themeColors))
         }
@@ -128,6 +137,7 @@ struct Preferences {
             defaults.set(newValue.lineHeight, forKey: Key.lineHeight)
             defaults.set(newValue.sidebarArrangement, forKey: Key.sidebarArrangement)
             defaults.set(newValue.sessionName, forKey: Key.sessionName)
+            defaults.set(newValue.localOnlySessions, forKey: Key.localOnlySessions)
             defaults.set(newValue.themeName, forKey: Key.themeName)
             defaults.set(newValue.themeColors, forKey: Key.themeColors)
         }

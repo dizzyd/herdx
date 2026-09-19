@@ -97,8 +97,10 @@ typedef struct {
 #define HX_MOD_SUPER 8
 
 /// `socket_path` picks the herdr session; NULL means the default one.
+/// `attach_machines` false attaches the local server alone.
 HxSession *hx_session_connect(uint16_t cols, uint16_t rows, uint32_t cell_width_px,
-                              uint32_t cell_height_px, const char *socket_path);
+                              uint32_t cell_height_px, const char *socket_path,
+                              bool attach_machines);
 
 /// The client socket a NULL `socket_path` would use. Caller frees.
 char *hx_default_socket_path(void);
