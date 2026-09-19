@@ -6,9 +6,9 @@ import Foundation
 /// agree about what is most urgent:
 ///
 ///     blocked           4
-///     idle, unseen      3
+///     finished, unseen  3
 ///     working           2
-///     idle, seen        1
+///     idle              1
 ///     unknown           0
 ///
 /// Ties go to whichever changed state most recently, so the thing that just
@@ -151,11 +151,20 @@ struct AgentPriority: Equatable {
     }
 
     /// herdr's attention ranking.
+    ///
+    /// Ranked on the status that is drawn, not the one on the wire. These
+    /// disagree, and taking the wire's word for it put every agent this client
+    /// had never focused into the "finished, unseen" rank — so after a relaunch
+    /// a machine's whole history of finished agents sorted *above* the one
+    /// actually working. `displayStatus` already knows the difference between a
+    /// finish that happened while you were away and one that was over before
+    /// the app started.
     func rank(_ agent: Snapshot.Agent, on endpoint: Int) -> Int {
-        switch agent.agentStatus {
+        switch displayStatus(agent, on: endpoint) {
         case .blocked: return 4
+        case .done: return 3
         case .working: return 2
-        case .idle, .done: return hasSeen(agent, on: endpoint) ? 1 : 3
+        case .idle: return 1
         case .unknown: return 0
         }
     }
@@ -177,12 +186,17 @@ struct AgentPriority: Equatable {
     }
 
     /// What a row says about why it is where it is.
+    ///
+    /// From the drawn status, like the dot it sits beside. Read off the wire it
+    /// said "waiting" next to a plain idle dot, for every agent this client had
+    /// simply never focused — which is the same disagreement `displayStatus`
+    /// exists to settle.
     func reason(_ agent: Snapshot.Agent, on endpoint: Int) -> String {
-        switch agent.agentStatus {
+        switch displayStatus(agent, on: endpoint) {
         case .blocked: return "needs you"
         case .working: return "working"
-        case .done: return hasSeen(agent, on: endpoint) ? "done" : "finished"
-        case .idle: return hasSeen(agent, on: endpoint) ? "idle" : "waiting"
+        case .done: return "finished"
+        case .idle: return "idle"
         case .unknown: return ""
         }
     }
