@@ -6,7 +6,7 @@
 //! same generation-1 protocol.
 
 use std::io::{self, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
 /// A machine the client can attach to.
@@ -25,7 +25,7 @@ pub enum EndpointKind {
 }
 
 /// A saved SSH machine, as herdr's client catalog stores it.
-#[derive(serde::Deserialize, serde::Serialize)]
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct SavedSshEndpoint {
     id: String,
     label: String,
@@ -35,7 +35,7 @@ struct SavedSshEndpoint {
     enabled: bool,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(Debug, serde::Deserialize)]
 struct Catalog {
     #[serde(default)]
     ssh: Vec<SavedSshEndpoint>,
@@ -123,7 +123,7 @@ pub fn saved_selection() -> Option<String> {
 }
 
 /// Every saved machine, enabled or not.
-#[derive(serde::Serialize)]
+#[derive(Debug, serde::Serialize)]
 pub struct Machine {
     pub id: String,
     pub label: String,
@@ -132,8 +132,12 @@ pub struct Machine {
     pub enabled: bool,
 }
 
-pub fn machines() -> Vec<Machine> {
-    load_catalog()
+pub fn machines() -> Result<Vec<Machine>, String> {
+    machines_in(&client_state_dir())
+}
+
+fn machines_in(directory: &Path) -> Result<Vec<Machine>, String> {
+    Ok(load_catalog_in(directory)?
         .ssh
         .into_iter()
         .map(|entry| Machine {
@@ -143,7 +147,7 @@ pub fn machines() -> Vec<Machine> {
             session: entry.session,
             enabled: entry.enabled,
         })
-        .collect()
+        .collect())
 }
 
 /// Adds or replaces an SSH machine in the catalog herdr shares.
@@ -153,6 +157,17 @@ pub fn machines() -> Vec<Machine> {
 /// makes herdr reject the whole file. So this writes exactly that shape, and
 /// applies herdr's own limits rather than inventing its own.
 pub fn save_machine(
+    id: Option<&str>,
+    label: &str,
+    target: &str,
+    session: &str,
+    enabled: bool,
+) -> Result<String, String> {
+    save_machine_in(&client_state_dir(), id, label, target, session, enabled)
+}
+
+fn save_machine_in(
+    directory: &Path,
     id: Option<&str>,
     label: &str,
     target: &str,
@@ -189,7 +204,7 @@ pub fn save_machine(
         return Err("SSH target must not contain a password".into());
     }
 
-    let mut catalog = load_catalog();
+    let mut catalog = load_catalog_in(directory)?;
     let id = match id {
         Some(existing) => existing.to_owned(),
         None => new_profile_id(),
@@ -212,31 +227,49 @@ pub fn save_machine(
             catalog.ssh.push(entry);
         }
     }
-    write_catalog(&catalog)?;
+    write_catalog_in(directory, &catalog)?;
     Ok(id)
 }
 
 /// Removes a machine. Missing is not an error: the catalog is shared, and
 /// something else may have removed it already.
 pub fn remove_machine(id: &str) -> Result<(), String> {
-    let mut catalog = load_catalog();
-    catalog.ssh.retain(|entry| entry.id != id);
-    write_catalog(&catalog)
+    remove_machine_in(&client_state_dir(), id)
 }
 
-fn load_catalog() -> Catalog {
-    std::fs::read_to_string(client_state_dir().join("endpoints.json"))
-        .ok()
-        .and_then(|text| serde_json::from_str::<Catalog>(&text).ok())
-        .unwrap_or(Catalog {
-            ssh: Vec::new(),
-            selected_profile: None,
-        })
+fn remove_machine_in(directory: &Path, id: &str) -> Result<(), String> {
+    let mut catalog = load_catalog_in(directory)?;
+    catalog.ssh.retain(|entry| entry.id != id);
+    write_catalog_in(directory, &catalog)
+}
+
+/// Reads the catalog, distinguishing "there isn't one yet" from "it could not
+/// be read".
+///
+/// Only a missing file is an empty catalog. Treating an unreadable or malformed
+/// one as empty too is what made a save destroy it: every caller here writes
+/// the catalog back, so a parse error silently became "delete every machine the
+/// user had". A failure has to reach the person instead, with the file still on
+/// disk to recover from.
+fn load_catalog_in(directory: &Path) -> Result<Catalog, String> {
+    let path = directory.join("endpoints.json");
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(Catalog {
+                ssh: Vec::new(),
+                selected_profile: None,
+            })
+        }
+        Err(error) => return Err(format!("cannot read {}: {error}", path.display())),
+    };
+    serde_json::from_str::<Catalog>(&text)
+        .map_err(|error| format!("{} is not a catalog herdr wrote: {error}", path.display()))
 }
 
 /// Writes through a temporary file, as herdr does: a catalog half-written
 /// because something died mid-save is one herdr will refuse to load at all.
-fn write_catalog(catalog: &Catalog) -> Result<(), String> {
+fn write_catalog_in(directory: &Path, catalog: &Catalog) -> Result<(), String> {
     #[derive(serde::Serialize)]
     struct Out<'a> {
         version: u32,
@@ -245,8 +278,7 @@ fn write_catalog(catalog: &Catalog) -> Result<(), String> {
         ssh: &'a [SavedSshEndpoint],
     }
 
-    let directory = client_state_dir();
-    std::fs::create_dir_all(&directory).map_err(|e| format!("cannot create state dir: {e}"))?;
+    std::fs::create_dir_all(directory).map_err(|e| format!("cannot create state dir: {e}"))?;
 
     let text = serde_json::to_string_pretty(&Out {
         version: 1,
@@ -468,5 +500,151 @@ impl Write for WriteHalf {
             Self::Local(stream) => stream.flush(),
             Self::Ssh { stdin, .. } => stdin.flush(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A directory of its own per test, removed when the test ends.
+    ///
+    /// The catalog helpers take the directory rather than reading
+    /// `XDG_STATE_HOME`, so these tests never touch the developer's real
+    /// catalog and can run in parallel with each other.
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(name: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "herdx-endpoint-{name}-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).expect("temp dir");
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+
+        fn catalog(&self) -> PathBuf {
+            self.0.join("endpoints.json")
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn missing_catalog_reads_as_empty() {
+        let dir = TempDir::new("missing");
+        let catalog = load_catalog_in(dir.path()).expect("a missing catalog is simply empty");
+        assert!(catalog.ssh.is_empty());
+        assert_eq!(catalog.selected_profile, None);
+    }
+
+    #[test]
+    fn malformed_catalog_is_an_error_not_an_empty_one() {
+        let dir = TempDir::new("malformed");
+        std::fs::write(dir.catalog(), "{ this is not json").unwrap();
+
+        let error = load_catalog_in(dir.path()).expect_err("malformed JSON must not read as empty");
+        assert!(error.contains("endpoints.json"), "{error}");
+    }
+
+    #[test]
+    fn saving_over_a_malformed_catalog_leaves_the_file_alone() {
+        let dir = TempDir::new("save-malformed");
+        let original = "{ \"ssh\": [ truncated";
+        std::fs::write(dir.catalog(), original).unwrap();
+
+        let error = save_machine_in(dir.path(), None, "Box", "user@host", "default", true)
+            .expect_err("a save must not proceed over a catalog it could not read");
+        assert!(error.contains("endpoints.json"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(dir.catalog()).unwrap(),
+            original,
+            "the unreadable catalog is what the user has to recover from"
+        );
+    }
+
+    #[test]
+    fn removing_over_a_malformed_catalog_leaves_the_file_alone() {
+        let dir = TempDir::new("remove-malformed");
+        let original = "not json at all";
+        std::fs::write(dir.catalog(), original).unwrap();
+
+        save_machine_in(dir.path(), Some("abc"), "Box", "user@host", "default", true).unwrap_err();
+        let error = remove_machine_in(dir.path(), "abc")
+            .expect_err("a remove must not proceed over a catalog it could not read");
+        assert!(error.contains("endpoints.json"), "{error}");
+        assert_eq!(std::fs::read_to_string(dir.catalog()).unwrap(), original);
+    }
+
+    #[test]
+    fn listing_an_unreadable_catalog_reports_the_failure() {
+        let dir = TempDir::new("list-malformed");
+        std::fs::write(dir.catalog(), r#"{ "ssh": "not a list" }"#).unwrap();
+
+        machines_in(dir.path()).expect_err("a catalog that will not parse is not no machines");
+    }
+
+    #[test]
+    fn saving_preserves_existing_entries_and_herdrs_selection() {
+        let dir = TempDir::new("preserve");
+        std::fs::write(
+            dir.catalog(),
+            r#"{
+              "version": 1,
+              "selected_profile": "00112233445566778899aabbccddeeff",
+              "ssh": [
+                {
+                  "id": "00112233445566778899aabbccddeeff",
+                  "label": "First",
+                  "target": "user@first",
+                  "session": "default",
+                  "enabled": true
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+
+        save_machine_in(dir.path(), None, "Second", "user@second", "work", true).unwrap();
+
+        let saved = machines_in(dir.path()).unwrap();
+        assert_eq!(saved.len(), 2);
+        assert_eq!(saved[0].label, "First");
+        assert_eq!(saved[1].label, "Second");
+        assert_eq!(saved[1].session, "work");
+
+        let written = load_catalog_in(dir.path()).unwrap();
+        assert_eq!(
+            written.selected_profile.as_deref(),
+            Some("00112233445566778899aabbccddeeff"),
+            "herdr's selection is its own and must survive our rewrite"
+        );
+    }
+
+    #[test]
+    fn a_saved_machine_round_trips_through_the_catalog() {
+        let dir = TempDir::new("round-trip");
+
+        let id = save_machine_in(dir.path(), None, "Box", "user@host", "", true).unwrap();
+        assert_eq!(id.len(), 32);
+
+        let saved = machines_in(dir.path()).unwrap();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].id, id);
+        assert_eq!(saved[0].session, "default", "an empty session means default");
+
+        remove_machine_in(dir.path(), &id).unwrap();
+        assert!(machines_in(dir.path()).unwrap().is_empty());
     }
 }

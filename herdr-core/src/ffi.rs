@@ -2233,7 +2233,16 @@ fn LAST_MACHINE_ERROR() -> &'static Mutex<Option<String>> {
 /// The returned pointer must be released with `hx_string_free`.
 #[no_mangle]
 pub unsafe extern "C" fn hx_machines_json() -> *mut c_char {
-    let machines = crate::endpoint::machines();
+    // A catalog that cannot be read is reported rather than shown as no
+    // machines: an empty list invites adding one, and adding one is what would
+    // overwrite the file still holding them.
+    let machines = match crate::endpoint::machines() {
+        Ok(machines) => machines,
+        Err(reason) => {
+            *LAST_MACHINE_ERROR().lock().unwrap() = Some(reason);
+            return std::ptr::null_mut();
+        }
+    };
     match serde_json::to_string(&machines) {
         Ok(text) => string_or_null(Some(text)),
         Err(_) => std::ptr::null_mut(),
