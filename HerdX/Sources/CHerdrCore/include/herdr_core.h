@@ -96,8 +96,12 @@ typedef struct {
 #define HX_MOD_ALT 4
 #define HX_MOD_SUPER 8
 
+/// `socket_path` picks the herdr session; NULL means the default one.
 HxSession *hx_session_connect(uint16_t cols, uint16_t rows, uint32_t cell_width_px,
-                              uint32_t cell_height_px);
+                              uint32_t cell_height_px, const char *socket_path);
+
+/// The client socket a NULL `socket_path` would use. Caller frees.
+char *hx_default_socket_path(void);
 void hx_session_free(HxSession *session);
 bool hx_session_connected(const HxSession *session);
 

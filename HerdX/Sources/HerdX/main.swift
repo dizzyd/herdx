@@ -452,7 +452,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         do {
             session = try HerdrSession(
                 cols: size.cols, rows: size.rows,
-                cellWidth: Int(cell.width), cellHeight: Int(cell.height))
+                cellWidth: Int(cell.width), cellHeight: Int(cell.height),
+                socketPath: nil)
         } catch {
             lastConnectError = error.localizedDescription
             return false

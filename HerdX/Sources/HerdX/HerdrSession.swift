@@ -97,13 +97,25 @@ final class HerdrSession {
         }
     }
 
-    init(cols: Int, rows: Int, cellWidth: Int, cellHeight: Int) throws {
-        handle = hx_session_connect(
-            UInt16(cols), UInt16(rows), UInt32(cellWidth), UInt32(cellHeight))
+    /// `socketPath` is the herdr session to attach to; nil takes the one the
+    /// core would pick, which is what honours `HERDR_SOCKET_PATH`.
+    init(cols: Int, rows: Int, cellWidth: Int, cellHeight: Int, socketPath: String?) throws {
+        if let socketPath {
+            handle = socketPath.withCString {
+                hx_session_connect(
+                    UInt16(cols), UInt16(rows), UInt32(cellWidth), UInt32(cellHeight), $0)
+            }
+        } else {
+            handle = hx_session_connect(
+                UInt16(cols), UInt16(rows), UInt32(cellWidth), UInt32(cellHeight), nil)
+        }
         guard handle != nil else {
             throw ConnectError.failed(Self.take(hx_connect_error()) ?? "could not reach herdr")
         }
     }
+
+    /// The socket a session with no `socketPath` connects to.
+    static var defaultSocketPath: String? { take(hx_default_socket_path()) }
 
     deinit {
         if let handle { hx_session_free(handle) }

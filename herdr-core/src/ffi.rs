@@ -487,6 +487,13 @@ impl HxSession {
 /// Reaching a machine over ssh can take seconds, and the window should be up
 /// and showing local work long before that resolves.
 ///
+/// `socket_path` is the local server's client socket — a herdr session is a
+/// socket and nothing more, so choosing one is choosing this path. Null means
+/// whatever `hx_default_socket_path` would say, which is what honours
+/// `HERDR_SOCKET_PATH` and friends for a client that has not picked a session.
+/// A machine reached over ssh has its own session, named in herdr's catalog,
+/// and is unaffected.
+///
 /// # Safety
 /// The returned pointer must be released with `hx_session_free`.
 #[no_mangle]
@@ -495,7 +502,15 @@ pub unsafe extern "C" fn hx_session_connect(
     rows: u16,
     cell_width_px: u32,
     cell_height_px: u32,
+    socket_path: *const c_char,
 ) -> *mut HxSession {
+    let socket = match socket_path.as_ref() {
+        None => default_socket_path(),
+        Some(path) => match CStr::from_ptr(path).to_str() {
+            Ok(path) if !path.is_empty() => std::path::PathBuf::from(path),
+            _ => default_socket_path(),
+        },
+    };
     let discovered = crate::endpoint::discover();
     let selection = crate::endpoint::saved_selection();
     let active = selection
@@ -513,6 +528,7 @@ pub unsafe extern "C" fn hx_session_connect(
                 cell_width_px,
                 cell_height_px,
             },
+            socket.clone(),
         ));
     }
 
@@ -545,6 +561,7 @@ fn spawn_endpoint(
     endpoint: crate::endpoint::Endpoint,
     surface_active: bool,
     geometry: Geometry,
+    socket: std::path::PathBuf,
 ) -> EndpointState {
     let shared = Arc::new(Shared {
         grid: Mutex::new(Grid::default()),
@@ -589,7 +606,6 @@ fn spawn_endpoint(
     let thread_endpoint = endpoint.clone();
     let thread_outbound = tx.clone();
     std::thread::spawn(move || {
-        let socket = default_socket_path();
         let mut backoff = std::time::Duration::from_millis(250);
 
         loop {
@@ -1026,6 +1042,19 @@ pub unsafe extern "C" fn hx_next_endpoint_event(
             .and_then(|s| s.endpoints.get(index))
             .and_then(|e| e.shared.events.lock().unwrap().pop_front()),
     )
+}
+
+/// The client socket a null `socket_path` would connect to.
+///
+/// The app needs this to say which session it is in: the answer depends on
+/// `HERDR_SOCKET_PATH`, `HERDR_CLIENT_SOCKET_PATH` and the config directory,
+/// and a second implementation of that order in Swift would be a second thing
+/// to get wrong. Caller frees with `hx_string_free`.
+#[no_mangle]
+pub extern "C" fn hx_default_socket_path() -> *mut c_char {
+    string_or_null(Some(
+        default_socket_path().to_string_lossy().into_owned(),
+    ))
 }
 
 fn string_or_null(value: Option<String>) -> *mut c_char {
