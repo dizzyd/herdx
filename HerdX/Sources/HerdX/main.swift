@@ -487,9 +487,90 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     /// adding a machine does.
     @objc private func switchSession(_ sender: NSMenuItem) {
         guard let name = sender.representedObject as? String, name != sessionTitle else { return }
+        adopt(session: name)
+    }
+
+    private func adopt(session name: String) {
         preferences.sessionName = name
         Preferences.current = preferences
         reattach()
+    }
+
+    /// Asks for a name and starts a session under it.
+    @objc private func newSession(_ sender: Any?) {
+        prompt.ask(
+            over: window, title: "New herdr session", value: "", placeholder: "name"
+        ) { [weak self] name in
+            self?.createSession(named: name.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+    }
+
+    /// Starts a session and moves the window to it.
+    ///
+    /// herdr has no "create": a session exists as soon as something names one,
+    /// so a name never used before and a session that has been stopped are the
+    /// same command. The server takes a moment to start listening, and until it
+    /// does there is nothing to attach to — so this waits for herdr to call it
+    /// running rather than connecting and hoping.
+    private func createSession(named name: String) {
+        guard !name.isEmpty else { return }
+        // A session lives in a directory named after it, so a name carrying a
+        // separator would be a path rather than a name.
+        guard !name.contains("/"), !name.hasPrefix(".") else {
+            alert(
+                "“\(name)” is not a session name",
+                "herdr keeps each session in a directory named after it, so the name "
+                    + "cannot contain “/” or start with a dot.")
+            return
+        }
+        if SessionCatalog.list().first(where: { $0.name == name })?.running == true {
+            // Already up: going there is what was meant.
+            adopt(session: name)
+            return
+        }
+        guard LocalHerdr.binaryPath() != nil else {
+            alert("herdr is not installed", LocalHerdr.installCommand)
+            return
+        }
+        guard SessionCatalog.start(name) else {
+            alert("Could not start “\(name)”", "herdr would not run.")
+            return
+        }
+        notice("starting \(name)…")
+        waitForSession(named: name, until: Date().addingTimeInterval(10))
+    }
+
+    /// Polls herdr until the new session is running, then moves to it.
+    private func waitForSession(named name: String, until deadline: Date) {
+        guard SessionCatalog.list().first(where: { $0.name == name })?.running != true else {
+            // A server comes up with nothing in it, and a window attached to an
+            // empty session has nothing to show. herdr decides where the first
+            // workspace starts; it is not ours to choose.
+            if SessionCatalog.workspaceCount(name) == 0 {
+                SessionCatalog.createWorkspace(in: name)
+            }
+            adopt(session: name)
+            return
+        }
+        guard Date() < deadline else {
+            alert(
+                "“\(name)” did not start",
+                "The server was launched but is not listening. `herdr session list` will "
+                    + "say whether it came up.")
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            MainActor.assumeIsolated {
+                self?.waitForSession(named: name, until: deadline)
+            }
+        }
+    }
+
+    private func alert(_ message: String, _ detail: String) {
+        let alert = NSAlert()
+        alert.messageText = message
+        alert.informativeText = detail
+        alert.runModal()
     }
 
     /// Fills the Session menu from herdr each time it is opened.
@@ -501,11 +582,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         guard menu === sessionMenu else { return }
         menu.removeAllItems()
         let sessions = SessionCatalog.list()
-        guard !sessions.isEmpty else {
+        if sessions.isEmpty {
             let empty = NSMenuItem(title: "No herdr sessions", action: nil, keyEquivalent: "")
             empty.isEnabled = false
             menu.addItem(empty)
-            return
         }
         for entry in sessions {
             let item = NSMenuItem(
@@ -519,6 +599,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
             item.isEnabled = entry.running
             menu.addItem(item)
         }
+        menu.addItem(.separator())
+        let new = NSMenuItem(
+            title: "New Session…", action: #selector(newSession(_:)), keyEquivalent: "")
+        new.target = self
+        menu.addItem(new)
     }
 
     /// Opens a session and hands it to the views. Returns false if no server.
