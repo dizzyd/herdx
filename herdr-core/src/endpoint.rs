@@ -194,6 +194,11 @@ fn save_machine_in(
     if target.len() > 1024 || target.chars().any(char::is_control) {
         return Err("SSH target is too long".into());
     }
+    // herdr reads this target back as a command-line argument, so one starting
+    // with a dash would be taken for a flag.
+    if target.starts_with('-') {
+        return Err("SSH target must not start with '-'".into());
+    }
     // herdr refuses a target carrying a password, and so should the thing
     // writing its file.
     let authority = target.strip_prefix("ssh://").unwrap_or(target);
@@ -203,6 +208,7 @@ fn save_machine_in(
     {
         return Err("SSH target must not contain a password".into());
     }
+    validate_session_name(session)?;
 
     let mut catalog = load_catalog_in(directory)?;
     let id = match id {
@@ -229,6 +235,37 @@ fn save_machine_in(
     }
     write_catalog_in(directory, &catalog)?;
     Ok(id)
+}
+
+/// herdr's rules for a session name, from `session::validate_name`.
+///
+/// These belong here rather than at the window: herdr validates every entry
+/// when it loads the catalog, and rejects the whole file if one fails. A typo
+/// in a session name is therefore not one broken machine — it is every machine
+/// the user has, gone from herdr until the file is edited by hand.
+fn validate_session_name(name: &str) -> Result<(), String> {
+    const MAX_SESSION_NAME_LEN: usize = 64;
+
+    if name.is_empty() {
+        return Err("Session name cannot be empty".into());
+    }
+    if name.len() > MAX_SESSION_NAME_LEN {
+        return Err(format!(
+            "Session name cannot be longer than {MAX_SESSION_NAME_LEN} bytes"
+        ));
+    }
+    if name == "." || name == ".." {
+        return Err("Session name cannot be . or ..".into());
+    }
+    if !name
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return Err(
+            "Session name may only contain ASCII letters, numbers, '.', '_' and '-'".into(),
+        );
+    }
+    Ok(())
 }
 
 /// Removes a machine. Missing is not an error: the catalog is shared, and
@@ -630,6 +667,58 @@ mod tests {
             Some("00112233445566778899aabbccddeeff"),
             "herdr's selection is its own and must survive our rewrite"
         );
+    }
+
+    #[test]
+    fn a_session_name_herdr_would_refuse_is_refused_here() {
+        let dir = TempDir::new("session-names");
+
+        for bad in ["bad/session", "with space", "..", ".", "tab\there", &"x".repeat(65)] {
+            let error = save_machine_in(dir.path(), None, "Box", "user@host", bad, true)
+                .expect_err(&format!("{bad:?} is a name herdr refuses"));
+            assert!(
+                error.to_lowercase().contains("session name"),
+                "{bad:?} was refused for the wrong reason: {error}"
+            );
+        }
+
+        for good in ["default", "hxtest", "work-1", "a.b_c", &"x".repeat(64)] {
+            save_machine_in(dir.path(), Some("id-for-good"), "Box", "user@host", good, true)
+                .unwrap_or_else(|error| panic!("{good:?} is a name herdr accepts: {error}"));
+        }
+    }
+
+    #[test]
+    fn a_target_starting_with_a_dash_is_refused() {
+        let dir = TempDir::new("dash-target");
+
+        let error = save_machine_in(dir.path(), None, "Box", "-V", "default", true)
+            .expect_err("herdr reads the target back as an argument");
+        assert!(error.contains("must not start with '-'"), "{error}");
+
+        assert!(
+            machines_in(dir.path()).unwrap().is_empty(),
+            "a refused machine must not reach the catalog"
+        );
+    }
+
+    #[test]
+    fn an_empty_session_still_becomes_default() {
+        let dir = TempDir::new("empty-session");
+
+        // The empty string fails herdr's rules, but it never reaches them:
+        // blank means "the default session", which is what gets validated.
+        let id = save_machine_in(dir.path(), None, "Box", "user@host", "   ", true).unwrap();
+        assert_eq!(machines_in(dir.path()).unwrap()[0].session, "default");
+        assert_eq!(machines_in(dir.path()).unwrap()[0].id, id);
+    }
+
+    #[test]
+    fn a_target_carrying_a_password_is_still_refused() {
+        let dir = TempDir::new("password");
+
+        save_machine_in(dir.path(), None, "Box", "ssh://user:secret@host", "default", true)
+            .expect_err("herdr refuses a target carrying a password");
     }
 
     #[test]
