@@ -134,8 +134,18 @@ final class ChordResolver {
             return (nil, true)
         }
 
-        // ⌘ chords are declared in the menu, so AppKit dispatches them before
-        // the view ever sees a keyDown. Nothing to do here.
+        // A binding the profile writes without the prefix — `new_tab =
+        // "alt+t"` — fires on its own, as it does in herdr. Nothing looked for
+        // one, so those keys went to the pane as though they were unbound.
+        //
+        // One of these wins over a menu item carrying the same chord: the
+        // keymap belongs to the user, and the menu is ours.
+        if let direct = keymap.action(forDirect: event) {
+            return (direct, true)
+        }
+
+        // Everything else is the pane's. ⌘ chords that are only in the menu
+        // are dispatched by AppKit, and there is nothing to do for them here.
         return (nil, false)
     }
 }
