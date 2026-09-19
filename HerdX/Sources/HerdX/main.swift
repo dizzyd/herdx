@@ -6,7 +6,8 @@ import AppKit
 /// structured description of the workspace tree, so this app is a renderer and
 /// an input source, not a terminal emulator.
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSplitViewDelegate
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSplitViewDelegate,
+    NSMenuDelegate
 {
     private var window: NSWindow!
     private var gridView: TerminalGridView!
@@ -100,8 +101,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     private let prompt = Prompt()
     private let picker = Picker()
     private let themePicker = Picker()
+    private let sessionMenu = NSMenu(title: "Session")
     private lazy var machinesWindow = MachinesWindowController(
-        onChange: { [weak self] in self?.reattachMachines() },
+        onChange: { [weak self] in self?.reattach() },
         onInstall: { [weak self] machine in self?.installHerdr(on: machine) })
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -460,11 +462,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
 
     /// The session to attach to, and what to call it.
     ///
-    /// Nothing chooses one yet, so this only puts a name to whatever the core
-    /// will connect to — which is the part the title needs.
+    /// The remembered choice only holds while that session is still running: a
+    /// session stopped since the app last ran is an ordinary thing to come back
+    /// to, and refusing to open a window over it would help nobody. With no
+    /// choice — or an environment that names a socket for this run — the core
+    /// picks, and this only puts a name to whatever it picked.
     private func resolvedSession() -> (name: String?, socket: String?) {
+        let sessions = SessionCatalog.list()
+        if !SessionCatalog.environmentPicksSocket, let saved = preferences.sessionName,
+            let entry = sessions.first(where: { $0.name == saved && $0.running })
+        {
+            return (entry.name, entry.clientSocket)
+        }
         let socket = HerdrSession.defaultSocketPath
-        return (SessionCatalog.list().first { $0.clientSocket == socket }?.name, nil)
+        return (sessions.first { $0.clientSocket == socket }?.name, nil)
+    }
+
+    /// Attaches to another session.
+    ///
+    /// The socket is settled when the endpoints are spawned, so there is no
+    /// changing it on a live session — it has to be stood up again, exactly as
+    /// adding a machine does.
+    @objc private func switchSession(_ sender: NSMenuItem) {
+        guard let name = sender.representedObject as? String, name != sessionTitle else { return }
+        preferences.sessionName = name
+        Preferences.current = preferences
+        reattach()
+    }
+
+    /// Fills the Session menu from herdr each time it is opened.
+    ///
+    /// Rebuilt rather than kept in step: sessions are started and stopped by
+    /// the herdr CLI and by other clients, so anything cached here would be a
+    /// list of what was true the last time this app happened to look.
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        guard menu === sessionMenu else { return }
+        menu.removeAllItems()
+        let sessions = SessionCatalog.list()
+        guard !sessions.isEmpty else {
+            let empty = NSMenuItem(title: "No herdr sessions", action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+            menu.addItem(empty)
+            return
+        }
+        for entry in sessions {
+            let item = NSMenuItem(
+                title: entry.running ? entry.name : "\(entry.name)  (stopped)",
+                action: #selector(switchSession(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = entry.name
+            item.state = entry.name == sessionTitle ? .on : .off
+            // Attaching to a stopped session would only produce a window
+            // waiting for a server that nothing is going to start.
+            item.isEnabled = entry.running
+            menu.addItem(item)
+        }
     }
 
     /// Opens a session and hands it to the views. Returns false if no server.
@@ -1207,7 +1259,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         }
         guard previous != current else { return }
         knownMachines = current
-        reattachMachines()
+        reattach()
     }
 
     /// Offers to set herdr up on a machine that answered without it.
@@ -1332,12 +1384,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
-    /// Rebuilds the session so a change to the catalog takes effect.
+    /// Rebuilds the session from scratch.
     ///
-    /// Endpoints are resolved once, when the session is created, so a machine
-    /// added or removed is not something the running session can be told
-    /// about — it has to be stood up again.
-    private func reattachMachines() {
+    /// Both the socket and the list of endpoints are resolved once, when the
+    /// session is created, so neither a machine added to the catalog nor a
+    /// different herdr session is something a live session can be told about —
+    /// it has to be stood up again.
+    private func reattach() {
         gridView.forgetSurface()
         gridView.session = nil
         session = nil
@@ -1486,6 +1539,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
             withTitle: "Quit HerdX", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appItem.submenu = appMenu
         main.addItem(appItem)
+
+        let sessionItem = NSMenuItem()
+        sessionMenu.delegate = self
+        // The delegate decides what is enabled; left to AppKit, every item with
+        // no responder in the chain would be greyed out.
+        sessionMenu.autoenablesItems = false
+        sessionItem.submenu = sessionMenu
+        main.addItem(sessionItem)
 
         let editItem = NSMenuItem()
         let editMenu = NSMenu(title: "Edit")

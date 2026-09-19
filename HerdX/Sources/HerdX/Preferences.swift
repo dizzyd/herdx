@@ -51,6 +51,9 @@ struct Preferences {
     /// that makes one theme look different from another.
     /// How the sidebar is arranged, as herdr's own panel puts it.
     var sidebarArrangement: String?
+    /// The herdr session to attach to, by name. Nil opens whichever one the
+    /// core would pick on its own.
+    var sessionName: String?
     var themeName: String?
     var themeColors: [String]?
 
@@ -65,6 +68,7 @@ struct Preferences {
         static let paneLabelSize = "paneLabelSize"
         static let lineHeight = "lineHeight"
         static let sidebarArrangement = "sidebarArrangement"
+        static let sessionName = "sessionName"
         static let themeName = "themeName"
         static let themeColors = "themeColors"
     }
@@ -107,6 +111,7 @@ struct Preferences {
                 paneLabelSize: defaults.object(forKey: Key.paneLabelSize) as? CGFloat ?? 11,
                 lineHeight: defaults.object(forKey: Key.lineHeight) as? CGFloat ?? 1,
                 sidebarArrangement: defaults.string(forKey: Key.sidebarArrangement),
+                sessionName: defaults.string(forKey: Key.sessionName),
                 themeName: defaults.string(forKey: Key.themeName),
                 themeColors: defaults.stringArray(forKey: Key.themeColors))
         }
@@ -122,6 +127,7 @@ struct Preferences {
             defaults.set(newValue.paneLabelSize, forKey: Key.paneLabelSize)
             defaults.set(newValue.lineHeight, forKey: Key.lineHeight)
             defaults.set(newValue.sidebarArrangement, forKey: Key.sidebarArrangement)
+            defaults.set(newValue.sessionName, forKey: Key.sessionName)
             defaults.set(newValue.themeName, forKey: Key.themeName)
             defaults.set(newValue.themeColors, forKey: Key.themeColors)
         }
