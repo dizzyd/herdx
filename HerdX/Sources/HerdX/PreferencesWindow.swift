@@ -28,7 +28,17 @@ final class PreferencesWindowController: NSWindowController {
     private let backgroundWell = NSColorWell()
     private let foregroundWell = NSColorWell()
 
-    private var preferences = Preferences.current
+    /// Read and written straight through, rather than kept as a copy.
+    ///
+    /// The window outlives being closed, so a copy taken when it was built goes
+    /// stale the moment anything else writes a setting — the theme picker does
+    /// — and the next control touched here wrote that whole stale struct back.
+    /// That is how choosing a theme and then nudging line spacing put the
+    /// colours back to built-in.
+    private var preferences: Preferences {
+        get { Preferences.current }
+        set { Preferences.current = newValue }
+    }
     /// Hidden unless there is something to say, so it leaves no gap.
     private var noteRow: NSGridRow?
 
@@ -404,7 +414,8 @@ final class PreferencesWindowController: NSWindowController {
     }
 
     private func apply() {
-        Preferences.current = preferences
+        // Each handler has already written its one field through; the whole
+        // struct is deliberately not written back.
         refresh()
         onChange(preferences)
     }

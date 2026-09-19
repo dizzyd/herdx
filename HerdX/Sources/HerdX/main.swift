@@ -1102,6 +1102,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     private func commitTheme() {
         Preferences.current = preferences
         applyTheme()
+        // Settings may be open beside the picker, and it reads the theme's name
+        // and colours out of the same settings.
+        preferencesWindow?.refresh()
     }
 
     /// Offers to fetch the collection, saying where it comes from.
