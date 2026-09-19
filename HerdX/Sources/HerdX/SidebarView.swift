@@ -176,6 +176,61 @@ final class SidebarRow: NSView {
     }
 }
 
+/// A band heading in the agents list, with the rule that sets it off from the
+/// band above it.
+///
+/// A heading and not just a gap: "these three are idle" is a fact about the
+/// rows, and a blank line leaves the reader to infer it. The rule is what makes
+/// the split read as a division rather than as loose spacing.
+final class SidebarSection: NSView {
+    let tier: AgentPriority.Tier
+
+    init(tier: AgentPriority.Tier, rule: Bool, chrome: Chrome) {
+        self.tier = tier
+        super.init(frame: .zero)
+
+        let label = NSTextField(labelWithString: tier.title.uppercased())
+        // Small, faint and letterspaced, which is how a Mac sidebar says
+        // "heading" without competing with the rows underneath it.
+        label.font = .systemFont(ofSize: 9, weight: .semibold)
+        label.textColor = chrome.tertiary
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(label)
+
+        var top = topAnchor
+        var gap: CGFloat = 4
+        if rule {
+            let line = NSView()
+            line.wantsLayer = true
+            line.layer?.backgroundColor = chrome.separator.cgColor
+            line.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(line)
+            NSLayoutConstraint.activate([
+                line.topAnchor.constraint(equalTo: topAnchor, constant: 8),
+                line.heightAnchor.constraint(equalToConstant: 1),
+                line.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+                line.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            ])
+            top = line.bottomAnchor
+            gap = 6
+        }
+
+        NSLayoutConstraint.activate([
+            // Lined up with the status dots rather than with the margin, so the
+            // heading sits over the column it describes.
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 26),
+            label.topAnchor.constraint(equalTo: top, constant: gap),
+            label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -2),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    /// Headings are scenery: a click belongs to whatever is under them, and
+    /// letting one swallow it made the top row of a band unselectable.
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
 /// Machines and their workspaces.
 ///
 /// Deliberately two levels deep. Nesting tabs and agents underneath made the
@@ -319,7 +374,15 @@ final class SidebarView: NSView {
                 let list = endpoint.snapshot?.agents ?? []
                 return list.map { agent -> String in
                     let seen = priority.hasSeen(agent, on: endpoint.index)
+                    // The band and the age are the reasons a row moves without
+                    // anything on the wire changing — an agent crosses into
+                    // "long idle" purely because time passed, and nothing else
+                    // here would notice. Both are coarse, so including them
+                    // costs a rebuild an hour rather than one a tick.
+                    let tier = priority.tier(agent, on: endpoint.index).rawValue
+                    let quiet = priority.quietFor(agent, on: endpoint.index) ?? ""
                     return "\(agent.paneID):\(agent.agentStatus):\(agent.stateChangeSeq):\(seen)"
+                        + ":\(tier):\(quiet)"
                 }
             }
             agents = rows.joined(separator: ",")
@@ -370,6 +433,11 @@ final class SidebarView: NSView {
     /// Flat rather than grouped: the question this arrangement answers is
     /// "what needs me", and an answer sorted by where things live is the one
     /// the other arrangement already gives.
+    ///
+    /// Flat by *machine*, that is — the list is still banded by how recently
+    /// each agent did anything, because on a machine that has been up a week
+    /// everything finished collapses into one undifferentiated tail and the two
+    /// agents from this morning are lost in it.
     private func addAgentsByPriority(_ endpoints: [EndpointInfo]) {
         let all = endpoints.flatMap { endpoint in
             (endpoint.snapshot?.agents ?? []).map { (endpoint, $0) }
@@ -382,10 +450,32 @@ final class SidebarView: NSView {
         }
 
         let ordered = priority.ordered(all, agent: { $0.1 }, endpoint: { $0.0.index })
-        for (endpoint, agent) in ordered {
+        // Headings only when there is more than one band to tell apart. A lone
+        // "Active" over every row labels nothing and costs a line of the list.
+        let tiers = ordered.map { priority.tier($0.1, on: $0.0.index) }
+        let banded = Set(tiers).count > 1
+        var band: AgentPriority.Tier?
+
+        for (index, (endpoint, agent)) in ordered.enumerated() {
+            if banded, tiers[index] != band {
+                let section = SidebarSection(
+                    tier: tiers[index], rule: band != nil, chrome: chrome)
+                section.translatesAutoresizingMaskIntoConstraints = false
+                stack.addArrangedSubview(section)
+                section.widthAnchor.constraint(
+                    equalTo: stack.widthAnchor, constant: -12
+                ).isActive = true
+                band = tiers[index]
+            }
+
             let workspace = endpoint.snapshot?.workspaces
                 .first { $0.workspaceID == agent.workspaceID }?.label
-            let reason = priority.reason(agent, on: endpoint.index)
+            // "idle 3h" rather than "idle · 3h": how long it has been quiet is
+            // part of what state it is in, not a second fact about it.
+            let reason = [
+                priority.reason(agent, on: endpoint.index),
+                priority.quietFor(agent, on: endpoint.index),
+            ].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " ")
             // Falls back to the workspace rather than to the pane id: an agent
             // that has not named itself is still identified by the work it is
             // doing, and "w2:p1" identifies nothing to anybody.

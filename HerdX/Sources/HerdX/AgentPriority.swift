@@ -13,7 +13,90 @@ import Foundation
 ///
 /// Ties go to whichever changed state most recently, so the thing that just
 /// started needing you sits above the thing that has needed you for an hour.
+///
+/// Rank alone is not enough once a machine has been up for a week: everything
+/// finished settles into one long undifferentiated tail of "idle", and the two
+/// agents you were working on this morning are somewhere in it. So agents are
+/// also banded by when they were last doing something — see `Tier` — which is a
+/// clock this client has to keep itself, because the snapshot carries none.
 struct AgentPriority: Equatable {
+    /// How long an agent must go untouched before it stops counting as work in
+    /// hand.
+    ///
+    /// Hours, not minutes. The point of the band is to separate what you are
+    /// working on today from what you finished last week, and a threshold short
+    /// enough to fire over lunch would reorder the list while you were reading
+    /// it. Four is the near end of what feels right — long enough to survive a
+    /// morning spent elsewhere, short enough that yesterday's agents are below
+    /// the fold by the time you sit down.
+    static let longIdleAfter: TimeInterval = 4 * 60 * 60
+
+    /// Which band of the agents list a row belongs in.
+    ///
+    /// Deliberately not folded into `rank`: rank answers "what needs me", and
+    /// the clock must never override that. An agent blocked since yesterday is
+    /// still blocked, so only agents drawn as idle are ever aged down.
+    enum Tier: Int, Comparable {
+        /// Working, blocked, or finished without anyone looking — the reasons
+        /// this list exists.
+        case active = 2
+        /// Idle, but recently enough to still be what you are doing.
+        case idle = 1
+        /// Idle for long enough to be background rather than work in hand.
+        case longIdle = 0
+
+        var title: String {
+            switch self {
+            case .active: return "Active"
+            case .idle: return "Idle"
+            case .longIdle: return "Long idle"
+            }
+        }
+
+        static func < (lhs: Tier, rhs: Tier) -> Bool { lhs.rawValue < rhs.rawValue }
+    }
+
+    /// When an agent was last doing something, and whether that was watched.
+    private struct Activity {
+        /// When the agent was last in use, by any of the three readings of it.
+        ///
+        /// A liveness clock: it is pushed forward on every tick an agent spends
+        /// running, which is what makes an hour's work stop reading as an hour
+        /// of silence. That also makes it useless for asking which of two
+        /// running agents started most recently — see `changedAt`.
+        var at: Date
+        /// False when all this records is when the agent was first seen.
+        ///
+        /// An agent already idle when the app started has been idle for an
+        /// unknown time — five minutes or five days, and nothing on the wire
+        /// says which. Guessing "just now" would float every stale agent to the
+        /// top of the list after every relaunch, and guessing "ages ago" would
+        /// bury the one you quit the app in the middle of. So the guess is
+        /// recorded as a guess: it places the row in the middle band and says
+        /// nothing about age, and ages out on its own if it stays quiet.
+        var witnessed: Bool
+        /// When the agent's state last changed, as watched from here.
+        ///
+        /// Kept apart from `at` because the two answer different questions, and
+        /// using the liveness clock for both got the wrong answer: `at` is
+        /// restamped every tick for a running agent, and the endpoints are
+        /// observed in a loop, each taking its own reading of the clock a
+        /// moment after the last. So two agents blocked on two machines were
+        /// ordered by which machine was polled last — putting yesterday's block
+        /// above one that happened a second ago.
+        ///
+        /// Nil until a change is actually witnessed — which includes a pane
+        /// turning up on a machine already being watched, because an agent that
+        /// launches straight into blocked never transitions but has plainly
+        /// just started.
+        ///
+        /// Nil therefore means one thing: it has been this way since before
+        /// this client attached. That is not "unknown" — it is older than
+        /// anything witnessed since, which is what lets the ordering put a
+        /// witnessed change above it.
+        var changedAt: Date?
+    }
+
     /// Compared on what is drawn, not on what is remembered.
     ///
     /// `previous` changes whenever any agent on any machine changes state, and
@@ -49,6 +132,15 @@ struct AgentPriority: Equatable {
     /// app started is not news, and without this every relaunch would light up
     /// every finished agent as though it had just happened.
     private var finishedUnseen: [String: UInt64] = [:]
+    /// When each agent was last doing something.
+    ///
+    /// Kept here because there is nowhere else to get it: herdr's snapshot has
+    /// no clock in it at all, and `state_change_seq` is a counter — a quiet
+    /// night moves it not at all, so a difference of three could be a minute
+    /// ago or a week ago. The only way to know how long an agent has been quiet
+    /// is to notice when it stopped, which means writing down the time as
+    /// snapshots go by.
+    private var activity: [String: Activity] = [:]
 
     private func key(_ paneID: String, on endpoint: Int) -> String { "\(endpoint):\(paneID)" }
 
@@ -60,24 +152,54 @@ struct AgentPriority: Equatable {
     /// own idea of seen, but it counts a pane as looked at while the app sits
     /// behind an editor, which is how a finish you were away for arrives
     /// already acknowledged.
-    mutating func observe(snapshot: Snapshot, endpoint: Int, watching: Bool) {
-        let before = previous[endpoint] ?? [:]
+    ///
+    /// `now` is a parameter so the banding can be tested without waiting four
+    /// hours for it.
+    mutating func observe(snapshot: Snapshot, endpoint: Int, watching: Bool, now: Date = Date()) {
+        // Nil, not empty: never having observed this machine is different from
+        // having observed it with no agents on it, and a pane that turns up on
+        // a machine already being watched really did just appear.
+        let before = previous[endpoint]
         previous[endpoint] = Dictionary(
             snapshot.agents.map { ($0.paneID, $0.agentStatus) }, uniquingKeysWith: { first, _ in first })
 
         for agent in snapshot.agents {
             let id = key(agent.paneID, on: endpoint)
-            let was = before[agent.paneID]
+            let was = before?[agent.paneID]
             let finished = agent.agentStatus == .idle || agent.agentStatus == .done
             if finished, was == .working || was == .blocked {
                 finishedUnseen[id] = agent.stateChangeSeq
             }
             // Everything in the focused tab is on screen, which is the same
             // reason the finish sound stays quiet for it.
-            if watching, agent.tabID == snapshot.focusedTabID {
+            let looking = watching && agent.tabID == snapshot.focusedTabID
+            if looking {
                 seen[id] = agent.stateChangeSeq
                 finishedUnseen[id] = nil
             }
+
+            // Three different things count as an agent being in use, and the
+            // list needs all three. Running is the obvious one — and it has to
+            // be checked every tick rather than on a transition, because the
+            // counter does not move while an agent works, so an hour's work
+            // would otherwise read as an hour of silence. Changing state covers
+            // the moment it stopped, which is the time "idle 3h" is counted
+            // from. And looking at it counts too: the list is meant to answer
+            // "what am I working on", and a pane you have open is one of them
+            // whether or not anything is running in it.
+            let running = agent.agentStatus == .working || agent.agentStatus == .blocked
+            let changed = was != nil && was != agent.agentStatus
+            var record = activity[id] ?? Activity(at: now, witnessed: false)
+            // The transition is noted on its own, and only when one is actually
+            // watched: this is the moment an agent started needing you, and it
+            // must not drift forward for every tick it goes on needing you.
+            let appeared = before != nil && was == nil
+            if changed || appeared { record.changedAt = now }
+            if running || changed || looking {
+                record.at = now
+                record.witnessed = true
+            }
+            activity[id] = record
         }
 
         // A pane that is gone keeps nothing here. Left alone these grow for the
@@ -86,6 +208,7 @@ struct AgentPriority: Equatable {
         let mine = "\(endpoint):"
         seen = seen.filter { !$0.key.hasPrefix(mine) || live.contains($0.key) }
         finishedUnseen = finishedUnseen.filter { !$0.key.hasPrefix(mine) || live.contains($0.key) }
+        activity = activity.filter { !$0.key.hasPrefix(mine) || live.contains($0.key) }
     }
 
     /// Drops everything, for a session that is being stood up again.
@@ -98,6 +221,7 @@ struct AgentPriority: Equatable {
         seen = [:]
         previous = [:]
         finishedUnseen = [:]
+        activity = [:]
     }
 
     func hasSeen(_ agent: Snapshot.Agent, on endpoint: Int) -> Bool {
@@ -169,19 +293,105 @@ struct AgentPriority: Equatable {
         }
     }
 
+    /// Whether the clock is allowed to have an opinion about an agent.
+    ///
+    /// Anything still running, or still waiting for you, is active by
+    /// definition however long it has been that way — that is the whole reason
+    /// the band and the rank are kept apart.
+    private static func isQuiet(_ status: Snapshot.AgentStatus) -> Bool {
+        switch status {
+        case .working, .blocked, .done: return false
+        case .idle, .unknown: return true
+        }
+    }
+
+    /// Which band an agent belongs in.
+    func tier(_ agent: Snapshot.Agent, on endpoint: Int, now: Date = Date()) -> Tier {
+        guard Self.isQuiet(displayStatus(agent, on: endpoint)) else { return .active }
+        // An agent nothing is known about yet sits in the middle band rather
+        // than at the bottom: claiming it is stale is a claim, and this cannot
+        // back it up.
+        guard let last = activity[key(agent.paneID, on: endpoint)] else { return .idle }
+        return now.timeIntervalSince(last.at) >= Self.longIdleAfter ? .longIdle : .idle
+    }
+
+    /// How long an agent has been quiet, for the row to say so — or nothing,
+    /// when it has not been quiet long enough to be worth saying.
+    ///
+    /// Coarse on purpose, and never in minutes. The sidebar rebuilds itself
+    /// when the text of a row changes, and a caption counting minutes is a list
+    /// that rebuilds every minute — which destroys the row under the pointer
+    /// mid-click. Rounded to hours it changes at most hourly, and an agent
+    /// quiet for less than an hour is recent by any reading, so the caption has
+    /// nothing to add.
+    func quietFor(_ agent: Snapshot.Agent, on endpoint: Int, now: Date = Date()) -> String? {
+        guard Self.isQuiet(displayStatus(agent, on: endpoint)),
+            let last = activity[key(agent.paneID, on: endpoint)], last.witnessed
+        else { return nil }
+        let hours = Int(now.timeIntervalSince(last.at) / 3600)
+        guard hours >= 1 else { return nil }
+        return hours < 24 ? "\(hours)h" : "\(hours / 24)d"
+    }
+
+    /// The moment a tie in the ordering turns on, or nothing when this client
+    /// never watched it happen.
+    ///
+    /// Nothing rather than a guess: the only time available for an agent that
+    /// has never changed under our watch is when we first saw it, and the
+    /// endpoints are first seen a millisecond apart in polling order — so
+    /// falling back to it would sort by which machine attached last while
+    /// looking like it had sorted by recency.
+    private func tiebreak(
+        _ agent: Snapshot.Agent, on endpoint: Int, transition: Bool
+    ) -> Date? {
+        guard let record = activity[key(agent.paneID, on: endpoint)] else { return nil }
+        if transition { return record.changedAt }
+        return record.witnessed ? record.at : nil
+    }
+
     /// Orders whatever carries an agent, most in need of you first.
     ///
     /// Generic over the row rather than over agents alone: an agent has to be
     /// carried alongside the machine it is on, and re-finding that machine by
     /// pane id afterwards would match the wrong one.
+    ///
+    /// The result is in band order as well as rank order, so a caller can walk
+    /// it once and put a heading in wherever the band changes.
     func ordered<Row>(
-        _ rows: [Row], agent: (Row) -> Snapshot.Agent, endpoint: (Row) -> Int
+        _ rows: [Row], agent: (Row) -> Snapshot.Agent, endpoint: (Row) -> Int,
+        now: Date = Date()
     ) -> [Row] {
         rows.sorted { left, right in
+            let leftTier = tier(agent(left), on: endpoint(left), now: now)
+            let rightTier = tier(agent(right), on: endpoint(right), now: now)
+            if leftTier != rightTier { return leftTier > rightTier }
             let a = rank(agent(left), on: endpoint(left))
             let b = rank(agent(right), on: endpoint(right))
             if a != b { return a > b }
-            return agent(left).stateChangeSeq > agent(right).stateChangeSeq
+            // Within a band, whatever happened most recently — but "most
+            // recently" means a different clock in each band, and reading it
+            // off the wrong one is how a day-old block sorted above a fresh
+            // one. An active agent is ordered by when it *became* active, since
+            // its liveness clock says "now" for as long as it runs; a quiet one
+            // by when you last had anything to do with it, which is the whole
+            // question that band is asking.
+            //
+            // Both fall back to `state_change_seq`, which is only meaningful
+            // within one server — but that is the honest answer when this
+            // client never watched either agent change, and it is still right
+            // for two agents on the same machine.
+            let byTransition = leftTier == .active
+            let leftWhen = tiebreak(agent(left), on: endpoint(left), transition: byTransition)
+            let rightWhen = tiebreak(agent(right), on: endpoint(right), transition: byTransition)
+            switch (leftWhen, rightWhen) {
+            case let (left?, right?) where left != right: return left > right
+            // One side watched and the other not is still an answer, and the
+            // useful one: anything this client watched happen, happened after it
+            // attached, and anything it did not has been that way since before.
+            case (.some, .none): return true
+            case (.none, .some): return false
+            default: return agent(left).stateChangeSeq > agent(right).stateChangeSeq
+            }
         }
     }
 
