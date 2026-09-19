@@ -198,6 +198,71 @@ final class KeymapTests: XCTestCase {
         XCTAssertEqual(resolver.resolve(keystroke("n")).action, .nextTab)
     }
 
+    // MARK: - Spellings that contain a comma
+
+    func testASpellingContainingACommaSurvivesParsing() {
+        // format_key_combo writes Char(',') as a literal comma, so this is what
+        // the exported profile holds for a binding on that key.
+        let keymap = Keymap(
+            profile: """
+                [keys]
+                prefix = "ctrl+b"
+                next_tab = ["prefix+n", "alt+,"]
+                """)
+
+        let next = bindings(of: .nextTab, in: keymap!)
+        XCTAssertEqual(next.count, 2, "the comma spelling was split in half and dropped")
+        XCTAssertEqual(next.last?.key, .character(","))
+        XCTAssertTrue(next.last?.option == true)
+    }
+
+    func testACommaSpellingSurvivesAMultilineArray() {
+        let keymap = Keymap(
+            profile: """
+                [keys]
+                prefix = "ctrl+b"
+                next_tab = [
+                    "prefix+n",
+                    "alt+,",
+                ]
+                """)
+
+        XCTAssertEqual(bindings(of: .nextTab, in: keymap!).count, 2)
+    }
+
+    func testACommaSpellingDispatches() {
+        let resolver = ChordResolver()
+        resolver.keymap = Keymap(
+            profile: """
+                [keys]
+                prefix = "ctrl+b"
+                next_tab = ["prefix+n", "alt+,"]
+                """)!
+
+        let (action, consumed) = resolver.resolve(keystroke(",", flags: [.option]))
+
+        XCTAssertEqual(action, .nextTab, "alt+comma reached the terminal instead")
+        XCTAssertTrue(consumed)
+    }
+
+    func testABracketSpellingInAnArrayIsStillABracket() {
+        let keymap = Keymap(
+            profile: """
+                [keys]
+                prefix = "ctrl+b"
+                copy_mode = ["prefix+[", "alt+]"]
+                """)
+
+        let copy = bindings(of: .copyMode, in: keymap!)
+        XCTAssertEqual(copy.count, 2)
+        XCTAssertEqual(copy.first?.key, .character("["))
+        XCTAssertEqual(copy.last?.key, .character("]"))
+    }
+
+
+
+
+
     func testTheDefaultKeymapClaimsNothingUnprefixed() {
         // herdr's own defaults are all prefixed, so nothing this change added
         // should start swallowing ordinary typing.

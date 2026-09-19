@@ -209,9 +209,11 @@ struct Keymap {
 
             var raw = parts[1]
             // An array runs over as many lines as it has entries, so it has to
-            // be gathered before any of it can be read as a binding.
+            // be gathered before any of it can be read as a binding. Closed by
+            // a bracket outside its strings, not by one at the end of a line:
+            // `"alt+]"` is a spelling that ends in a bracket and closes nothing.
             if raw.hasPrefix("[") {
-                while !raw.hasSuffix("]"), index < lines.count {
+                while !Self.closesAnArray(raw), index < lines.count {
                     raw += lines[index].trimmingCharacters(in: .whitespaces)
                     index += 1
                 }
@@ -264,14 +266,62 @@ struct Keymap {
     /// The brackets are only an array when they wrap the whole value —
     /// `copy_mode = "prefix+["` is one spelling that happens to end in one.
     private static func spellings(in raw: String) -> [String] {
-        guard raw.hasPrefix("["), raw.hasSuffix("]") else {
+        guard raw.hasPrefix("["), closesAnArray(raw) else {
             let single = unquoted(raw)
             return single.isEmpty ? [] : [single]
         }
-        return raw.dropFirst().dropLast()
-            .split(separator: ",")
-            .map { unquoted(String($0)) }
-            .filter { !$0.isEmpty }
+        return quoted(in: raw)
+    }
+
+    /// The quoted strings in an array, in order.
+    ///
+    /// Scanned rather than split on commas. A comma is a key like any other —
+    /// herdr's `format_key_combo` writes it literally, so `alt+,` is what the
+    /// exported profile holds for a binding on it — and splitting on every
+    /// comma cut that spelling in half and threw both halves away.
+    private static func quoted(in value: String) -> [String] {
+        var found: [String] = []
+        var current = ""
+        var inString = false
+        var escaped = false
+
+        for character in value {
+            if escaped {
+                current.append(character)
+                escaped = false
+            } else if inString, character == "\\" {
+                escaped = true
+            } else if character == "\"" {
+                if inString, !current.isEmpty { found.append(current) }
+                if inString { current = "" }
+                inString.toggle()
+            } else if inString {
+                current.append(character)
+            }
+        }
+        return found
+    }
+
+    /// Whether an array value has reached the bracket that closes it.
+    ///
+    /// Counted outside its strings, so a spelling that contains a bracket does
+    /// not end the array early.
+    private static func closesAnArray(_ value: String) -> Bool {
+        var inString = false
+        var escaped = false
+
+        for character in value.dropFirst() {
+            if escaped {
+                escaped = false
+            } else if inString, character == "\\" {
+                escaped = true
+            } else if character == "\"" {
+                inString.toggle()
+            } else if !inString, character == "]" {
+                return true
+            }
+        }
+        return false
     }
 
     private static func unquoted(_ value: String) -> String {
