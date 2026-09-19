@@ -1050,8 +1050,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         case .resizeMode:
             return { self.enterResizeMode() }
 
+        // Zero jumps to whatever most needs you; the other two cycle. All three
+        // walk the same order the Agents sidebar is in, so the key and the list
+        // cannot disagree about what "next" means.
+        case .focusTopAgent: return { self.focusAgent(by: 0, session: session) }
+        case .nextAgent: return { self.focusAgent(by: 1, session: session) }
+        case .previousAgent: return { self.focusAgent(by: -1, session: session) }
+
         default: return nil
         }
+    }
+
+    /// Moves to another agent, in the order the Agents sidebar shows.
+    ///
+    /// Across every attached machine, not just the one on screen: an agent that
+    /// needs you on another machine is the reason they are all attached, and a
+    /// key that only reached the current one would step over it silently.
+    ///
+    /// herdr resolves these client-side too — there is no next-agent request to
+    /// send, only `pane.focus` with an id worked out here.
+    private func focusAgent(by offset: Int, session: HerdrSession) {
+        let all = session.endpoints.flatMap { endpoint in
+            (endpoint.snapshot?.agents ?? []).map { (endpoint, $0) }
+        }
+        let ordered = agentPriority.ordered(all, agent: { $0.1 }, endpoint: { $0.0.index })
+        // By the pane the server says is focused rather than by the agent's own
+        // `focused` flag: every machine has a focused pane of its own, so that
+        // flag is true on all of them at once and the cursor would be found in
+        // whichever list position came first.
+        let here = session.activeEndpoint
+        let focusedPane = session.lastSnapshot?.focusedPaneID
+        let current = ordered.firstIndex {
+            $0.0.index == here && $0.1.paneID == focusedPane
+        }
+        guard let next = AgentPriority.step(from: current, by: offset, count: ordered.count)
+        else {
+            notice("no agents")
+            return
+        }
+        let (endpoint, agent) = ordered[next]
+        focus(.focusPane(agent.paneID), on: endpoint.index)
     }
 
     /// herdr's resize mode: the arrows keep resizing until you leave.

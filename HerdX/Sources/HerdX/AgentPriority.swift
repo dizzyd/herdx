@@ -356,6 +356,26 @@ struct AgentPriority: Equatable {
         return hours < 24 ? "\(hours)h" : "\(hours / 24)d"
     }
 
+    /// Where a jump or a cycle lands, over a list `ordered` has already put in
+    /// order.
+    ///
+    /// Index arithmetic kept apart from the app so it can be tested: the wrap
+    /// and the two empty-handed cases are the whole of the behaviour, and none
+    /// of them is observable through a window.
+    ///
+    /// An offset of zero is the jump — always the head of the list, which is
+    /// whatever most needs you. Anything else is a cycle, wrapping, and follows
+    /// herdr's rule for a cursor that is not on an agent at all: forwards
+    /// starts at the first, backwards at the last.
+    static func step(from current: Int?, by offset: Int, count: Int) -> Int? {
+        guard count > 0 else { return nil }
+        guard offset != 0 else { return 0 }
+        guard let current else { return offset > 0 ? 0 : count - 1 }
+        // Modulo of a negative is negative in Swift, so the count is added back
+        // before it is taken.
+        return ((current + offset) % count + count) % count
+    }
+
     /// The moment a tie in the ordering turns on, or nothing when this client
     /// never watched it happen.
     ///

@@ -334,6 +334,47 @@ final class KeymapTests: XCTestCase {
             resolver.resolve(keystroke("h", flags: [.shift])).action, .swapPaneLeft)
     }
 
+    // MARK: - The agent keys HerdX adds
+
+    func testTheAgentKeysAreBoundBecauseHerdrLeavesThemUnset() {
+        // herdr ships next_agent, previous_agent and focus_agent with no
+        // binding at all, so these take nothing away from anybody.
+        let keymap = Keymap(profile: """
+            [keys]
+            prefix = "ctrl+b"
+            new_tab = "prefix+c"
+            """)!
+        let resolver = ChordResolver()
+        resolver.keymap = keymap
+
+        _ = resolver.resolve(keystroke("b", flags: [.control]))
+        XCTAssertEqual(resolver.resolve(keystroke("a")).0, .focusTopAgent)
+
+        _ = resolver.resolve(keystroke("b", flags: [.control]))
+        XCTAssertEqual(resolver.resolve(keystroke("n", flags: [.option])).0, .nextAgent)
+
+        _ = resolver.resolve(keystroke("b", flags: [.control]))
+        XCTAssertEqual(resolver.resolve(keystroke("p", flags: [.option])).0, .previousAgent)
+    }
+
+    func testTheUsersOwnBindingKeepsTheKeyTheAdditionWanted() {
+        // The keymap belongs to the user: an addition is only ever taken up
+        // where herdr left the key free.
+        let keymap = Keymap(profile: """
+            [keys]
+            prefix = "ctrl+b"
+            zoom = "prefix+a"
+            """)!
+        let resolver = ChordResolver()
+        resolver.keymap = keymap
+
+        _ = resolver.resolve(keystroke("b", flags: [.control]))
+
+        XCTAssertEqual(
+            resolver.resolve(keystroke("a")).0, .zoom,
+            "the jump must not take a key the user has already spent")
+    }
+
     func testTheDefaultKeymapClaimsNothingUnprefixed() {
         // herdr's own defaults are all prefixed, so nothing this change added
         // should start swallowing ordinary typing.

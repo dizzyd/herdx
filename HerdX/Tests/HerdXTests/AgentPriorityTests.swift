@@ -384,6 +384,65 @@ final class AgentBandingTests: XCTestCase {
             "the counter is arbitrary across servers, but it is not a time we invented")
     }
 
+    // MARK: - Walking the list from a key
+
+    func testTheJumpAlwaysLandsOnWhateverMostNeedsYou() {
+        XCTAssertEqual(AgentPriority.step(from: 4, by: 0, count: 6), 0)
+        XCTAssertEqual(
+            AgentPriority.step(from: 0, by: 0, count: 6), 0,
+            "pressing it again where you already are is a no-op, not a cycle")
+        XCTAssertEqual(
+            AgentPriority.step(from: nil, by: 0, count: 6), 0,
+            "it does not need to know where you were")
+    }
+
+    func testCyclingWrapsBothWays() {
+        XCTAssertEqual(AgentPriority.step(from: 1, by: 1, count: 3), 2)
+        XCTAssertEqual(AgentPriority.step(from: 2, by: 1, count: 3), 0)
+        XCTAssertEqual(AgentPriority.step(from: 1, by: -1, count: 3), 0)
+        XCTAssertEqual(
+            AgentPriority.step(from: 0, by: -1, count: 3), 2,
+            "Swift's modulo of a negative is negative, so this is where it wraps wrong")
+    }
+
+    func testCyclingFromSomewhereThatIsNotAnAgentStartsAtTheEnd() {
+        XCTAssertEqual(
+            AgentPriority.step(from: nil, by: 1, count: 3), 0,
+            "forwards from nowhere is the first, as herdr does it")
+        XCTAssertEqual(
+            AgentPriority.step(from: nil, by: -1, count: 3), 2,
+            "and backwards from nowhere is the last")
+    }
+
+    func testAnEmptyListGoesNowhere() {
+        XCTAssertNil(AgentPriority.step(from: nil, by: 0, count: 0))
+        XCTAssertNil(AgentPriority.step(from: nil, by: 1, count: 0))
+        XCTAssertNil(
+            AgentPriority.step(from: 0, by: -1, count: 0),
+            "a modulo by zero here would trap rather than do nothing")
+    }
+
+    func testTheJumpLandsOnTheAgentThatIsAskingOverTheOneYouAreIn() {
+        var priority = AgentPriority()
+        let rows = [
+            Row(paneID: "w1:p1", status: "idle", seq: 1),
+            Row(paneID: "w1:p2", status: "blocked", seq: 2),
+            Row(paneID: "w1:p3", status: "working", seq: 3),
+        ]
+        let live = snapshot(rows)
+        priority.observe(snapshot: live, endpoint: 0, watching: true, now: start)
+
+        let ordered = priority.ordered(
+            live.agents.map { (0, $0) }, agent: { $0.1 }, endpoint: { $0.0 }, now: start)
+        // Standing in the idle one, which is where the complaint started.
+        let current = ordered.firstIndex { $0.1.paneID == "w1:p1" }
+        let landing = AgentPriority.step(from: current, by: 0, count: ordered.count)!
+
+        XCTAssertEqual(
+            ordered[landing].1.paneID, "w1:p2",
+            "blocked outranks working, and both outrank the idle pane you are sitting in")
+    }
+
     // MARK: - Forgetting
 
     func testAPaneThatGoesAwayTakesItsAgeWithIt() {

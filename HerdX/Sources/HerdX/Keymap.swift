@@ -41,6 +41,8 @@ struct Keymap {
         case openNotificationTarget = "open_notification_target"
         case previousAgent = "previous_agent", nextAgent = "next_agent"
         case focusAgent = "focus_agent"
+        /// HerdX's own: go straight to whatever most needs you.
+        case focusTopAgent = "focus_top_agent"
 
         /// How the action reads in the help.
         var title: String {
@@ -432,11 +434,21 @@ extension Keymap {
     /// The arrows do what hjkl already does. herdr's own keymap is built for
     /// hands that stay on the home row; a Mac app is also used by people who
     /// reach for the arrow keys, and there is no reason both cannot work.
+    ///
+    /// The agent keys are here because herdr leaves all of them unset — its
+    /// next_agent and previous_agent ship with no binding at all — so nothing
+    /// is being taken away from anybody. They follow herdr's own idiom rather
+    /// than inventing one: next and previous agent are the tab keys with alt,
+    /// because that is the shape the documentation suggests for agent
+    /// bindings, and the jump gets the letter it is named after.
     static let additions = """
         focus_pane_left = "prefix+left"
         focus_pane_down = "prefix+down"
         focus_pane_up = "prefix+up"
         focus_pane_right = "prefix+right"
+        focus_top_agent = "prefix+a"
+        next_agent = "prefix+alt+n"
+        previous_agent = "prefix+alt+p"
         """
 
     /// herdr's defaults, used until a snapshot brings the user's own.
