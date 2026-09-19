@@ -263,6 +263,77 @@ final class KeymapTests: XCTestCase {
 
 
 
+    // MARK: - Shift
+
+    func testAnExplicitShiftIsRequired() {
+        let resolver = ChordResolver()
+        resolver.keymap = Keymap(
+            profile: """
+                [keys]
+                prefix = "ctrl+b"
+                new_tab = "ctrl+shift+t"
+                """)!
+
+        let (plain, consumed) = resolver.resolve(keystroke("t", flags: [.control]))
+        XCTAssertNil(plain, "ctrl+t is a distinct keystroke and belongs to the terminal")
+        XCTAssertFalse(consumed)
+
+        XCTAssertEqual(
+            resolver.resolve(keystroke("t", flags: [.control, .shift])).action, .newTab)
+    }
+
+
+    func testShiftedPunctuationStillMatchesWithoutADeclaredShift() {
+        // `help = "prefix+?"` says nothing about shift because "?" already
+        // carries one. This is what the fallback exists for.
+        let resolver = ChordResolver()
+        resolver.keymap = Keymap(
+            profile: """
+                [keys]
+                prefix = "ctrl+b"
+                help = "prefix+?"
+                """)!
+
+        _ = resolver.resolve(keystroke("b", flags: [.control]))
+
+        XCTAssertEqual(resolver.resolve(keystroke("?", flags: [.shift])).action, .help)
+    }
+
+
+    func testALetterBindingDoesNotAbsorbItsShiftedForm() {
+        let resolver = ChordResolver()
+        resolver.keymap = Keymap(
+            profile: """
+                [keys]
+                prefix = "ctrl+b"
+                focus_pane_left = "prefix+h"
+                """)!
+
+        _ = resolver.resolve(keystroke("b", flags: [.control]))
+        let (action, _) = resolver.resolve(keystroke("h", flags: [.shift]))
+
+        XCTAssertNil(action, "prefix+shift+h is a binding herdr uses for something else")
+    }
+
+
+    func testTheTwoFormsOfALetterStayDistinct() {
+        let resolver = ChordResolver()
+        resolver.keymap = Keymap(
+            profile: """
+                [keys]
+                prefix = "ctrl+b"
+                focus_pane_left = "prefix+h"
+                swap_pane_left = "prefix+shift+h"
+                """)!
+
+        _ = resolver.resolve(keystroke("b", flags: [.control]))
+        XCTAssertEqual(resolver.resolve(keystroke("h")).action, .focusPaneLeft)
+
+        _ = resolver.resolve(keystroke("b", flags: [.control]))
+        XCTAssertEqual(
+            resolver.resolve(keystroke("h", flags: [.shift])).action, .swapPaneLeft)
+    }
+
     func testTheDefaultKeymapClaimsNothingUnprefixed() {
         // herdr's own defaults are all prefixed, so nothing this change added
         // should start swallowing ordinary typing.

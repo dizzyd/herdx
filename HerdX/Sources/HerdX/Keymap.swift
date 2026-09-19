@@ -76,6 +76,23 @@ struct Keymap {
             }
         }
 
+        /// Whether shift is part of typing this key rather than a modifier of it.
+        ///
+        /// A profile writes `help = "prefix+?"` and says nothing about shift,
+        /// because "?" already carries one — so matching it has to forgive the
+        /// shift that must be held to type it at all.
+        ///
+        /// A letter or a digit is the opposite case. herdr's own defaults bind
+        /// `prefix+h` and `prefix+shift+h` to different actions, so shift there
+        /// is meant literally and forgiving it takes a keystroke that belongs
+        /// to something else.
+        var shiftIsPartOfTheGlyph: Bool {
+            guard case .character(let key) = self, key.unicodeScalars.count == 1,
+                let scalar = key.unicodeScalars.first
+            else { return false }
+            return !CharacterSet.alphanumerics.contains(scalar)
+        }
+
         var label: String {
             switch self {
             case .character(let key): return key
@@ -390,7 +407,15 @@ struct Keymap {
         if let exact = candidates.first(where: { $0.binding.matches(event) }) {
             return exact.action
         }
-        return candidates.first { $0.binding.matches(event, ignoringShift: true) }?.action
+        // Only for a binding that never mentioned shift and whose key cannot be
+        // typed without one. Forgiving it everywhere meant ctrl+t fired a
+        // binding written ctrl+shift+t, taking a distinct keystroke away from
+        // the terminal — and shift+h fired one written for h alone.
+        return candidates.first {
+            !$0.binding.shift
+                && $0.binding.key.shiftIsPartOfTheGlyph
+                && $0.binding.matches(event, ignoringShift: true)
+        }?.action
     }
 
     /// How the prefix itself reads, for the help and the armed indicator.
