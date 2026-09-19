@@ -375,21 +375,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     /// what the app draws.
     private func applyTheme() {
         appliedSystemIsDark = systemIsDark
-        // The Mac light/dark appearance is set on the window below and the
-        // controls follow it; everything this app paints itself comes from the
-        // terminal theme and the chrome derived from it, so that the window
-        // reads as one surface rather than two.
+        // Everything this app paints itself comes from the terminal theme and
+        // the chrome derived from it, so that the window reads as one surface
+        // rather than two. The Mac light/dark appearance follows that chrome
+        // and is set in applyChrome, where the chrome is known.
         terminalTheme = preferences.terminalTheme(matching: systemIsDark)
 
         gridView.theme = terminalTheme
         gridView.apply(
             panePadding: preferences.panePadding, labelSize: preferences.paneLabelSize)
 
-        switch preferences.appearance {
-        case .system: window.appearance = nil
-        case .dark: window.appearance = NSAppearance(named: .darkAqua)
-        case .light: window.appearance = NSAppearance(named: .aqua)
-        }
         applyChrome()
         publish(theme: terminalTheme)
     }
@@ -407,6 +402,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         // The title bar is transparent, so the window's own colour is what
         // shows above the sidebar and tabs.
         window.backgroundColor = palette.surface
+        // And the title, the traffic lights and everything else AppKit draws up
+        // there sits on that colour, so it has to be told what the colour is.
+        // Taking this from the Window setting instead is what put a black title
+        // on a dark title bar: the setting chooses a palette, but a program
+        // that paints its own background wins on screen, and the chrome follows
+        // the screen.
+        window.appearance = NSAppearance(named: palette.isDark ? .darkAqua : .aqua)
         sidebar.apply(chrome: palette)
         copyModeStatus.apply(chrome: palette)
         tabBar.apply(chrome: palette)
