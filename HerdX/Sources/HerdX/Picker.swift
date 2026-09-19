@@ -36,23 +36,26 @@ final class Picker: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     /// The window the list is in, for the capture probe: headlessly there is
     /// nothing else to photograph it through.
     var presented: NSWindow? { window }
+    /// The list and its filter field, for the capture probe and for the tests
+    /// that ask what one presentation left behind for the next.
+    var list: NSTableView { table }
+    var filterField: NSSearchField { search }
     private let search = NSSearchField()
     private let table = NSTableView()
     private var all: [Item] = []
     private var shown: [Item] = []
 
-    func show(
-        over parent: NSWindow, title: String, items: [Item],
-        as presentation: Presentation = .sheet,
-        onHighlight: ((Item) -> Void)? = nil, onCancel: (() -> Void)? = nil
-    ) {
-        guard window == nil else { return }
-        all = items
-        shown = items
-        self.onHighlight = onHighlight
-        self.onCancel = onCancel
-        chose = false
+    override init() {
+        super.init()
+        configure()
+    }
 
+    /// Builds the list and the filter field, once.
+    ///
+    /// Both outlive a presentation — only the window around them is rebuilt —
+    /// so doing this in `show` added a column every time the list was opened.
+    /// Two columns draw every row's content twice, and it got worse from there.
+    private func configure() {
         search.placeholderString = "Filter"
         search.font = .systemFont(ofSize: 13)
         search.target = self
@@ -69,7 +72,29 @@ final class Picker: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         table.target = self
         table.doubleAction = #selector(chooseSelected)
         table.style = .inset
-        if !shown.isEmpty { table.selectRowIndexes([0], byExtendingSelection: false) }
+    }
+
+    func show(
+        over parent: NSWindow, title: String, items: [Item],
+        as presentation: Presentation = .sheet,
+        onHighlight: ((Item) -> Void)? = nil, onCancel: (() -> Void)? = nil
+    ) {
+        guard window == nil else { return }
+        all = items
+        shown = items
+        self.onHighlight = onHighlight
+        self.onCancel = onCancel
+        chose = false
+
+        // Reused between presentations, so whatever the last one was left
+        // holding — a filter, a highlight, the previous list — has to go.
+        search.stringValue = ""
+        table.reloadData()
+        if shown.isEmpty {
+            table.deselectAll(nil)
+        } else {
+            table.selectRowIndexes([0], byExtendingSelection: false)
+        }
 
         let scroll = NSScrollView()
         scroll.documentView = table
@@ -99,6 +124,9 @@ final class Picker: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         chooser.title = title
         chooser.contentView = content
         chooser.onChoose = { [weak self] in self?.chooseSelected() }
+        // `window` below is a strong reference, so ARC already owns this; a
+        // window that also releases itself on close is released twice.
+        chooser.isReleasedWhenClosed = false
         window = chooser
 
         switch presentation {
