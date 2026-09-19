@@ -23,19 +23,84 @@ struct AgentPriority: Equatable {
     /// Keyed by machine as well as pane: pane ids are only unique within a
     /// server, and two machines really do both have a `w1:p1`.
     private var seen: [String: UInt64] = [:]
+    /// The last status seen for each agent, so a *change* can be told from a
+    /// state that was already true when this client attached.
+    private var previous: [String: Snapshot.AgentStatus] = [:]
+    /// Agents that finished while nobody was looking, by the change that did it.
+    ///
+    /// Witnessed rather than inferred: an agent that was already idle when the
+    /// app started is not news, and without this every relaunch would light up
+    /// every finished agent as though it had just happened.
+    private var finishedUnseen: [String: UInt64] = [:]
 
     private func key(_ paneID: String, on endpoint: Int) -> String { "\(endpoint):\(paneID)" }
 
-    /// Records what is on screen. Call whenever a snapshot lands.
-    mutating func note(snapshot: Snapshot, endpoint: Int) {
-        guard let focused = snapshot.focusedPaneID else { return }
-        for agent in snapshot.agents where agent.paneID == focused {
-            seen[key(agent.paneID, on: endpoint)] = agent.stateChangeSeq
+    /// Records what each machine's agents are doing, and what you have looked
+    /// at. Call for every endpoint whenever snapshots land.
+    ///
+    /// `watching` is whether this machine's panes are actually in front of you —
+    /// the app is active and this is the endpoint on screen. The server has its
+    /// own idea of seen, but it counts a pane as looked at while the app sits
+    /// behind an editor, which is how a finish you were away for arrives
+    /// already acknowledged.
+    mutating func observe(snapshot: Snapshot, endpoint: Int, watching: Bool) {
+        for agent in snapshot.agents {
+            let id = key(agent.paneID, on: endpoint)
+            let was = previous[id]
+            previous[id] = agent.agentStatus
+            let finished = agent.agentStatus == .idle || agent.agentStatus == .done
+            if finished, was == .working || was == .blocked {
+                finishedUnseen[id] = agent.stateChangeSeq
+            }
+            if watching, agent.paneID == snapshot.focusedPaneID {
+                seen[id] = agent.stateChangeSeq
+                finishedUnseen[id] = nil
+            }
         }
     }
 
     func hasSeen(_ agent: Snapshot.Agent, on endpoint: Int) -> Bool {
         (seen[key(agent.paneID, on: endpoint)] ?? 0) >= agent.stateChangeSeq
+    }
+
+    /// The status to draw, rather than the one the wire carries.
+    ///
+    /// The server calls a finish *seen* as soon as its pane is the focused one
+    /// in the session — which it can be while the app sits behind an editor and
+    /// nobody is looking at all. So a finish you were away for arrives as
+    /// `idle`, and the loud "ready" state never appears.
+    ///
+    /// This client already disagrees on that point everywhere except the dot:
+    /// the row beside it says "waiting" for exactly these agents. `seen` here
+    /// means the pane was in front of *you*, so an unseen finish is `done` and
+    /// a seen one is `idle`, and the dot finally agrees with its own label.
+    func displayStatus(_ agent: Snapshot.Agent, on endpoint: Int) -> Snapshot.AgentStatus {
+        switch agent.agentStatus {
+        case .idle, .done:
+            if hasSeen(agent, on: endpoint) { return .idle }
+            // `done` on the wire is the server's own "nobody has looked at
+            // this", which is worth believing; beyond that, only a finish this
+            // client watched happen counts.
+            let witnessed = finishedUnseen[key(agent.paneID, on: endpoint)] == agent.stateChangeSeq
+            return agent.agentStatus == .done || witnessed ? .done : .idle
+        case .working, .blocked, .unknown: return agent.agentStatus
+        }
+    }
+
+    /// What one dot says about a group of agents — a tab, a workspace, a whole
+    /// machine — which is whatever the most urgent of them is saying.
+    ///
+    /// `fallback` covers a group with no agents in it at all, where the server's
+    /// own status for the row is the only thing worth showing.
+    func status(
+        of agents: [Snapshot.Agent], on endpoint: Int, fallback: Snapshot.AgentStatus
+    ) -> Snapshot.AgentStatus {
+        guard !agents.isEmpty else { return fallback }
+        let shown = agents.map { displayStatus($0, on: endpoint) }
+        if shown.contains(.blocked) { return .blocked }
+        if shown.contains(.working) { return .working }
+        if shown.contains(.done) { return .done }
+        return shown.contains(.idle) ? .idle : .unknown
     }
 
     /// herdr's attention ranking.

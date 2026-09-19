@@ -351,7 +351,9 @@ final class SidebarView: NSView {
                     title: workspace.label,
                     // Not the machine: the row it sits under is the machine.
                     subtitle: workspace.branch,
-                    status: workspace.agentStatus,
+                    status: priority.status(
+                        of: snapshot.agents.filter { $0.workspaceID == workspace.workspaceID },
+                        on: endpoint.index, fallback: workspace.agentStatus),
                     symbol: nil,
                     collapsed: nil,
                     // Only the machine you are looking at has a selected
@@ -393,7 +395,7 @@ final class SidebarView: NSView {
                 title: named ?? workspace ?? agent.paneID,
                 subtitle: [reason, named == nil ? nil : workspace, endpoint.label]
                     .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "),
-                status: agent.agentStatus,
+                status: priority.displayStatus(agent, on: endpoint.index),
                 symbol: nil,
                 collapsed: nil,
                 selected: agent.focused && endpoint.index == active,
@@ -429,7 +431,7 @@ final class SidebarView: NSView {
             title: endpoint.label,
             subtitle: subtitle,
             detail: endpoint.error,
-            status: Self.machineStatus(endpoint),
+            status: machineStatus(endpoint),
             symbol: endpoint.isRemote ? "server.rack" : "desktopcomputer",
             collapsed: collapsed.contains(endpoint.id),
             selected: ownsSelection,
@@ -471,12 +473,10 @@ final class SidebarView: NSView {
     }
 
     /// A machine's dot reflects its agents, falling back to its connection.
-    private static func machineStatus(_ endpoint: EndpointInfo) -> Snapshot.AgentStatus {
+    private func machineStatus(_ endpoint: EndpointInfo) -> Snapshot.AgentStatus {
         guard endpoint.status == .online else { return .unknown }
-        guard let agents = endpoint.snapshot?.agents, !agents.isEmpty else { return .idle }
-        if agents.contains(where: { $0.agentStatus == .blocked }) { return .blocked }
-        if agents.contains(where: { $0.agentStatus == .working }) { return .working }
-        return .idle
+        return priority.status(
+            of: endpoint.snapshot?.agents ?? [], on: endpoint.index, fallback: .idle)
     }
 
     private func add(

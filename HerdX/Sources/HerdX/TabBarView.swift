@@ -53,14 +53,23 @@ final class TabBarView: NSView {
     }
 
     /// Shows the tabs of whichever workspace is focused.
-    func update(with snapshot: Snapshot?) {
+    ///
+    /// `priority` carries this client's own idea of which finishes have been
+    /// seen, so a tab's dot says the same thing the sidebar's does.
+    func update(with snapshot: Snapshot?, priority: AgentPriority, endpoint: Int) {
         let tabs = snapshot.map { snapshot in
             snapshot.tabs.filter { $0.workspaceID == snapshot.focusedWorkspaceID }
         } ?? []
+        let agents = snapshot?.agents ?? []
+        let status = { (tab: Snapshot.Tab) in
+            priority.status(
+                of: agents.filter { $0.tabID == tab.tabID }, on: endpoint,
+                fallback: tab.agentStatus)
+        }
 
         let signature =
             tabs
-            .map { "\($0.tabID):\($0.label):\($0.focused):\($0.agentStatus)" }
+            .map { "\($0.tabID):\($0.label):\($0.focused):\(status($0))" }
             .joined(separator: "|")
         guard lastSignature != signature else { return }
         lastSignature = signature
@@ -68,7 +77,7 @@ final class TabBarView: NSView {
         for tab in tabs {
             stack.addArrangedSubview(
                 TabChip(
-                    tab: tab, chrome: chrome,
+                    tab: tab, status: status(tab), chrome: chrome,
                     onSelect: { [weak self] in self?.onSelectTab?(tab.tabID) },
                     onClose: { [weak self] in self?.onCloseTab?(tab.tabID) }))
         }
@@ -95,8 +104,8 @@ private final class TabChip: NSView {
     private let close = NSButton()
 
     init(
-        tab: Snapshot.Tab, chrome: Chrome, onSelect: @escaping () -> Void,
-        onClose: @escaping () -> Void
+        tab: Snapshot.Tab, status: Snapshot.AgentStatus, chrome: Chrome,
+        onSelect: @escaping () -> Void, onClose: @escaping () -> Void
     ) {
         self.onSelect = onSelect
         self.onClose = onClose
@@ -108,7 +117,7 @@ private final class TabChip: NSView {
         layer?.cornerRadius = 6
 
         let dot = StatusDot()
-        dot.set(status: tab.agentStatus, chrome: chrome)
+        dot.set(status: status, chrome: chrome)
 
         // herdr's label is what the TUI shows; the number is internal and
         // usually the same, which read as "1 1".

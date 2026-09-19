@@ -844,9 +844,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         // a machine reading "connecting…" long after it was up. The sidebar
         // compares a signature and returns immediately when nothing moved.
         // What is on screen is what counts as seen, so this is noted before
-        // anything is asked to order agents by it.
-        if let snapshot = session.lastSnapshot {
-            agentPriority.note(snapshot: snapshot, endpoint: session.activeEndpoint)
+        // anything is asked to order agents by it — and only while the app is
+        // in front, because a pane focused behind another application has not
+        // been seen by anyone.
+        for endpoint in session.endpoints {
+            guard let snapshot = endpoint.snapshot else { continue }
+            agentPriority.observe(
+                snapshot: snapshot, endpoint: endpoint.index,
+                watching: NSApp.isActive && endpoint.index == session.activeEndpoint)
         }
         sidebar.priority = agentPriority
 
@@ -863,7 +868,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         watchMachines()
         offerInstallIfNeeded(session)
         sidebar.update(endpoints: session.endpoints, active: session.activeEndpoint)
-        tabBar.update(with: session.lastSnapshot)
+        tabBar.update(
+            with: session.lastSnapshot, priority: agentPriority,
+            endpoint: session.activeEndpoint)
         gridView.paneLabels = Self.paneLabels(from: session.lastSnapshot)
 
         if snapshotsChanged {
