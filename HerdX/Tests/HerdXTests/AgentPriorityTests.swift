@@ -155,8 +155,11 @@ final class AgentBandingTests: XCTestCase {
         priority.observe(snapshot: quiet, endpoint: 0, watching: true, now: later(6))
 
         XCTAssertEqual(
-            priority.tier(agent(quiet, "w1:p1"), on: 0, now: later(6)), .idle,
+            priority.tier(agent(quiet, "w1:p1"), on: 0, now: later(6)), .active,
             "a pane you have open is one you are working in, running or not")
+        XCTAssertEqual(
+            priority.tier(agent(quiet, "w1:p1"), on: 0, now: later(7)), .idle,
+            "and half an hour after you left it, it is not any more")
     }
 
     func testAnAgentAlreadyIdleAtLaunchIsNotClaimedToBeEitherFreshOrStale() {
@@ -173,6 +176,33 @@ final class AgentBandingTests: XCTestCase {
         XCTAssertNil(
             priority.quietFor(row, on: 0, now: later(9)),
             "a guessed age must not be shown as a fact")
+    }
+
+    func testClickingAFinishedAgentDoesNotTakeItOutOfTheWorkArea() {
+        var priority = AgentPriority()
+        let running = snapshot([Row(paneID: "w1:p1", status: "working")])
+        priority.observe(snapshot: running, endpoint: 0, watching: true, now: start)
+        // It finishes while you are elsewhere, so it is asking for you.
+        let finished = snapshot([Row(paneID: "w1:p1", status: "idle", seq: 2)])
+        priority.observe(snapshot: finished, endpoint: 0, watching: false, now: later(1))
+        let row = agent(finished, "w1:p1")
+        XCTAssertEqual(priority.tier(row, on: 0, now: later(1)), .active)
+
+        // You click it: its tab comes to the front with the app active, which
+        // is what counts as having seen it.
+        priority.observe(snapshot: finished, endpoint: 0, watching: true, now: later(1))
+
+        XCTAssertEqual(
+            priority.tier(row, on: 0, now: later(1)), .active,
+            "reading the band off attention state moved a finished agent out of the work "
+                + "area at the moment you started working on it")
+        XCTAssertEqual(
+            priority.reason(row, on: 0), "idle",
+            "it is no longer asking for anything, which is a different question from where "
+                + "it belongs")
+        XCTAssertEqual(
+            priority.tier(row, on: 0, now: later(2)), .idle,
+            "it leaves the work area on the clock, once you have moved on")
     }
 
     // MARK: - What the row says
@@ -367,7 +397,8 @@ final class AgentBandingTests: XCTestCase {
         priority.observe(snapshot: reused, endpoint: 0, watching: true, now: later(6))
 
         XCTAssertEqual(
-            priority.tier(agent(reused, "w1:p1"), on: 0, now: later(6)), .idle,
-            "a new pane handed the same id would otherwise be born hours old")
+            priority.tier(agent(reused, "w1:p1"), on: 0, now: later(6)), .active,
+            "a new pane handed the same id would otherwise be born hours old, and land "
+                + "straight in the bottom band")
     }
 }

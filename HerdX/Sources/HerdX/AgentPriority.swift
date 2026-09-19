@@ -31,14 +31,24 @@ struct AgentPriority: Equatable {
     /// the fold by the time you sit down.
     static let longIdleAfter: TimeInterval = 4 * 60 * 60
 
+    /// How long after you last touched an agent it still counts as where you
+    /// are working.
+    ///
+    /// The top band is the live work area, not a list of complaints, and an
+    /// agent you are dealing with belongs in it whether or not it still wants
+    /// anything. Without this the band was read off attention state, so
+    /// clicking a finished agent dropped it out of the band at the very moment
+    /// you started working on it — the one interaction that proves it belongs
+    /// there. Half an hour is long enough to click away and come back.
+    static let activeFor: TimeInterval = 30 * 60
+
     /// Which band of the agents list a row belongs in.
     ///
     /// Deliberately not folded into `rank`: rank answers "what needs me", and
     /// the clock must never override that. An agent blocked since yesterday is
     /// still blocked, so only agents drawn as idle are ever aged down.
     enum Tier: Int, Comparable {
-        /// Working, blocked, or finished without anyone looking — the reasons
-        /// this list exists.
+        /// Work in hand: running, asking for you, or touched a moment ago.
         case active = 2
         /// Idle, but recently enough to still be what you are doing.
         case idle = 1
@@ -293,11 +303,11 @@ struct AgentPriority: Equatable {
         }
     }
 
-    /// Whether the clock is allowed to have an opinion about an agent.
+    /// Whether an agent is asking for anything.
     ///
-    /// Anything still running, or still waiting for you, is active by
-    /// definition however long it has been that way — that is the whole reason
-    /// the band and the rank are kept apart.
+    /// One that is not still has a place in the top band, by the clock — but
+    /// one that is stays there however long it has been asking, which is the
+    /// floor under everything the clock decides.
     private static func isQuiet(_ status: Snapshot.AgentStatus) -> Bool {
         switch status {
         case .working, .blocked, .done: return false
@@ -306,13 +316,26 @@ struct AgentPriority: Equatable {
     }
 
     /// Which band an agent belongs in.
+    ///
+    /// The bands are recency, with one floor under them: an agent that is
+    /// running, or that is asking for you, is where you are working whatever
+    /// the clock says. Everything else is placed on how long ago you last had
+    /// anything to do with it — including an agent that has finished and been
+    /// seen, which is not asking for anything but is very often the thing in
+    /// front of you.
     func tier(_ agent: Snapshot.Agent, on endpoint: Int, now: Date = Date()) -> Tier {
         guard Self.isQuiet(displayStatus(agent, on: endpoint)) else { return .active }
         // An agent nothing is known about yet sits in the middle band rather
         // than at the bottom: claiming it is stale is a claim, and this cannot
-        // back it up.
+        // back it up. Nor is it put in the top band, which is for work in hand.
         guard let last = activity[key(agent.paneID, on: endpoint)] else { return .idle }
-        return now.timeIntervalSince(last.at) >= Self.longIdleAfter ? .longIdle : .idle
+        let quiet = now.timeIntervalSince(last.at)
+        // Only a time we actually watched may promote. First sight records when
+        // this client attached, which is a guess about an agent that may have
+        // been idle for a week — and reading it as "touched just now" would put
+        // every one of them in the work area for half an hour after a relaunch.
+        if last.witnessed, quiet < Self.activeFor { return .active }
+        return quiet >= Self.longIdleAfter ? .longIdle : .idle
     }
 
     /// How long an agent has been quiet, for the row to say so — or nothing,
