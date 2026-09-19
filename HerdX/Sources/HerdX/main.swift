@@ -1333,7 +1333,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
             offerToFetchThemes()
             return
         }
-        let before = (preferences.themeName, preferences.themeColors)
+        // Everything applying a theme writes, so cancelling can put back
+        // everything it changed rather than the two fields anyone thought of.
+        let before = preferences.themeSelection
 
         // Read up front so each row can say what it is. "kitty theme" on four
         // hundred rows says nothing, while light or dark is most of what
@@ -1349,7 +1351,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
                 guard let self, let theme else { return }
                 // Applied here as well as on highlight: what is on screen is a
                 // preview, and a preview is not what was chosen.
-                self.preview(theme: theme, named: entry.name)
+                self.apply(theme: theme, named: entry.name)
             }
         }
 
@@ -1365,24 +1367,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
                     let entry = installed.first(where: { $0.name == item.title }),
                     let theme = ThemeLibrary.theme(at: entry.url)
                 else { return }
-                self.preview(theme: theme, named: entry.name)
+                self.apply(theme: theme, named: entry.name)
             },
             onCancel: { [weak self] in
                 guard let self else { return }
-                self.preferences.themeName = before.0
-                self.preferences.themeColors = before.1
+                self.preferences.themeSelection = before
                 self.commitTheme()
             })
     }
 
-    /// Shows a theme without keeping it, so moving off it puts things back.
-    private func preview(theme: Theme, named name: String) {
-        preferences.themeName = name
-        preferences.themeColors = theme.hexComponents
-        // A loaded palette and the two overrides cannot both win, and the
-        // overrides would repaint two of the twenty colours being looked at.
-        preferences.background = nil
-        preferences.foreground = nil
+    /// Puts a theme on screen and into settings.
+    ///
+    /// Highlighting a row does this as much as choosing one does — a palette
+    /// can only be judged on the terminal it is colouring. What separates the
+    /// two is that closing the list without choosing puts back what `before`
+    /// held.
+    private func apply(theme: Theme, named name: String) {
+        preferences.themeSelection = Preferences.ThemeSelection(
+            name: name,
+            colors: theme.hexComponents,
+            // A loaded palette and the two overrides cannot both win, and the
+            // overrides would repaint two of the twenty colours being looked at.
+            background: nil,
+            foreground: nil)
         commitTheme()
     }
 

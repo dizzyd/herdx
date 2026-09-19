@@ -66,6 +66,34 @@ struct Preferences {
     var themeName: String?
     var themeColors: [String]?
 
+    /// Everything choosing a theme writes.
+    ///
+    /// Gathered into one value because these four have to move together.
+    /// Applying a theme sets a palette *and* clears the two colour overrides,
+    /// and putting that back used to restore only the palette — so opening the
+    /// theme list and pressing Escape lost colours set through the wells or
+    /// through "Match Attached".
+    struct ThemeSelection: Equatable {
+        var name: String?
+        var colors: [String]?
+        var background: NSColor?
+        var foreground: NSColor?
+    }
+
+    var themeSelection: ThemeSelection {
+        get {
+            ThemeSelection(
+                name: themeName, colors: themeColors,
+                background: background, foreground: foreground)
+        }
+        set {
+            themeName = newValue.name
+            themeColors = newValue.colors
+            background = newValue.background
+            foreground = newValue.foreground
+        }
+    }
+
     private enum Key {
         static let fontName = "fontName"
         static let fontSize = "fontSize"
