@@ -566,6 +566,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         }
     }
 
+    /// Stops the session the window is on, after asking.
+    @objc private func stopSession(_ sender: Any?) {
+        guard let name = sessionTitle else { return }
+        let confirm = NSAlert()
+        confirm.messageText = "Stop “\(name)”?"
+        confirm.informativeText =
+            "Everything running in it stops, for every client attached to it: herdr keeps "
+            + "terminals alive when a client goes away, but they belong to the server. The "
+            + "session and its workspaces come back if you start it again."
+        let stop = confirm.addButton(withTitle: "Stop")
+        let cancel = confirm.addButton(withTitle: "Cancel")
+        // Return must not be the button that kills terminals.
+        stop.keyEquivalent = ""
+        cancel.keyEquivalent = "\r"
+        guard confirm.runModal() == .alertFirstButtonReturn else { return }
+        stopSession(named: name)
+    }
+
+    /// Stops a session and moves the window off it.
+    ///
+    /// Somewhere to go rather than nowhere: the window was showing a server
+    /// that no longer exists, and leaving it to reconnect to a socket nothing
+    /// is listening on would only look broken. The default session is the one
+    /// to fall back to, being the one a bare `herdr` opens.
+    private func stopSession(named name: String) {
+        guard SessionCatalog.stop(name) else {
+            alert("Could not stop “\(name)”", "herdr would not stop the session.")
+            return
+        }
+        notice("stopped \(name)")
+        let running = SessionCatalog.list().filter { $0.running && $0.name != name }
+        if let next = running.first(where: \.isDefault) ?? running.first {
+            adopt(session: next.name)
+        } else {
+            preferences.sessionName = nil
+            Preferences.current = preferences
+            reattach()
+        }
+    }
+
     private func alert(_ message: String, _ detail: String) {
         let alert = NSAlert()
         alert.messageText = message
@@ -604,6 +644,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
             title: "New Session…", action: #selector(newSession(_:)), keyEquivalent: "")
         new.target = self
         menu.addItem(new)
+        let stop = NSMenuItem(
+            title: sessionTitle.map { "Stop “\($0)”…" } ?? "Stop Session…",
+            action: #selector(stopSession(_:)), keyEquivalent: "")
+        stop.target = self
+        stop.isEnabled = sessionTitle != nil
+        menu.addItem(stop)
     }
 
     /// Opens a session and hands it to the views. Returns false if no server.

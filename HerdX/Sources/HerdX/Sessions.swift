@@ -106,6 +106,17 @@ enum SessionCatalog {
         return true
     }
 
+    /// Stops a session's server.
+    ///
+    /// Destructive in a way that attaching and detaching are not: herdr keeps
+    /// terminals alive when a client goes away, but they belong to the server,
+    /// and stopping it takes them and every other client with it. The session
+    /// itself survives — its workspaces are on disk and come back when it is
+    /// started again.
+    static func stop(_ name: String) -> Bool {
+        output(["session", "stop", name]) != nil
+    }
+
     /// How many workspaces a session has, or nil if it could not be asked.
     static func workspaceCount(_ name: String) -> Int? {
         struct Reply: Decodable {
