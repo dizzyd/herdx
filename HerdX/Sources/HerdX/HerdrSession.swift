@@ -185,6 +185,15 @@ final class HerdrSession {
         }
     }
 
+    /// The herdr on this Mac, when there is one and it is up.
+    ///
+    /// Not an index: which endpoint is local depends on what the catalog held
+    /// when the session was built, and assuming it is the first one is the
+    /// sort of guess that survives testing and fails on somebody else's setup.
+    var localEndpoint: EndpointInfo? {
+        endpoints.first { !$0.isRemote && $0.status == .online }
+    }
+
     /// The server boot an endpoint is on, which its commands must carry.
     func bootID(forEndpoint index: Int) -> String? {
         snapshots[endpoint: index]?.bootID

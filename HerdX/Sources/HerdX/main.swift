@@ -1581,9 +1581,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     /// machine is a decision it wants a person to make. A pane is a terminal,
     /// so its prompt arrives where you can answer it.
     private func installHerdr(on machine: Machines.Machine) {
-        guard let session,
-            let local = session.endpoints.first(where: { !$0.isRemote && $0.status == .online })
-        else {
+        guard let session, let local = session.localEndpoint else {
             // The installer is herdr's, and it runs in a herdr pane. Without a
             // local server there is neither, and saying "no local server" to
             // someone who has never installed herdr explains nothing.
