@@ -18,6 +18,8 @@ struct Keymap {
         case renameWorkspace = "rename_workspace", workspacePicker = "workspace_picker"
         case previousWorkspace = "previous_workspace", nextWorkspace = "next_workspace"
         case switchWorkspace = "switch_workspace"
+        /// HerdX's own: a workspace on this Mac, from wherever you are.
+        case newLocalWorkspace = "new_local_workspace"
         case goto_ = "goto"
         case newTab = "new_tab", closeTab = "close_tab", renameTab = "rename_tab"
         case previousTab = "previous_tab", nextTab = "next_tab"
@@ -447,6 +449,13 @@ extension Keymap {
     /// than inventing one: next and previous agent are the tab keys with alt,
     /// because that is the shape the documentation suggests for agent
     /// bindings, and the jump gets the letter it is named after.
+    ///
+    /// New local workspace exists because `new_workspace` lands wherever you
+    /// are looking, and a workspace on this Mac is the one thing it cannot
+    /// give you while a remote machine is on screen. It takes ⌘ after the
+    /// prefix because herdr's own defaults never reach for ⌘ — every one of
+    /// them is a plain key or a shifted one — so it asks for a chord nothing
+    /// here has spent. `adopt` still stands aside if a profile has spent it.
     static let additions = """
         focus_pane_left = "prefix+left"
         focus_below = "prefix+down"
@@ -455,6 +464,7 @@ extension Keymap {
         focus_top_agent = "prefix+a"
         next_agent = "prefix+alt+n"
         previous_agent = "prefix+alt+p"
+        new_local_workspace = "prefix+cmd+n"
         """
 
     /// herdr's defaults, used until a snapshot brings the user's own.

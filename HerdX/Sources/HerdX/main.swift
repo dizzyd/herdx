@@ -969,6 +969,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         case .switchTab: return { self.focusTab(at: self.pendingDigit - 1, session: session) }
 
         case .newWorkspace: return { self.invoke(.newWorkspace, session: session) }
+        case .newLocalWorkspace:
+            // Named rather than assumed: the whole point of the key is which
+            // machine the workspace lands on, so it goes through `focus`,
+            // which switches first and carries that machine's boot id.
+            guard let local = session.localEndpoint else {
+                // Offline is a different thing from unbound, and the generic
+                // "not in HerdX yet" would send someone looking in the wrong
+                // place entirely.
+                return { self.notice("no herdr server on this Mac") }
+            }
+            return { self.focus(.newWorkspace, on: local.index) }
         case .closeWorkspace:
             guard let id = snapshot?.workspaces.first(where: \.focused)?.workspaceID else {
                 return nil

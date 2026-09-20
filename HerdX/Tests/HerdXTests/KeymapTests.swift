@@ -362,6 +362,62 @@ final class KeymapTests: XCTestCase {
         XCTAssertEqual(resolver.resolve(keystroke("p", flags: [.option])).0, .previousAgent)
     }
 
+    // MARK: - The local workspace key
+
+    func testTheLocalWorkspaceKeyIsACommandChordAfterThePrefix() {
+        // herdr's defaults never reach for ⌘, so the chord is free — but it
+        // has to actually resolve, and a modifier the parser dropped would
+        // leave prefix+n meaning this instead of next_tab.
+        let resolver = ChordResolver()
+        resolver.keymap = Keymap(profile: """
+            [keys]
+            prefix = "ctrl+b"
+            new_workspace = "prefix+shift+n"
+            next_tab = "prefix+n"
+            """)!
+
+        _ = resolver.resolve(keystroke("b", flags: [.control]))
+        XCTAssertEqual(
+            resolver.resolve(keystroke("n", flags: [.command])).0, .newLocalWorkspace)
+
+        _ = resolver.resolve(keystroke("b", flags: [.control]))
+        XCTAssertEqual(
+            resolver.resolve(keystroke("n")).0, .nextTab,
+            "the command modifier was dropped and this chord ate a plain key")
+
+        _ = resolver.resolve(keystroke("b", flags: [.control]))
+        XCTAssertEqual(
+            resolver.resolve(keystroke("n", flags: [.shift])).0, .newWorkspace,
+            "and herdr's own shifted form is untouched")
+    }
+
+    func testTheLocalWorkspaceKeyStandsAsideForAProfileThatSpentIt() {
+        let resolver = ChordResolver()
+        resolver.keymap = Keymap(profile: """
+            [keys]
+            prefix = "ctrl+b"
+            zoom = "prefix+cmd+n"
+            """)!
+
+        _ = resolver.resolve(keystroke("b", flags: [.control]))
+
+        XCTAssertEqual(
+            resolver.resolve(keystroke("n", flags: [.command])).0, .zoom,
+            "an addition that overrode the user's own keymap would be the guessing "
+                + "Keymap exists to stop")
+    }
+
+    func testTheLocalWorkspaceChordIsReachableFromAKeystroke() {
+        // The same question HERDX_PROBE_CHORDS asks of a live keymap: a
+        // binding nothing can type is worse than no binding at all.
+        let binding = bindings(of: .newLocalWorkspace, in: Keymap.fallback).first
+        XCTAssertNotNil(binding, "the addition never reached the fallback keymap")
+        XCTAssertEqual(binding?.key, .character("n"))
+        XCTAssertTrue(binding?.command == true)
+        XCTAssertTrue(binding?.usesPrefix == true)
+        XCTAssertFalse(binding?.shift == true, "⇧⌘N is a different keystroke from ⌘N")
+    }
+
     func testTheUpArrowIsItsOwnActionSoItCanDoMoreThanKDoes() {
         let keymap = Keymap(profile: """
             [keys]
