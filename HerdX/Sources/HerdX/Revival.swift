@@ -28,10 +28,18 @@ final class Revival {
     /// How long to wait for a freshly made pane to reach a prompt.
     ///
     /// Asked rather than slept through: `agent.start` refuses a pane that is
-    /// not an idle shell, and a fixed wait is either too short on a loaded
+    /// not an available shell, and a fixed wait is either too short on a loaded
     /// machine or wasted on an idle one.
-    private static let promptTries = 20
+    private static let promptTries = 40
     private static let promptInterval: TimeInterval = 0.25
+    /// How many readings in a row must agree before the pane counts as ready.
+    ///
+    /// One is not enough: a shell is momentarily alone in its process group
+    /// *before* it has run its startup files, so a single reading taken at the
+    /// wrong instant says "ready" and `agent.start` then lands in the middle of
+    /// the startup it had not begun. Measured on a shell whose rc file
+    /// initialises conda.
+    private static let promptSettles = 3
 
     private let record: Hibernated
     private let socket: String?
@@ -126,23 +134,28 @@ final class Revival {
         }
     }
 
-    /// Polls until the pane is a shell at a prompt.
+    /// Polls until the pane has been a shell at a prompt for several readings.
     private func waitForPrompt(
-        in pane: String, tries: Int, then act: @escaping (Bool) -> Void
+        in pane: String, tries: Int, settled: Int = 0, then act: @escaping (Bool) -> Void
     ) {
         guard tries > 0 else { return act(false) }
         LocalAPI.send(.paneProcessInfo(pane), socket: socket) { [weak self] result in
             MainActor.assumeIsolated {
                 guard let self else { return }
+                var ready = false
                 if case .success(let body) = result,
-                    case .success(let info) = Reply.decode(Reply.ProcessInfo.self, from: body),
-                    info.processInfo.isIdleShell
+                    case .success(let info) = Reply.decode(Reply.ProcessInfo.self, from: body)
                 {
-                    return act(true)
+                    ready = info.processInfo.isIdleShell
                 }
+                // A run of agreeing readings, not a single one — and the run
+                // starts again from zero the moment the shell is busy.
+                let agreed = ready ? settled + 1 : 0
+                if agreed >= Self.promptSettles { return act(true) }
                 DispatchQueue.main.asyncAfter(deadline: .now() + Self.promptInterval) {
                     MainActor.assumeIsolated {
-                        self.waitForPrompt(in: pane, tries: tries - 1, then: act)
+                        self.waitForPrompt(
+                            in: pane, tries: tries - 1, settled: agreed, then: act)
                     }
                 }
             }

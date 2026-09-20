@@ -105,17 +105,41 @@ enum Reply {
                 try container.decodeIfPresent([Process].self, forKey: .foregroundProcesses) ?? []
         }
 
-        /// Whether nothing is running in this pane but its own shell.
+        /// Whether this pane is a shell sitting at a prompt.
         ///
-        /// The foreground process group is the shell's own only while no job
-        /// has been started under it. Measured rather than assumed, and it is
-        /// the reason a revived pane is always a shell: a pane launched with an
-        /// argv *is* that process, so its group id equals its "shell" pid and
-        /// this reads true while it is busy. Such panes are refused earlier, by
-        /// the command they carry in the exported layout.
+        /// Deliberately the same three conditions `available_pane_shell_from_job`
+        /// applies before `agent.start` will use a pane, because anything looser
+        /// is a revive that dies with "is not an available shell":
+        /// the foreground group is the pane's own process, it is the *only*
+        /// process in that group, and it is a shell by name.
+        ///
+        /// The middle one is not pedantry. A zsh running its startup files
+        /// spawns conda's python *in its own process group*, so the group id
+        /// still equals the shell's while two or three processes are in it —
+        /// measured, after a revive failed on exactly that.
+        ///
+        /// It is also why a revived pane is always a plain shell: a pane
+        /// launched with an argv *is* that process, so its group id equals its
+        /// "shell" pid and a group-only test reads true while it is busy.
         var isIdleShell: Bool {
-            guard let shellPid, let group = foregroundProcessGroupID else { return false }
-            return shellPid == group
+            guard let shellPid, foregroundProcessGroupID == shellPid else { return false }
+            guard foregroundProcesses.count == 1, let only = foregroundProcesses.first,
+                only.pid == shellPid
+            else { return false }
+            return Self.isShellName(only.name)
+        }
+
+        /// herdr's list, normalised its way: basename, no leading dash from a
+        /// login shell, no .exe, lowercased.
+        static func isShellName(_ name: String) -> Bool {
+            let base = name.split(whereSeparator: { $0 == "/" || $0 == "\\" }).last.map(String.init)
+                ?? name
+            let normalised = base.drop(while: { $0 == "-" })
+                .replacingOccurrences(of: ".exe", with: "").lowercased()
+            return [
+                "sh", "bash", "dash", "zsh", "fish", "ksh", "mksh", "csh", "tcsh", "elvish",
+                "xonsh", "nu", "pwsh", "powershell",
+            ].contains(normalised)
         }
 
         /// What is running, for saying why a workspace was left alone.

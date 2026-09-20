@@ -111,6 +111,64 @@ final class HibernationPlanTests: XCTestCase {
         return nil
     }
 
+    // MARK: - What counts as a shell at a prompt
+
+    private func info(_ json: String) -> Reply.Info { decode(Reply.Info.self, json) }
+
+    func testALoneShellInItsOwnGroupIsReady() {
+        XCTAssertTrue(
+            info(
+                """
+                {"pane_id": "p", "shell_pid": 100, "foreground_process_group_id": 100,
+                 "foreground_processes": [{"pid": 100, "name": "zsh"}]}
+                """
+            ).isIdleShell)
+    }
+
+    func testAShellRunningItsStartupFilesIsNotReady() {
+        // Measured: a zsh whose rc file initialises conda spawns python *in the
+        // shell's own process group*, so the group id still matches while the
+        // shell is plainly busy. A revive that trusted the group id alone died
+        // with "is not an available shell".
+        XCTAssertFalse(
+            info(
+                """
+                {"pane_id": "p", "shell_pid": 100, "foreground_process_group_id": 100,
+                 "foreground_processes": [{"pid": 109, "name": "python3.12"},
+                                          {"pid": 100, "name": "zsh"}]}
+                """
+            ).isIdleShell,
+            "agent.start refuses this pane, so waiting on it has to as well")
+    }
+
+    func testALoginShellIsStillAShell() {
+        XCTAssertTrue(
+            info(
+                """
+                {"pane_id": "p", "shell_pid": 100, "foreground_process_group_id": 100,
+                 "foreground_processes": [{"pid": 100, "name": "-zsh"}]}
+                """
+            ).isIdleShell,
+            "herdr strips the leading dash before deciding")
+    }
+
+    func testAPaneThatIsItsOwnProcessIsNotAShell() {
+        // A pane launched with an argv has no shell under it, so its group id
+        // equals its own pid while it is busy running that argv.
+        XCTAssertFalse(
+            info(
+                """
+                {"pane_id": "p", "shell_pid": 100, "foreground_process_group_id": 100,
+                 "foreground_processes": [{"pid": 100, "name": "sleep"}]}
+                """
+            ).isIdleShell)
+    }
+
+    func testAPaneWithNoShellPidIsNotReady() {
+        XCTAssertFalse(
+            info(#"{"pane_id": "p", "foreground_processes": []}"#).isIdleShell)
+    }
+
     func testAQuietWorkspaceIsRecordedWithEnoughToPutItBack() throws {
         let record = try plan().get()
 
