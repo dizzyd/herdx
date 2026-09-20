@@ -122,6 +122,17 @@ final class AgentResumeTests: XCTestCase {
 
     // MARK: - Names herdr will accept
 
+    func testARevivedAgentIsNamedAfterItsWorkspace() {
+        // herdr leaves a detected agent unnamed, and a row with no name falls
+        // back to showing its workspace. A revived agent has to read the same
+        // way, or bringing a workspace back silently renames what is in it —
+        // "augur" came back as "claude-augur" once.
+        XCTAssertEqual(AgentResume.name(for: "claude", in: "augur", avoiding: []), "augur")
+        XCTAssertEqual(
+            AgentResume.name(for: "codex", in: "solstone-journal", avoiding: []),
+            "solstone-journal")
+    }
+
     func testANameStartsWithALetterAndIsShortEnough() {
         let name = AgentResume.name(for: "claude", in: "2fa-rewrite", avoiding: [])
         XCTAssertEqual(name.first?.isLowercase, true)

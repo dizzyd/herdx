@@ -69,10 +69,20 @@ enum AgentResume {
     /// `agent.start` requires a name starting with a lowercase letter, at most
     /// 32 characters of lowercase, digits, dash or underscore — and one that no
     /// live agent is already using, or it refuses the whole request.
+    ///
+    /// Named after the workspace rather than after `agent-workspace`, because a
+    /// revived agent has to look like the one that was hibernated. herdr leaves
+    /// a detected agent unnamed, and a row with no name falls back to showing
+    /// its workspace — so a workspace called `augur` came back reading
+    /// `claude-augur`, which is a rename nobody asked for.
+    ///
+    /// Clearing the name afterwards would be truer still, and does not work: an
+    /// agent counts as launch-pending until it settles, a resumed agent that
+    /// wants you settles as *blocked*, and `agent.rename` refuses either way.
     static func name(for agent: String, in workspace: String, avoiding taken: Set<String>)
         -> String
     {
-        let base = sanitised("\(agent)-\(workspace)")
+        let base = sanitised(workspace)
         guard taken.contains(base) else { return base }
         // Suffixed rather than randomised, so a second claude in the same
         // workspace reads as the second one.
