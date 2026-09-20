@@ -12,6 +12,11 @@ enum Command {
     case newWorkspace
     /// The same workspace, on this Mac rather than on whatever is on screen.
     case newLocalWorkspace
+    /// Asked before hibernating, never from a keystroke: what agents are in a
+    /// workspace, what is running in a pane, and the shape of a tab.
+    case agentList
+    case paneProcessInfo(String)
+    case layoutExport(String)
     case focusPane(String)
     case focusTab(String)
     case focusWorkspace(String)
@@ -55,6 +60,9 @@ enum Command {
         case .resizePane: return "pane.resize"
         case .reloadConfig: return "server.reload_config"
         case .closeWorkspace: return "workspace.close"
+        case .agentList: return "agent.list"
+        case .paneProcessInfo: return "pane.process_info"
+        case .layoutExport: return "layout.export"
         // Client-side: no endpoint method, because none of it is the server's
         // business.
         case .copyMode, .help, .settings, .detach, .toggleSidebar: return ""
@@ -90,6 +98,9 @@ enum Command {
         case .swapUp: return ["direction": "up"]
         case .swapRight: return ["direction": "right"]
         case .editScrollback(let id): return ["pane_id": id]
+        case .paneProcessInfo(let id): return ["pane_id": id]
+        // By tab: a workspace can hold several, and each is its own tree.
+        case .layoutExport(let id): return ["tab_id": id]
         case .renameTab(let id, let label): return ["tab_id": id, "label": label]
         case .renamePane(let id, let label): return ["pane_id": id, "label": label]
         case .renameWorkspace(let id, let label): return ["workspace_id": id, "label": label]
