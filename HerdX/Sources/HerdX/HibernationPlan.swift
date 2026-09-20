@@ -19,11 +19,13 @@ enum HibernationPlan {
         workspace: Snapshot.Workspace,
         tabs: [Snapshot.Tab],
         endpointID: String,
-        agents: [Reply.Agent],
+        panes: [Reply.PaneEntry],
         processes: [String: Reply.Info],
         layouts: [String: Reply.Layout],
         at: Date = Date()
     ) -> Result<Hibernated, Refusal> {
+        let agents = panes.filter(\.holdsAgent)
+
         // A workspace of plain shells has no conversation to preserve — only a
         // cwd and a layout — so ending it buys little and surprises somebody.
         guard !agents.isEmpty else {
@@ -37,15 +39,13 @@ enum HibernationPlan {
         if let busy = agents.first(where: {
             $0.agentStatus == .working || $0.agentStatus == .blocked
         }) {
-            return .failure(
-                Refusal(reason: "\(busy.name ?? busy.agent ?? "an agent") is \(busy.agentStatus)"))
+            return .failure(Refusal(reason: "\(busy.agentName) is \(busy.agentStatus)"))
         }
 
         if let unresumable = agents.first(where: { $0.agentSession == nil }) {
             return .failure(
                 Refusal(
-                    reason:
-                        "\(unresumable.name ?? unresumable.agent ?? "an agent") has no session to "
+                    reason: "\(unresumable.agentName) in \(unresumable.paneID) has no session to "
                         + "resume, so it would come back as a bare shell"))
         }
 

@@ -23,16 +23,24 @@ enum Reply {
         var text: String { message ?? code ?? "rejected" }
     }
 
-    struct AgentList: Decodable {
-        let agents: [Agent]
+    /// For a reply whose body says only that it worked, such as a close.
+    struct Empty: Decodable {}
+
+    struct PaneList: Decodable {
+        let panes: [PaneEntry]
     }
 
-    struct Agent: Decodable, Equatable {
+    /// A pane as `pane.list` reports it.
+    ///
+    /// Read from the pane list rather than from `agent.list` because the
+    /// session ref lives on the pane: one request then answers both questions
+    /// hibernation asks — what is in this workspace, and which of it can be
+    /// resumed.
+    struct PaneEntry: Decodable, Equatable {
         let paneID: String
         let workspaceID: String
+        let tabID: String
         let agentStatus: Snapshot.AgentStatus
-        let name: String?
-        let agent: String?
         /// Absent when herdr never learned which conversation this pane holds —
         /// which makes the agent unresumable, and the workspace unhibernatable.
         let agentSession: Session?
@@ -40,10 +48,20 @@ enum Reply {
         enum CodingKeys: String, CodingKey {
             case paneID = "pane_id"
             case workspaceID = "workspace_id"
+            case tabID = "tab_id"
             case agentStatus = "agent_status"
-            case name, agent
             case agentSession = "agent_session"
         }
+
+        /// Whether there is an agent here at all.
+        ///
+        /// Either reading counts. A pane herdr has detected an agent in but
+        /// never got a session for is still an agent pane — and saying so is
+        /// what gets it the refusal that names the real problem, rather than
+        /// the vaguer one about a process running in a shell.
+        var holdsAgent: Bool { agentSession != nil || agentStatus != .unknown }
+
+        var agentName: String { agentSession?.agent ?? "an agent" }
     }
 
     /// herdr's pointer into the agent's own conversation store.

@@ -27,21 +27,32 @@ final class HibernationPlanTests: XCTestCase {
             """)
     }
 
-    private func agent(
+    /// A pane as `pane.list` reports it — the same keys a live server sends.
+    private func agentPane(
         pane: String = "w1:p1", status: String = "idle", session: Bool = true,
-        name: String = "claude"
-    ) -> Reply.Agent {
+        agent: String = "claude", tab: String = "w1:t1"
+    ) -> Reply.PaneEntry {
         let sessionJSON =
             session
             ? """
-            , "agent_session": {"source": "herdr:claude", "agent": "claude",
+            , "agent_session": {"source": "herdr:\(agent)", "agent": "\(agent)",
                                 "kind": "id", "value": "conv-abc"}
             """ : ""
         return decode(
-            Reply.Agent.self,
+            Reply.PaneEntry.self,
             """
-            {"pane_id": "\(pane)", "workspace_id": "w1", "agent_status": "\(status)",
-             "name": "\(name)", "agent": "claude"\(sessionJSON)}
+            {"pane_id": "\(pane)", "workspace_id": "w1", "tab_id": "\(tab)",
+             "agent_status": "\(status)"\(sessionJSON)}
+            """)
+    }
+
+    /// A pane with nothing herdr recognises in it.
+    private func plainPane(_ pane: String = "w1:p2", tab: String = "w1:t1") -> Reply.PaneEntry {
+        decode(
+            Reply.PaneEntry.self,
+            """
+            {"pane_id": "\(pane)", "workspace_id": "w1", "tab_id": "\(tab)",
+             "agent_status": "unknown"}
             """)
     }
 
@@ -80,7 +91,7 @@ final class HibernationPlanTests: XCTestCase {
     }
 
     private func plan(
-        agents: [Reply.Agent]? = nil,
+        panes: [Reply.PaneEntry]? = nil,
         processes: [String: Reply.Info]? = nil,
         layouts: [String: Reply.Layout]? = nil,
         tabs: [Snapshot.Tab]? = nil
@@ -89,7 +100,7 @@ final class HibernationPlanTests: XCTestCase {
             workspace: workspace(),
             tabs: tabs ?? [tab()],
             endpointID: "local",
-            agents: agents ?? [agent()],
+            panes: panes ?? [agentPane(), plainPane()],
             processes: processes ?? ["w1:p2": idleShell("w1:p2")],
             layouts: layouts ?? ["w1:t1": layout()],
             at: Date(timeIntervalSince1970: 1_758_000_000))
@@ -119,18 +130,18 @@ final class HibernationPlanTests: XCTestCase {
     }
 
     func testAWorkspaceWithNoAgentIsLeftAlone() {
-        XCTAssertEqual(refusal(plan(agents: [])), "no agent to bring back")
+        XCTAssertEqual(refusal(plan(panes: [plainPane()])), "no agent to bring back")
     }
 
     func testAnAgentThatStartedWorkingSinceTheSweepIsNotKilled() {
         // The whole point of asking again: several round trips happen between
         // choosing a workspace and closing it.
-        XCTAssertEqual(refusal(plan(agents: [agent(status: "working")])), "claude is working")
-        XCTAssertEqual(refusal(plan(agents: [agent(status: "blocked")])), "claude is blocked")
+        XCTAssertEqual(refusal(plan(panes: [agentPane(status: "working"), plainPane()])), "claude is working")
+        XCTAssertEqual(refusal(plan(panes: [agentPane(status: "blocked"), plainPane()])), "claude is blocked")
     }
 
     func testAnAgentWithNoSessionRefuses() throws {
-        let reason = try XCTUnwrap(refusal(plan(agents: [agent(session: false)])))
+        let reason = try XCTUnwrap(refusal(plan(panes: [agentPane(session: false), plainPane()])))
         XCTAssertTrue(
             reason.contains("no session to resume"),
             "silently downgrading a workspace to bare shells is worse than leaving it")
@@ -165,7 +176,7 @@ final class HibernationPlanTests: XCTestCase {
         let reason = try XCTUnwrap(
             refusal(
                 plan(
-                    agents: [agent(pane: "w1:p9")],
+                    panes: [agentPane(pane: "w1:p9"), agentPane(), plainPane()],
                     processes: ["w1:p1": idleShell("w1:p1"), "w1:p2": idleShell("w1:p2")])))
         XCTAssertTrue(
             reason.contains("w1:p9"),
@@ -197,7 +208,7 @@ final class HibernationPlanTests: XCTestCase {
              "root": {"type": "pane", "pane_id": "w1:p3", "cwd": "/src/augur"}}
             """)
         let record = try plan(
-            agents: [agent(pane: "w1:p1"), agent(pane: "w1:p3", name: "codex")],
+            panes: [agentPane(pane: "w1:p1"), agentPane(pane: "w1:p3", agent: "codex", tab: "w1:t2"), plainPane()],
             layouts: ["w1:t1": layout(), "w1:t2": second],
             tabs: [tab(), tab("w1:t2", label: "2")]
         ).get()

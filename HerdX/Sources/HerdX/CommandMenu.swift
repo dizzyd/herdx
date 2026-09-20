@@ -43,7 +43,7 @@ extension Command {
         case .resizePane: return 33
         case .closePaneWithID: return 34
         case .newLocalWorkspace: return 35
-        case .agentList: return 36
+        case .paneList: return 36
         case .paneProcessInfo: return 37
         case .layoutExport: return 38
         }
