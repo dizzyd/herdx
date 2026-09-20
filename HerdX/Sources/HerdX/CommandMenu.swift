@@ -42,6 +42,7 @@ extension Command {
         case .renameWorkspace: return 32
         case .resizePane: return 33
         case .closePaneWithID: return 34
+        case .newLocalWorkspace: return 35
         }
     }
 
@@ -49,7 +50,7 @@ extension Command {
         let all: [Command] = [
             .newTab, .closeTab, .nextTab, .previousTab, .splitRight, .splitDown,
             .focusLeft, .focusDown, .focusUp, .focusRight, .closePane, .zoomPane, .newWorkspace,
-            .copyMode, .help,
+            .newLocalWorkspace, .copyMode, .help,
         ]
         return Dictionary(uniqueKeysWithValues: all.map { ($0.tag, $0) })
     }()
@@ -78,6 +79,11 @@ extension Command {
         ("Previous Tab", Key(equivalent: "[", modifiers: [.command, .shift]), .previousTab),
         ("", Key(equivalent: "", modifiers: []), .newTab),
         ("New Workspace", Key(equivalent: "n", modifiers: [.command, .shift]), .newWorkspace),
+        // No key equivalent: this one's keystroke is a prefix chord, which a
+        // Mac menu has no way to spell. ⇧⌘N is spent on the item above, and
+        // giving two items the same equivalent hands it to whichever AppKit
+        // finds first — which is how copy mode once became unreachable.
+        ("New Local Workspace", Key(equivalent: "", modifiers: []), .newLocalWorkspace),
         ("", Key(equivalent: "", modifiers: []), .newTab),
         // Not shift-command-bracket: that is Previous Tab, and AppKit gives a
         // duplicate equivalent to whichever item it finds first, so copy mode

@@ -45,8 +45,13 @@ final class HelpSheet {
             Self.column(title: " ", rows: Array(prefixed.dropFirst(split))),
             Self.column(
                 title: "Menu",
+                // A column of keystrokes, so an item carrying none is not one
+                // of them. That covers the separators and the commands whose
+                // only keystroke is a prefix chord, which the other columns
+                // already list and a Mac menu cannot spell.
                 rows: Command.menuLayout.compactMap { title, key, _ in
-                    title.isEmpty ? nil : (Self.describe(key), title)
+                    title.isEmpty || key.equivalent.isEmpty
+                        ? nil : (Self.describe(key), title)
                 }),
         ])
         columns.orientation = .horizontal

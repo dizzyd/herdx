@@ -10,6 +10,8 @@ enum Command {
     case focusLeft, focusDown, focusUp, focusRight
     case closePane, zoomPane
     case newWorkspace
+    /// The same workspace, on this Mac rather than on whatever is on screen.
+    case newLocalWorkspace
     case focusPane(String)
     case focusTab(String)
     case focusWorkspace(String)
@@ -56,6 +58,10 @@ enum Command {
         // Client-side: no endpoint method, because none of it is the server's
         // business.
         case .copyMode, .help, .settings, .detach, .toggleSidebar: return ""
+        // Resolved before it reaches the wire. It is workspace.create aimed at
+        // a named machine, and the aiming is `invoke`'s job rather than
+        // anything the request itself can say.
+        case .newLocalWorkspace: return ""
         }
     }
 

@@ -1347,6 +1347,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
             toggleSidebar()
             return
         }
+        // Resolved here rather than in the menu handler, because `invoke` is
+        // the one door every caller comes through: aimed at the active machine
+        // it would be an ordinary new workspace wearing a name that says local.
+        if case .newLocalWorkspace = command {
+            perform(.newLocalWorkspace, session: session)
+            return
+        }
         // These take a required id that herdr will not infer from who is
         // asking, so the focused one is supplied here rather than in every
         // caller. Sending none is rejected as a missing field.
