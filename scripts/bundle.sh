@@ -10,14 +10,14 @@
 #
 # Environment:
 #   HERDX_UNIVERSAL=1   build a fat arm64 + x86_64 app (release distribution)
-#   HERDX_VERSION       CFBundleShortVersionString, default 1.0.1
+#   HERDX_VERSION       CFBundleShortVersionString, default 1.1.0
 #   HERDX_BUILD         CFBundleVersion, default HERDX_VERSION
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CONFIG="${1:-debug}"
 APP="$ROOT/build/HerdX.app"
-VERSION="${HERDX_VERSION:-1.0.1}"
+VERSION="${HERDX_VERSION:-1.1.0}"
 BUILD_NUMBER="${HERDX_BUILD:-$VERSION}"
 UNIVERSAL="${HERDX_UNIVERSAL:-0}"
 
