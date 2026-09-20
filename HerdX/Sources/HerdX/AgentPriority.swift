@@ -351,7 +351,17 @@ struct AgentPriority: Equatable {
         guard Self.isQuiet(displayStatus(agent, on: endpoint)),
             let last = activity[key(agent.paneID, on: endpoint)], last.witnessed
         else { return nil }
-        let hours = Int(now.timeIntervalSince(last.at) / 3600)
+        return Self.age(now.timeIntervalSince(last.at))
+    }
+
+    /// How long ago, as the sidebar spells it.
+    ///
+    /// Shared so a hibernated row ages the same way an idle one does; two
+    /// spellings of the same quantity in one list read as two quantities.
+    /// Nothing under an hour, because a list that reorders itself by the minute
+    /// cannot be read.
+    static func age(_ interval: TimeInterval) -> String? {
+        let hours = Int(interval / 3600)
         guard hours >= 1 else { return nil }
         return hours < 24 ? "\(hours)h" : "\(hours / 24)d"
     }

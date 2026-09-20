@@ -12,6 +12,9 @@ final class SidebarRow: NSView {
         case workspace(String, endpoint: Int)
         case tab(String)
         case pane(String, endpoint: Int)
+        /// A workspace that is not running. Its panes have no ids any more, so
+        /// the record is what addresses it.
+        case hibernated(UUID, endpoint: Int)
     }
 
     let target: Target
@@ -185,13 +188,19 @@ final class SidebarRow: NSView {
 /// rows, and a blank line leaves the reader to infer it. The rule is what makes
 /// the split read as a division rather than as loose spacing.
 final class SidebarSection: NSView {
-    let tier: AgentPriority.Tier
+    let title: String
 
-    init(tier: AgentPriority.Tier, rule: Bool, chrome: Chrome) {
-        self.tier = tier
+    /// Hibernated workspaces are a band here too, and they are not a tier: no
+    /// clock puts a row in it, the record does.
+    convenience init(tier: AgentPriority.Tier, rule: Bool, chrome: Chrome) {
+        self.init(title: tier.title, rule: rule, chrome: chrome)
+    }
+
+    init(title: String, rule: Bool, chrome: Chrome) {
+        self.title = title
         super.init(frame: .zero)
 
-        let label = NSTextField(labelWithString: tier.title.uppercased())
+        let label = NSTextField(labelWithString: title.uppercased())
         // Small, faint and letterspaced, which is how a Mac sidebar says
         // "heading" without competing with the rows underneath it.
         label.font = .systemFont(ofSize: 9, weight: .semibold)
@@ -255,6 +264,10 @@ final class SidebarView: NSView {
     var onSelectWorkspace: ((String, Int) -> Void)?
     /// Raised when an agent is clicked, with the machine it belongs to.
     var onSelectPane: ((String, Int) -> Void)?
+    /// Clicking a hibernated row is how it comes back.
+    var onSelectHibernated: ((UUID, Int) -> Void)?
+    /// Workspaces that are not running, drawn under the live agents.
+    private var hibernated: [Hibernated] = []
 
     /// How the list is arranged, as herdr's own panel puts it.
     enum Arrangement: String {
@@ -278,6 +291,11 @@ final class SidebarView: NSView {
 
     private let stack = NSStackView()
     private(set) var rebuilds = 0
+    /// The headings and rows as built, for tests.
+    ///
+    /// Like `rebuilds`: what the list decided is not observable through a
+    /// window, and the decisions are the part worth pinning down.
+    var builtRows: [NSView] { stack.arrangedSubviews }
     private let modes = NSSegmentedControl()
     /// Raised when the arrangement is switched, so it can be remembered.
     var onArrangementChanged: ((Arrangement) -> Void)?
@@ -366,7 +384,8 @@ final class SidebarView: NSView {
     /// Every attached machine lists its workspaces, like herdr's own sidebar:
     /// seeing what is running elsewhere without switching to it is the point of
     /// attaching to several machines at once.
-    func update(endpoints: [EndpointInfo], active: Int) {
+    func update(endpoints: [EndpointInfo], active: Int, hibernated: [Hibernated] = []) {
+        self.hibernated = hibernated
         // Snapshots are republished constantly and mostly change nothing the
         // sidebar shows; rebuilding every time would throw away hover state
         // mid-gesture.
@@ -398,9 +417,18 @@ final class SidebarView: NSView {
             }
             agents = rows.joined(separator: ",")
         }
+
+        // Hibernated rows come from the store rather than from a snapshot, so
+        // nothing else in this signature moves when one appears or is revived —
+        // and the list would go on showing the old one until something
+        // unrelated changed.
+        let dormant = hibernated
+            .map { "\($0.id):\($0.endpointID):\($0.label)" }
+            .joined(separator: ",")
         let collapsedKey = collapsed.sorted().joined(separator: ",")
         let signature =
             machines + "@\(active)+\(collapsedKey)+\(arrangement.rawValue)+" + agents
+            + "+" + dormant
         guard lastSignature != signature else { return }
         lastSignature = signature
         self.endpoints = endpoints
@@ -461,7 +489,19 @@ final class SidebarView: NSView {
         let all = endpoints.flatMap { endpoint in
             (endpoint.snapshot?.agents ?? []).map { (endpoint, $0) }
         }
-        guard !all.isEmpty else {
+        // Only records for machines that are attached: a row whose machine is
+        // not here could not be revived by clicking it, and a row that does
+        // nothing is worse than one that is missing.
+        let dormant =
+            hibernated
+            .compactMap { record -> (record: Hibernated, endpoint: Int)? in
+                guard let endpoint = endpoints.first(where: { $0.id == record.endpointID })
+                else { return nil }
+                return (record, endpoint.index)
+            }
+            .sorted { $0.record.number < $1.record.number }
+
+        guard !all.isEmpty || !dormant.isEmpty else {
             add(
                 title: "No agents", subtitle: nil, status: .unknown, symbol: nil,
                 collapsed: nil, selected: false, target: .endpoint(0))
@@ -472,18 +512,14 @@ final class SidebarView: NSView {
         // Headings only when there is more than one band to tell apart. A lone
         // "Active" over every row labels nothing and costs a line of the list.
         let tiers = ordered.map { priority.tier($0.1, on: $0.0.index) }
-        let banded = Set(tiers).count > 1
+        // Hibernated rows are a band of their own, so their presence is another
+        // reason for the live rows above them to be labelled.
+        let banded = Set(tiers).count > 1 || (!dormant.isEmpty && !ordered.isEmpty)
         var band: AgentPriority.Tier?
 
         for (index, (endpoint, agent)) in ordered.enumerated() {
             if banded, tiers[index] != band {
-                let section = SidebarSection(
-                    tier: tiers[index], rule: band != nil, chrome: chrome)
-                section.translatesAutoresizingMaskIntoConstraints = false
-                stack.addArrangedSubview(section)
-                section.widthAnchor.constraint(
-                    equalTo: stack.widthAnchor, constant: -12
-                ).isActive = true
+                addSection(tiers[index].title, rule: band != nil)
                 band = tiers[index]
             }
 
@@ -510,6 +546,52 @@ final class SidebarView: NSView {
                 selected: agent.focused && endpoint.index == active,
                 target: .pane(agent.paneID, endpoint: endpoint.index))
         }
+
+        addHibernated(dormant, under: !ordered.isEmpty)
+    }
+
+    /// The workspaces that are not running, under the live ones.
+    ///
+    /// Below "long idle" because that is where they belong in the same
+    /// ordering: the bands above are degrees of not having been touched
+    /// lately, and this is the end of that line — not touched lately, and now
+    /// not running either. Clicking one brings it back, which is the only
+    /// thing that distinguishes it from a row that is merely quiet.
+    private func addHibernated(_ dormant: [(record: Hibernated, endpoint: Int)], under: Bool) {
+        guard !dormant.isEmpty else { return }
+        addSection("Hibernated", rule: under)
+
+        for (record, endpoint) in dormant {
+            // Which agents are coming back, so the row says what is being kept
+            // rather than only that something is.
+            var agents: [String] = []
+            for agent in record.agents where !agents.contains(agent.agent) {
+                agents.append(agent.agent)
+            }
+            // Not "hibernated 9h": the heading above has already said that, and
+            // repeating it in every row only pushed the age out of a narrow
+            // sidebar. The agent rows spell their age the same way.
+            let age = AgentPriority.age(Date().timeIntervalSince(record.at))
+            add(
+                title: record.label,
+                subtitle: [agents.joined(separator: " · "), age]
+                    .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "),
+                // No dot: the status colours say what an agent is doing, and
+                // this one is not doing anything.
+                status: .unknown,
+                symbol: nil,
+                collapsed: nil,
+                selected: false,
+                target: .hibernated(record.id, endpoint: endpoint))
+        }
+    }
+
+    /// A band heading, with the rule that sets it off from the band above.
+    private func addSection(_ title: String, rule: Bool) {
+        let section = SidebarSection(title: title, rule: rule, chrome: chrome)
+        section.translatesAutoresizingMaskIntoConstraints = false
+        stack.addArrangedSubview(section)
+        section.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -12).isActive = true
     }
 
     private func addMachine(_ endpoint: EndpointInfo, isActive: Bool) {
@@ -600,6 +682,7 @@ final class SidebarView: NSView {
             onSelectWorkspace?(id, endpoint)
         case .tab(let id): onSelect?(.focusTab(id))
         case .pane(let id, let endpoint): onSelectPane?(id, endpoint)
+        case .hibernated(let id, let endpoint): onSelectHibernated?(id, endpoint)
         }
     }
 

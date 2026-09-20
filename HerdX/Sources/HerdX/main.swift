@@ -159,6 +159,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
             arrangement: preferences.sidebarArrangement
                 .flatMap(SidebarView.Arrangement.init(rawValue:)) ?? .spaces)
 
+        sidebar.onSelectHibernated = { [weak self] id, _ in
+            guard let self, let record = self.hibernator.records.first(where: { $0.id == id })
+            else { return }
+            // Reviving is not written yet. Saying so is the point: a row that
+            // looks clickable and does nothing is the thing this app's own
+            // rules complain about most.
+            self.notice("reviving \(record.label) is not in HerdX yet")
+        }
         sidebar.onSelectEndpoint = { [weak self] index in
             guard let self, let session = self.session else { return }
             self.switchTo(endpoint: index, session: session)
@@ -868,7 +876,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         noteAttachedTerminal()
         watchMachines()
         offerInstallIfNeeded(session)
-        sidebar.update(endpoints: session.endpoints, active: session.activeEndpoint)
+        sidebar.update(
+            endpoints: session.endpoints, active: session.activeEndpoint,
+            hibernated: hibernator.records)
         tabBar.update(
             with: session.lastSnapshot, priority: agentPriority,
             endpoint: session.activeEndpoint)
