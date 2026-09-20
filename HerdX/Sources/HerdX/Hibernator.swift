@@ -23,6 +23,8 @@ final class Hibernator {
     /// Workspaces with requests out, so a sweep cannot start a second attempt
     /// on top of the first.
     private var inFlight: Set<String> = []
+    /// Revivals under way, held so they outlive the call that started them.
+    private var revivals: [UUID: Revival] = [:]
 
     init(store: HibernationStore = .shared) {
         self.store = store
@@ -32,6 +34,43 @@ final class Hibernator {
     /// What has been hibernated on one machine, in sidebar order.
     func records(forEndpoint endpointID: String) -> [Hibernated] {
         records.filter { $0.endpointID == endpointID }.sorted { $0.number < $1.number }
+    }
+
+    /// Brings a hibernated workspace back, and forgets it once it is.
+    ///
+    /// `liveAgentNames` are the names already in use on that machine: herdr
+    /// refuses an `agent.start` whose name collides with a running agent, and
+    /// refuses the whole request rather than renaming it.
+    func revive(
+        _ id: UUID, socket: String?, liveAgentNames: Set<String> = [],
+        then: @escaping (Result<Hibernated, Error>) -> Void
+    ) {
+        guard let record = records.first(where: { $0.id == id }) else {
+            return then(.failure(Revival.Failure(reason: "that workspace is not hibernated")))
+        }
+        guard revivals[id] == nil else { return }
+
+        let revival = Revival(
+            record: record, socket: socket, takenAgentNames: liveAgentNames
+        ) { [weak self] result in
+            guard let self else { return }
+            self.revivals[id] = nil
+            switch result {
+            case .success:
+                // Forgotten only now: until the workspace is actually back, the
+                // record is the only way to reach that conversation again.
+                self.forget(id)
+                then(.success(record))
+            case .failure(let error):
+                // A revive that got as far as making the workspace has put it
+                // back, whatever failed afterwards. Keeping the record then
+                // would leave a hibernated row beside a running workspace.
+                if (error as? Revival.Failure)?.workspaceExists == true { self.forget(id) }
+                then(.failure(error))
+            }
+        }
+        revivals[id] = revival
+        revival.start()
     }
 
     func forget(_ id: UUID) {

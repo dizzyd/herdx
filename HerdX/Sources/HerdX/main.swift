@@ -160,12 +160,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
                 .flatMap(SidebarView.Arrangement.init(rawValue:)) ?? .spaces)
 
         sidebar.onSelectHibernated = { [weak self] id, _ in
-            guard let self, let record = self.hibernator.records.first(where: { $0.id == id })
-            else { return }
-            // Reviving is not written yet. Saying so is the point: a row that
-            // looks clickable and does nothing is the thing this app's own
-            // rules complain about most.
-            self.notice("reviving \(record.label) is not in HerdX yet")
+            self?.revive(id)
         }
         sidebar.onSelectEndpoint = { [weak self] index in
             guard let self, let session = self.session else { return }
@@ -1357,9 +1352,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         }
     }
 
+    /// Brings a hibernated workspace back, and says how it went.
+    ///
+    /// Several round trips — the workspace, then each tab's layout, then an
+    /// agent per pane once that pane has reached a prompt — so it says it has
+    /// started rather than leaving the click looking ignored.
+    private func revive(_ id: UUID) {
+        guard let record = hibernator.records.first(where: { $0.id == id }) else { return }
+        notice("reviving \(record.label)…")
+        let live = Set(session?.lastSnapshot?.agents.compactMap(\.name) ?? [])
+        hibernator.revive(
+            id, socket: LocalAPI.socketPath(sessionName: preferences.sessionName),
+            liveAgentNames: live
+        ) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let record):
+                self.notice("\(record.label) is back")
+            case .failure(let error):
+                self.notice(Self.explain(error))
+            }
+        }
+    }
+
     /// Why a hibernation was declined, in the words of whichever part declined.
     private static func explain(_ error: Error) -> String {
         if let refusal = error as? HibernationPlan.Refusal { return refusal.reason }
+        if let failure = error as? Revival.Failure { return failure.reason }
         if let failure = error as? LocalAPI.Failure { return failure.reason }
         if let failure = error as? Reply.Failure { return failure.text }
         return "\(error)"

@@ -24,6 +24,11 @@ enum Command {
     case paneList
     case paneProcessInfo(String)
     case layoutExport(String)
+    /// Asked when putting a workspace back.
+    case createWorkspace(cwd: String, label: String)
+    case layoutApply(tab: String?, workspace: String?, label: String?, root: LayoutNode)
+    case agentStart(name: String, kind: String, pane: String, args: [String])
+    case zoomPaneWithID(String)
     case focusPane(String)
     case focusTab(String)
     case focusWorkspace(String)
@@ -70,6 +75,10 @@ enum Command {
         case .paneList: return "pane.list"
         case .paneProcessInfo: return "pane.process_info"
         case .layoutExport: return "layout.export"
+        case .createWorkspace: return "workspace.create"
+        case .layoutApply: return "layout.apply"
+        case .agentStart: return "agent.start"
+        case .zoomPaneWithID: return "pane.zoom"
         // Client-side: no endpoint method, because none of it is the server's
         // business.
         case .copyMode, .help, .settings, .detach, .toggleSidebar: return ""
@@ -111,6 +120,19 @@ enum Command {
         case .paneProcessInfo(let id): return ["pane_id": id]
         // By tab: a workspace can hold several, and each is its own tree.
         case .layoutExport(let id): return ["tab_id": id]
+        case .createWorkspace(let cwd, let label):
+            return ["cwd": cwd, "label": label, "focus": true]
+        case .layoutApply(let tab, let workspace, let label, let root):
+            // A tab id replaces that tab; a workspace id adds one to it. Both
+            // together are refused, so only the one that is set is sent.
+            var params: [String: Any] = ["root": root.jsonObject, "focus": true]
+            if let tab { params["tab_id"] = tab }
+            if let workspace { params["workspace_id"] = workspace }
+            if let label { params["tab_label"] = label }
+            return params
+        case .agentStart(let name, let kind, let pane, let args):
+            return ["name": name, "kind": kind, "pane_id": pane, "args": args]
+        case .zoomPaneWithID(let id): return ["pane_id": id]
         case .renameTab(let id, let label): return ["tab_id": id, "label": label]
         case .renamePane(let id, let label): return ["pane_id": id, "label": label]
         case .renameWorkspace(let id, let label): return ["workspace_id": id, "label": label]

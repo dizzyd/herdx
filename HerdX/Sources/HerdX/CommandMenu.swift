@@ -47,6 +47,10 @@ extension Command {
         case .paneProcessInfo: return 37
         case .layoutExport: return 38
         case .hibernateWorkspace: return 39
+        case .createWorkspace: return 40
+        case .layoutApply: return 41
+        case .agentStart: return 42
+        case .zoomPaneWithID: return 43
         }
     }
 

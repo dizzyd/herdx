@@ -10,14 +10,14 @@ import Foundation
 /// The field names are herdr's, so the encoded form is the wire form and there
 /// is no translation step to get wrong. `LayoutTreeTests` decodes a tree taken
 /// from a live server and re-encodes it, which is what keeps that true.
-indirect enum LayoutNode: Equatable {
+indirect enum LayoutNode: Equatable, Sendable {
     case pane(Pane)
     case split(Split)
 
     /// A leaf. Everything is optional because `layout.apply` accepts a tree
     /// with none of it — that is how a plain shell in the default directory is
     /// spelled.
-    struct Pane: Equatable {
+    struct Pane: Equatable, Sendable {
         var paneID: String?
         var label: String?
         var cwd: String?
@@ -29,7 +29,7 @@ indirect enum LayoutNode: Equatable {
         var env: [String: String]?
     }
 
-    struct Split: Equatable {
+    struct Split: Equatable, Sendable {
         var direction: String
         var ratio: Double
         var first: LayoutNode
@@ -86,6 +86,20 @@ indirect enum LayoutNode: Equatable {
             return (step ? split.second : split.first).leaf(at: Array(path.dropFirst()))
         default: return nil
         }
+    }
+}
+
+extension LayoutNode {
+    /// The tree as `JSONSerialization` wants it, for embedding in a request.
+    ///
+    /// Encoded through the same `Codable` that reads it, so what goes back to
+    /// `layout.apply` is the shape `layout.export` sent — rather than a second,
+    /// hand-built spelling that agrees with it only until one of them changes.
+    var jsonObject: Any {
+        guard let data = try? JSONEncoder().encode(self),
+            let object = try? JSONSerialization.jsonObject(with: data)
+        else { return [:] }
+        return object
     }
 }
 

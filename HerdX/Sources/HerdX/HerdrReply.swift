@@ -134,6 +134,42 @@ enum Reply {
         let layout: Layout
     }
 
+    /// `layout.apply` replies with what it made — the same tree shape, carrying
+    /// the new pane ids, which is how a stored agent finds its pane again.
+    struct LayoutApplied: Decodable {
+        let layout: Layout
+    }
+
+    struct WorkspaceCreated: Decodable {
+        let workspace: Workspace
+        let tab: Tab
+        let rootPane: Pane
+
+        enum CodingKeys: String, CodingKey {
+            case workspace, tab
+            case rootPane = "root_pane"
+        }
+
+        struct Workspace: Decodable {
+            let workspaceID: String
+            enum CodingKeys: String, CodingKey { case workspaceID = "workspace_id" }
+        }
+        struct Tab: Decodable {
+            let tabID: String
+            enum CodingKeys: String, CodingKey { case tabID = "tab_id" }
+        }
+        struct Pane: Decodable {
+            let paneID: String
+            enum CodingKeys: String, CodingKey { case paneID = "pane_id" }
+        }
+    }
+
+    /// herdr echoes the argv it ran, which is worth reading: it is the proof
+    /// the agent was started with the arguments meant for it.
+    struct AgentStarted: Decodable {
+        let argv: [String]
+    }
+
     struct Layout: Decodable, Equatable {
         let tabID: String
         let zoomed: Bool
