@@ -17,11 +17,12 @@ import AppKit
 final class Revival {
     struct Failure: Error, Equatable {
         let reason: String
-        /// True when the workspace already exists by the time this failed.
+        /// True when a half-made workspace is still there after this failed.
         ///
-        /// Then the record must not be kept, whatever else went wrong: the
-        /// workspace is back, and a row describing it would sit in the sidebar
-        /// beside the thing it claims is not running.
+        /// Only then must the record be dropped — a row describing a workspace
+        /// that is plainly running would be a lie. Ordinarily a failure undoes
+        /// what it made and this stays false, so the record survives and the
+        /// revive can be tried again.
         var workspaceExists = false
     }
 
@@ -52,6 +53,8 @@ final class Revival {
     private var applied: [(tab: Hibernated.Tab, layout: Reply.Layout)] = []
     private var pendingAgents: [(pane: String, name: String, agent: Hibernated.Agent)] = []
     private var names: Set<String>
+    /// So a second failure on the way out does not close a second workspace.
+    private var failed = false
 
     init(
         record: Hibernated, socket: String?, takenAgentNames: Set<String>,
@@ -182,8 +185,37 @@ final class Revival {
         finish(.success(()))
     }
 
+    /// Gives up, putting back what was made on the way.
+    ///
+    /// The workspace is closed again rather than left standing. It is seconds
+    /// old and holds nothing of anyone's, while the record is the only thing
+    /// that still knows which conversations were in it — so the one to keep is
+    /// the record. Leaving the husk and dropping the record was the first way
+    /// round, and it cost two real workspaces their session ids.
     private func fail(_ reason: String) {
-        finish(.failure(Failure(reason: reason, workspaceExists: workspaceID != nil)))
+        guard !failed else { return }
+        failed = true
+        guard let workspaceID else {
+            return finish(.failure(Failure(reason: reason)))
+        }
+        LocalAPI.send(.closeWorkspace(workspaceID), socket: socket) { [weak self] result in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let undone: Bool
+                if case .success(let body) = result,
+                    case .success = Reply.decode(Reply.Empty.self, from: body)
+                {
+                    undone = true
+                } else {
+                    undone = false
+                }
+                self.finish(
+                    .failure(
+                        Failure(
+                            reason: undone ? reason : "\(reason) (and it is still open)",
+                            workspaceExists: !undone)))
+            }
+        }
     }
 
     private func ask<Result: Decodable>(

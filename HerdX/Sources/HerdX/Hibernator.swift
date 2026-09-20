@@ -62,9 +62,10 @@ final class Hibernator {
                 self.forget(id)
                 then(.success(record))
             case .failure(let error):
-                // A revive that got as far as making the workspace has put it
-                // back, whatever failed afterwards. Keeping the record then
-                // would leave a hibernated row beside a running workspace.
+                // Ordinarily a failed revive has undone itself and the record
+                // stays, so it can be tried again. Only when the half-made
+                // workspace could not be closed is the record dropped, because
+                // a hibernated row beside a running workspace is a lie.
                 if (error as? Revival.Failure)?.workspaceExists == true { self.forget(id) }
                 then(.failure(error))
             }
