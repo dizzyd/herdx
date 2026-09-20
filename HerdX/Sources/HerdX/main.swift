@@ -89,6 +89,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     /// than the session's state.
     private var agentPriority = AgentPriority()
     private let hibernator = Hibernator()
+    private var workspaceActivity = WorkspaceActivity()
+    private var sweepTimer: Timer?
     /// Held so its tick can follow the sidebar when the switch is used.
     private weak var arrangementItem: NSMenuItem?
     /// What the machine catalog looked like when the session was built.
@@ -302,6 +304,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
 
         installCaptureHookIfRequested()
         installInputProbeIfRequested()
+        // Its own slow timer, not the sixty-a-second one: this asks a server
+        // several questions and nothing it looks at changes in under an hour.
+        sweepTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.sweepForHibernation() }
+        }
 
         // A display-linked repaint would be tighter, but the core only bumps a
         // revision when a surface actually lands, so a cheap tick is enough.
@@ -723,6 +730,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         // Endpoint indices are about to mean different machines; what this
         // remembers about the old ones would be answers to the wrong questions.
         agentPriority.forget()
+        workspaceActivity.forget()
         // A session torn down and stood up again arrives with every agent as it
         // is now, which is first sight rather than a hundred state changes.
         agentSounds.forget()
@@ -853,9 +861,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         // been seen by anyone.
         for endpoint in session.endpoints {
             guard let snapshot = endpoint.snapshot else { continue }
+            let watching = NSApp.isActive && endpoint.index == session.activeEndpoint
             agentPriority.observe(
-                snapshot: snapshot, endpoint: endpoint.index,
-                watching: NSApp.isActive && endpoint.index == session.activeEndpoint)
+                snapshot: snapshot, endpoint: endpoint.index, watching: watching)
+            workspaceActivity.observe(
+                snapshot: snapshot, endpoint: endpoint.index, watching: watching)
         }
         sidebar.priority = agentPriority
 
@@ -1350,6 +1360,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
                 self.notice(Self.explain(error))
             }
         }
+    }
+
+    /// Ends the processes of one local workspace that has been quiet too long.
+    ///
+    /// One per sweep, quietest first. Hibernating several at once would take a
+    /// machine apart in a single minute, and each is several round trips.
+    ///
+    /// Nothing is said when it works: the row appearing in the sidebar is the
+    /// notification, and a notice that clears itself after two and a half
+    /// seconds is no use for something that happens while you are elsewhere.
+    /// Nothing is said when it declines either — most workspaces are in use,
+    /// and that is not news. A refusal goes to stderr, where a question about
+    /// why something did not hibernate can be answered.
+    private func sweepForHibernation() {
+        guard let after = hibernateAfter else { return }
+        guard let session, let local = session.localEndpoint, let snapshot = local.snapshot
+        else { return }
+
+        let quietest = workspaceActivity.candidates(
+            in: snapshot, on: local.index, after: after)
+        guard let id = quietest.first,
+            let workspace = snapshot.workspaces.first(where: { $0.workspaceID == id })
+        else { return }
+
+        hibernator.hibernate(
+            workspace: workspace, in: snapshot, endpointID: local.id,
+            socket: LocalAPI.socketPath(sessionName: preferences.sessionName)
+        ) { result in
+            if case .failure(let error) = result {
+                FileHandle.standardError.write(
+                    Data("herdx: left \(workspace.label) alone: \(Self.explain(error))\n".utf8))
+            }
+        }
+    }
+
+    /// How long a workspace must be quiet before the sweep will end it.
+    ///
+    /// `HERDX_HIBERNATE_AFTER_SECONDS` is a dev affordance: the setting is in
+    /// hours, which is right for the feature and impossible to wait for while
+    /// testing it. It works whether or not the setting is on, because a run
+    /// that sets it is asking for exactly this.
+    private var hibernateAfter: TimeInterval? {
+        if let named = ProcessInfo.processInfo.environment["HERDX_HIBERNATE_AFTER_SECONDS"],
+            let seconds = TimeInterval(named)
+        {
+            return seconds
+        }
+        guard let hours = preferences.hibernateAfterHours, hours > 0 else { return nil }
+        return TimeInterval(hours) * 3600
     }
 
     /// Brings a hibernated workspace back, and says how it went.

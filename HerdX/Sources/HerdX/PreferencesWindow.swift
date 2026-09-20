@@ -21,6 +21,8 @@ final class PreferencesWindowController: NSWindowController {
     private let lineStepper = NSStepper()
     private let themeLabel = NSTextField(labelWithString: "")
     private let soundsCheck = NSButton()
+    private let hibernatePopUp = NSPopUpButton()
+    private let hibernateNote = NSTextField(labelWithString: "")
     private let matchButton = NSButton()
     private let matchNote = NSTextField(labelWithString: "")
     /// Colours another client attached to the same session is using, when there
@@ -196,6 +198,27 @@ final class PreferencesWindowController: NSWindowController {
         // herdr's own two sounds, played on the same state changes its client
         // plays them on. The switch is HerdX's: herdr's `[ui.sound]` config is
         // read by herdr's client, not published to this one.
+        // Hours, and "Never" rather than a switch beside a number: off is the
+        // default and belongs in the same control as the choice, not beside it.
+        hibernatePopUp.removeAllItems()
+        for (title, hours) in [
+            ("Never", 0), ("After 4 hours", 4), ("After 8 hours", 8),
+            ("After 12 hours", 12), ("After 24 hours", 24),
+        ] {
+            hibernatePopUp.addItem(withTitle: title)
+            hibernatePopUp.lastItem?.tag = hours
+        }
+        hibernatePopUp.target = self
+        hibernatePopUp.action = #selector(hibernateChanged)
+
+        hibernateNote.font = .systemFont(ofSize: 11)
+        hibernateNote.textColor = .secondaryLabelColor
+        hibernateNote.stringValue =
+            "Ends the processes of a local workspace left idle this long, keeping what its "
+            + "agents were talking about. It stays in the sidebar; click it to bring it back."
+        hibernateNote.lineBreakMode = .byWordWrapping
+        hibernateNote.preferredMaxLayoutWidth = 380
+
         soundsCheck.setButtonType(.switch)
         soundsCheck.title = "Play a sound when an agent finishes or needs you"
         soundsCheck.target = self
@@ -213,6 +236,8 @@ final class PreferencesWindowController: NSWindowController {
             [label("Pane label:"), labelSize],
             [label("Line height:"), lineHeight],
             [label("Sounds:"), soundsCheck],
+            [label("Hibernate:"), hibernatePopUp],
+            [NSGridCell.emptyContentView, hibernateNote],
         ])
         grid.rowSpacing = 10
         grid.columnSpacing = 10
@@ -297,6 +322,7 @@ final class PreferencesWindowController: NSWindowController {
         }
 
         soundsCheck.state = preferences.agentSounds ? .on : .off
+        hibernatePopUp.selectItem(withTag: preferences.hibernateAfterHours ?? 0)
         lineField.stringValue = String(format: "%.0f", preferences.lineHeight * 100)
         lineStepper.doubleValue = Double(preferences.lineHeight * 100)
     }
@@ -323,6 +349,12 @@ final class PreferencesWindowController: NSWindowController {
     /// does not apply to a terminal grid.
     @objc func validModesForFontPanel(_ panel: NSFontPanel) -> NSFontPanel.ModeMask {
         [.collection, .face, .size]
+    }
+
+    @objc private func hibernateChanged() {
+        let hours = hibernatePopUp.selectedTag()
+        preferences.hibernateAfterHours = hours > 0 ? hours : nil
+        apply()
     }
 
     @objc private func soundsChanged() {

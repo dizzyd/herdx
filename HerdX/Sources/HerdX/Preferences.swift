@@ -54,6 +54,12 @@ struct Preferences {
     /// The herdr session to attach to, by name. Nil opens whichever one the
     /// core would pick on its own.
     var sessionName: String?
+    /// How many hours a local workspace may sit idle before its processes are
+    /// ended, or nil to leave them alone.
+    ///
+    /// Off unless it is turned on. It ends processes without asking, and the
+    /// first time that surprises somebody it should be because they chose it.
+    var hibernateAfterHours: Int?
     /// Whether an agent changing state makes a sound.
     var agentSounds: Bool
     /// Sessions that attach the local server alone.
@@ -105,6 +111,7 @@ struct Preferences {
         static let paneLabelSize = "paneLabelSize"
         static let lineHeight = "lineHeight"
         static let sidebarArrangement = "sidebarArrangement"
+        static let hibernateAfterHours = "hibernateAfterHours"
         static let sessionName = "sessionName"
         static let localOnlySessions = "localOnlySessions"
         static let agentSounds = "agentSounds"
@@ -151,6 +158,7 @@ struct Preferences {
                 lineHeight: defaults.object(forKey: Key.lineHeight) as? CGFloat ?? 1,
                 sidebarArrangement: defaults.string(forKey: Key.sidebarArrangement),
                 sessionName: defaults.string(forKey: Key.sessionName),
+                hibernateAfterHours: defaults.object(forKey: Key.hibernateAfterHours) as? Int,
                 agentSounds: defaults.object(forKey: Key.agentSounds) as? Bool ?? true,
                 localOnlySessions: defaults.stringArray(forKey: Key.localOnlySessions) ?? [],
                 themeName: defaults.string(forKey: Key.themeName),
@@ -169,6 +177,7 @@ struct Preferences {
             defaults.set(newValue.lineHeight, forKey: Key.lineHeight)
             defaults.set(newValue.sidebarArrangement, forKey: Key.sidebarArrangement)
             defaults.set(newValue.sessionName, forKey: Key.sessionName)
+            defaults.set(newValue.hibernateAfterHours, forKey: Key.hibernateAfterHours)
             defaults.set(newValue.agentSounds, forKey: Key.agentSounds)
             defaults.set(newValue.localOnlySessions, forKey: Key.localOnlySessions)
             defaults.set(newValue.themeName, forKey: Key.themeName)
