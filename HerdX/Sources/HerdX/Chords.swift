@@ -17,6 +17,8 @@ enum Command {
     case newWorkspace
     /// The same workspace, on this Mac rather than on whatever is on screen.
     case newLocalWorkspace
+    /// End this workspace's processes, keeping enough of it to bring back.
+    case hibernateWorkspace
     /// Asked before hibernating, never from a keystroke: what agents are in a
     /// workspace, what is running in a pane, and the shape of a tab.
     case paneList
@@ -75,6 +77,9 @@ enum Command {
         // a named machine, and the aiming is `invoke`'s job rather than
         // anything the request itself can say.
         case .newLocalWorkspace: return ""
+        // Several requests over the local socket rather than one over the
+        // endpoint; see `Hibernator`.
+        case .hibernateWorkspace: return ""
         }
     }
 

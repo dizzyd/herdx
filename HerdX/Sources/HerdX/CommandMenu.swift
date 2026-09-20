@@ -46,6 +46,7 @@ extension Command {
         case .paneList: return 36
         case .paneProcessInfo: return 37
         case .layoutExport: return 38
+        case .hibernateWorkspace: return 39
         }
     }
 
@@ -53,7 +54,7 @@ extension Command {
         let all: [Command] = [
             .newTab, .closeTab, .nextTab, .previousTab, .splitRight, .splitDown,
             .focusLeft, .focusDown, .focusUp, .focusRight, .closePane, .zoomPane, .newWorkspace,
-            .newLocalWorkspace, .copyMode, .help,
+            .newLocalWorkspace, .hibernateWorkspace, .copyMode, .help,
         ]
         return Dictionary(uniqueKeysWithValues: all.map { ($0.tag, $0) })
     }()
@@ -87,6 +88,10 @@ extension Command {
         // giving two items the same equivalent hands it to whichever AppKit
         // finds first — which is how copy mode once became unreachable.
         ("New Local Workspace", Key(equivalent: "", modifiers: []), .newLocalWorkspace),
+        // Also without an equivalent: its keystroke is a prefix chord, and a ⌘
+        // shortcut for something that ends processes is too easy to hit while
+        // reaching for ⌘H, which macOS uses to hide the app.
+        ("Hibernate Workspace", Key(equivalent: "", modifiers: []), .hibernateWorkspace),
         ("", Key(equivalent: "", modifiers: []), .newTab),
         // Not shift-command-bracket: that is Previous Tab, and AppKit gives a
         // duplicate equivalent to whichever item it finds first, so copy mode

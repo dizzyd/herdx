@@ -66,6 +66,14 @@ struct HibernationStore {
     static let shared = HibernationStore(url: defaultURL)
 
     static var defaultURL: URL {
+        // Dev affordance, for the same reason the rest of them exist: a probe
+        // run against a throwaway session would otherwise leave this app a row
+        // for a workspace that no longer exists anywhere.
+        if let named = ProcessInfo.processInfo.environment["HERDX_HIBERNATION_STORE"],
+            !named.isEmpty
+        {
+            return URL(fileURLWithPath: named)
+        }
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
             .first ?? URL(fileURLWithPath: NSHomeDirectory())
         return base.appendingPathComponent("HerdX/hibernated.json")

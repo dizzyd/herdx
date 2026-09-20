@@ -111,6 +111,7 @@ All are development-only and read from the environment.
 | `HERDX_PROBE_COMMANDS=1` | Run commands against a live server and report what it made of them — throwaway sessions only |
 | `HERDX_PROBE_RESIZE=1` | Put resize mode up so it can be photographed |
 | `HERDX_ENDPOINT=<id>` | Pick an endpoint for one run (`local`, or a profile id) without writing the selection the TUI shares |
+| `HERDX_HIBERNATION_STORE=<path>` | Keep hibernated workspaces somewhere throwaway, so a probe cannot leave the real app a row for a workspace that no longer exists |
 
 `herdr-core/examples/` holds the same idea for the Rust half — each is one
 question, and its first line says which. `ffi_drive` and `input` exist to tell a

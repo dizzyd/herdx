@@ -418,6 +418,56 @@ final class KeymapTests: XCTestCase {
         XCTAssertFalse(binding?.shift == true, "⇧⌘N is a different keystroke from ⌘N")
     }
 
+    // MARK: - The hibernate key
+
+    func testHibernateTakesCommandHWithoutDisturbingH() {
+        // herdr binds prefix+h and prefix+shift+h to two different things, so
+        // the ⌘ form has to be told apart from both.
+        let resolver = ChordResolver()
+        resolver.keymap = Keymap(profile: """
+            [keys]
+            prefix = "ctrl+b"
+            focus_pane_left = "prefix+h"
+            swap_pane_left = "prefix+shift+h"
+            """)!
+
+        _ = resolver.resolve(keystroke("b", flags: [.control]))
+        XCTAssertEqual(
+            resolver.resolve(keystroke("h", flags: [.command])).0, .hibernateWorkspace)
+
+        _ = resolver.resolve(keystroke("b", flags: [.control]))
+        XCTAssertEqual(
+            resolver.resolve(keystroke("h")).0, .focusPaneLeft,
+            "a key that ends processes must not be reachable by a plain letter")
+
+        _ = resolver.resolve(keystroke("b", flags: [.control]))
+        XCTAssertEqual(resolver.resolve(keystroke("h", flags: [.shift])).0, .swapPaneLeft)
+    }
+
+    func testHibernateStandsAsideForAProfileThatSpentTheKey() {
+        let resolver = ChordResolver()
+        resolver.keymap = Keymap(profile: """
+            [keys]
+            prefix = "ctrl+b"
+            zoom = "prefix+cmd+h"
+            """)!
+
+        _ = resolver.resolve(keystroke("b", flags: [.control]))
+
+        XCTAssertEqual(
+            resolver.resolve(keystroke("h", flags: [.command])).0, .zoom,
+            "the keymap belongs to the user, even for keys we would rather have")
+    }
+
+    func testTheHibernateChordIsReachableFromAKeystroke() {
+        let binding = bindings(of: .hibernateWorkspace, in: Keymap.fallback).first
+        XCTAssertNotNil(binding, "the addition never reached the fallback keymap")
+        XCTAssertEqual(binding?.key, .character("h"))
+        XCTAssertTrue(binding?.command == true)
+        XCTAssertTrue(binding?.usesPrefix == true)
+        XCTAssertFalse(binding?.shift == true)
+    }
+
     func testTheUpArrowIsItsOwnActionSoItCanDoMoreThanKDoes() {
         let keymap = Keymap(profile: """
             [keys]

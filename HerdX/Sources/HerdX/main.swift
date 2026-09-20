@@ -88,6 +88,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     /// snapshot cannot say because it is about this client's attention rather
     /// than the session's state.
     private var agentPriority = AgentPriority()
+    private let hibernator = Hibernator()
     /// Held so its tick can follow the sidebar when the switch is used.
     private weak var arrangementItem: NSMenuItem?
     /// What the machine catalog looked like when the session was built.
@@ -969,6 +970,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         case .switchTab: return { self.focusTab(at: self.pendingDigit - 1, session: session) }
 
         case .newWorkspace: return { self.invoke(.newWorkspace, session: session) }
+        case .hibernateWorkspace:
+            return { self.invoke(.hibernateWorkspace, session: session) }
         case .newLocalWorkspace:
             // Named rather than assumed: the whole point of the key is which
             // machine the workspace lands on, so it goes through `focus`,
@@ -1306,6 +1309,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         print("probe: checked \(chords.keymap.bindings.filter(\.binding.usesPrefix).count) chords")
     }
 
+    /// Ends the focused workspace's processes, keeping enough to bring it back.
+    ///
+    /// Pressed rather than swept, so it does not wait for the idle clock — that
+    /// is the point of having a key for it. Every other refusal still holds and
+    /// is put on screen: a key that quietly ends a running build would be worse
+    /// than no key at all, and "nothing happened" is the one answer that
+    /// teaches you nothing.
+    ///
+    /// Local only. What this reads is outside the client shell's allow-list, so
+    /// it goes over the local API socket, and a remote machine has none here.
+    private func hibernateFocusedWorkspace(session: HerdrSession) {
+        guard let local = session.localEndpoint, local.index == session.activeEndpoint else {
+            notice("hibernating works on this Mac only, for now")
+            return
+        }
+        guard let snapshot = session.lastSnapshot,
+            let workspace = snapshot.workspaces.first(where: \.focused)
+        else {
+            notice("no workspace to hibernate")
+            return
+        }
+        // Several round trips, so say something before the first one rather
+        // than leaving the key looking dead.
+        notice("hibernating \(workspace.label)…")
+        hibernator.hibernate(
+            workspace: workspace, in: snapshot, endpointID: local.id,
+            socket: LocalAPI.socketPath(sessionName: preferences.sessionName)
+        ) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let record):
+                self.notice("hibernated \(record.label)")
+            case .failure(let error):
+                self.notice(Self.explain(error))
+            }
+        }
+    }
+
+    /// Why a hibernation was declined, in the words of whichever part declined.
+    private static func explain(_ error: Error) -> String {
+        if let refusal = error as? HibernationPlan.Refusal { return refusal.reason }
+        if let failure = error as? LocalAPI.Failure { return failure.reason }
+        if let failure = error as? Reply.Failure { return failure.text }
+        return "\(error)"
+    }
+
     /// Says that a command failed, and why if herdr said.
     private func report(failure reply: String, for command: Command) {
         let message =
@@ -1352,6 +1401,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         // it would be an ordinary new workspace wearing a name that says local.
         if case .newLocalWorkspace = command {
             perform(.newLocalWorkspace, session: session)
+            return
+        }
+        if case .hibernateWorkspace = command {
+            hibernateFocusedWorkspace(session: session)
             return
         }
         // These take a required id that herdr will not infer from who is

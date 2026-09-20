@@ -20,6 +20,9 @@ struct Keymap {
         case switchWorkspace = "switch_workspace"
         /// HerdX's own: a workspace on this Mac, from wherever you are.
         case newLocalWorkspace = "new_local_workspace"
+        /// HerdX's own: end this workspace's processes, keeping enough of it
+        /// to bring back.
+        case hibernateWorkspace = "hibernate_workspace"
         case goto_ = "goto"
         case newTab = "new_tab", closeTab = "close_tab", renameTab = "rename_tab"
         case previousTab = "previous_tab", nextTab = "next_tab"
@@ -450,6 +453,12 @@ extension Keymap {
     /// because that is the shape the documentation suggests for agent
     /// bindings, and the jump gets the letter it is named after.
     ///
+    /// Hibernate is the same ⌘ shape, on the letter it is named after. It does
+    /// not wait for the idle clock — that is the whole point of having a key
+    /// for it — but it refuses for every other reason the sweep would, and says
+    /// which, because a key that quietly ends a running build is worse than no
+    /// key at all.
+    ///
     /// New local workspace exists because `new_workspace` lands wherever you
     /// are looking, and a workspace on this Mac is the one thing it cannot
     /// give you while a remote machine is on screen. It takes ⌘ after the
@@ -465,6 +474,7 @@ extension Keymap {
         next_agent = "prefix+alt+n"
         previous_agent = "prefix+alt+p"
         new_local_workspace = "prefix+cmd+n"
+        hibernate_workspace = "prefix+cmd+h"
         """
 
     /// herdr's defaults, used until a snapshot brings the user's own.
