@@ -111,7 +111,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            "build/HerdX-${{ steps.version.outputs.value }}.dmg" \
-            --title "HerdX ${{ steps.version.outputs.value }}" \
-            --generate-notes
+          # Notes written for this tag when there are any. A list of commit
+          # subjects tells a reader what was touched, not what changed for
+          # them, and this app's users are the ones who would notice.
+          notes="release-notes/$GITHUB_REF_NAME.md"
+          if [ -f "$notes" ]; then
+            gh release create "$GITHUB_REF_NAME" \
+              "build/HerdX-${{ steps.version.outputs.value }}.dmg" \
+              --title "HerdX ${{ steps.version.outputs.value }}" \
+              --notes-file "$notes"
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              "build/HerdX-${{ steps.version.outputs.value }}.dmg" \
+              --title "HerdX ${{ steps.version.outputs.value }}" \
+              --generate-notes
+          fi

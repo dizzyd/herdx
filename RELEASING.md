@@ -69,11 +69,20 @@ Settings → Secrets and variables → Actions:
 
 ```sh
 git tag v0.2.0
-git push github v0.2.0
+git push origin main
+git push origin v0.2.0
 ```
 
+`origin` is git.home, which mirrors to GitHub — pushing the tag to `github`
+directly leaves the two out of step, and the mirror is what the release runs
+from.
+
 The workflow stamps `0.2.0` into `CFBundleShortVersionString`, builds, notarizes,
-and publishes a GitHub release with generated notes and the `.dmg` attached.
+and publishes a GitHub release with the `.dmg` attached.
+
+Notes come from `release-notes/v0.2.0.md` when that file exists, and from
+`--generate-notes` when it does not. Write the file: a list of commit subjects
+says what was touched rather than what changed for the person reading it.
 
 To exercise the pipeline without spending a version number, run the workflow
 manually from the Actions tab: it builds and notarizes exactly the same way but
