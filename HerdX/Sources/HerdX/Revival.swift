@@ -41,29 +41,27 @@ final class Revival {
     /// the startup it had not begun. Measured on a shell whose rc file
     /// initialises conda.
     private static let promptSettles = 3
+    /// How long to wait for herdr to notice the agent afterwards.
+    private static let agentTries = 40
 
     private let record: Hibernated
     private let socket: String?
-    private let taken: Set<String>
     private let finish: (Result<Void, Error>) -> Void
 
     private var workspaceID: String?
     /// Each stored tab beside the tree that came back from applying it, which
     /// is where the new pane ids are.
     private var applied: [(tab: Hibernated.Tab, layout: Reply.Layout)] = []
-    private var pendingAgents: [(pane: String, name: String, agent: Hibernated.Agent)] = []
-    private var names: Set<String>
+    private var pendingAgents: [(pane: String, agent: Hibernated.Agent)] = []
     /// So a second failure on the way out does not close a second workspace.
     private var failed = false
 
     init(
-        record: Hibernated, socket: String?, takenAgentNames: Set<String>,
+        record: Hibernated, socket: String?,
         then finish: @escaping (Result<Void, Error>) -> Void
     ) {
         self.record = record
         self.socket = socket
-        self.taken = takenAgentNames
-        self.names = takenAgentNames
         self.finish = finish
     }
 
@@ -108,10 +106,7 @@ final class Revival {
                         // agent would be started somewhere it never was.
                         return fail("the layout came back without the pane \(agent.agent) was in")
                     }
-                    let name = AgentResume.name(
-                        for: agent.agent, in: record.label, avoiding: names)
-                    names.insert(name)
-                    pendingAgents.append((pane: pane, name: name, agent: agent))
+                    pendingAgents.append((pane: pane, agent: agent))
                 }
             }
         }
@@ -119,7 +114,7 @@ final class Revival {
 
         let next = pendingAgents[index]
         guard
-            let args = AgentResume.arguments(
+            let line = AgentResume.commandLine(
                 agent: next.agent.agent, kind: next.agent.kind, value: next.agent.value)
         else {
             return fail("\(next.agent.agent) has no resume form here")
@@ -127,13 +122,50 @@ final class Revival {
         waitForPrompt(in: next.pane, tries: Self.promptTries) { [weak self] ready in
             guard let self else { return }
             guard ready else {
-                return self.fail("\(next.pane) never reached a prompt to start \(next.agent.agent) in")
+                return self.fail(
+                    "\(next.pane) never reached a prompt to start \(next.agent.agent) in")
             }
-            self.ask(
-                .agentStart(
-                    name: next.name, kind: next.agent.agent, pane: next.pane, args: args),
-                Reply.AgentStarted.self
-            ) { _ in self.startAgents(index + 1) }
+            self.ask(.paneSendText(pane: next.pane, text: line + "\n"), Reply.Empty.self) { _ in
+                // A submitted line says nothing about whether it worked, so
+                // wait for herdr to see an agent in the pane. Without this a
+                // missing binary would be reported as a successful revive.
+                self.waitForAgent(
+                    in: next.pane, called: next.agent.agent, tries: Self.agentTries
+                ) { appeared in
+                    guard appeared else {
+                        return self.fail("\(next.agent.agent) did not start in \(next.pane)")
+                    }
+                    self.startAgents(index + 1)
+                }
+            }
+        }
+    }
+
+    /// Polls until herdr has an agent in the pane.
+    ///
+    /// `agent.start` used to answer this question, and answering it here is
+    /// the price of submitting the line ourselves — which is what lets the
+    /// command be cleared off the screen before the agent draws over it.
+    private func waitForAgent(
+        in pane: String, called agent: String, tries: Int, then act: @escaping (Bool) -> Void
+    ) {
+        guard tries > 0 else { return act(false) }
+        LocalAPI.send(.paneGet(pane), socket: socket) { [weak self] result in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                if case .success(let body) = result,
+                    case .success(let info) = Reply.decode(Reply.PaneInfo.self, from: body),
+                    info.pane.holdsAgent
+                {
+                    return act(true)
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + Self.promptInterval) {
+                    MainActor.assumeIsolated {
+                        self.waitForAgent(
+                            in: pane, called: agent, tries: tries - 1, then: act)
+                    }
+                }
+            }
         }
     }
 

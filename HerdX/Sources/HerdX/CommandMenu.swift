@@ -49,7 +49,8 @@ extension Command {
         case .hibernateWorkspace: return 39
         case .createWorkspace: return 40
         case .layoutApply: return 41
-        case .agentStart: return 42
+        case .paneSendText: return 42
+        case .paneGet: return 44
         case .zoomPaneWithID: return 43
         }
     }

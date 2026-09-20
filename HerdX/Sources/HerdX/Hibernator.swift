@@ -38,11 +38,8 @@ final class Hibernator {
 
     /// Brings a hibernated workspace back, and forgets it once it is.
     ///
-    /// `liveAgentNames` are the names already in use on that machine: herdr
-    /// refuses an `agent.start` whose name collides with a running agent, and
-    /// refuses the whole request rather than renaming it.
     func revive(
-        _ id: UUID, socket: String?, liveAgentNames: Set<String> = [],
+        _ id: UUID, socket: String?,
         then: @escaping (Result<Hibernated, Error>) -> Void
     ) {
         guard let record = records.first(where: { $0.id == id }) else {
@@ -50,9 +47,7 @@ final class Hibernator {
         }
         guard revivals[id] == nil else { return }
 
-        let revival = Revival(
-            record: record, socket: socket, takenAgentNames: liveAgentNames
-        ) { [weak self] result in
+        let revival = Revival(record: record, socket: socket) { [weak self] result in
             guard let self else { return }
             self.revivals[id] = nil
             switch result {

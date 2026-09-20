@@ -27,7 +27,8 @@ enum Command {
     /// Asked when putting a workspace back.
     case createWorkspace(cwd: String, label: String)
     case layoutApply(tab: String?, workspace: String?, label: String?, root: LayoutNode)
-    case agentStart(name: String, kind: String, pane: String, args: [String])
+    case paneSendText(pane: String, text: String)
+    case paneGet(String)
     case zoomPaneWithID(String)
     case focusPane(String)
     case focusTab(String)
@@ -77,7 +78,8 @@ enum Command {
         case .layoutExport: return "layout.export"
         case .createWorkspace: return "workspace.create"
         case .layoutApply: return "layout.apply"
-        case .agentStart: return "agent.start"
+        case .paneSendText: return "pane.send_text"
+        case .paneGet: return "pane.get"
         case .zoomPaneWithID: return "pane.zoom"
         // Client-side: no endpoint method, because none of it is the server's
         // business.
@@ -130,8 +132,8 @@ enum Command {
             if let workspace { params["workspace_id"] = workspace }
             if let label { params["tab_label"] = label }
             return params
-        case .agentStart(let name, let kind, let pane, let args):
-            return ["name": name, "kind": kind, "pane_id": pane, "args": args]
+        case .paneSendText(let pane, let text): return ["pane_id": pane, "text": text]
+        case .paneGet(let id): return ["pane_id": id]
         case .zoomPaneWithID(let id): return ["pane_id": id]
         case .renameTab(let id, let label): return ["tab_id": id, "label": label]
         case .renamePane(let id, let label): return ["pane_id": id, "label": label]

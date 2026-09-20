@@ -120,36 +120,58 @@ final class AgentResumeTests: XCTestCase {
         XCTAssertNil(AgentResume.arguments(agent: "claude", kind: "id", value: ""))
     }
 
-    // MARK: - Names herdr will accept
+    // MARK: - The line that is submitted
 
-    func testARevivedAgentIsNamedAfterItsWorkspace() {
-        // herdr leaves a detected agent unnamed, and a row with no name falls
-        // back to showing its workspace. A revived agent has to read the same
-        // way, or bringing a workspace back silently renames what is in it —
-        // "augur" came back as "claude-augur" once.
-        XCTAssertEqual(AgentResume.name(for: "claude", in: "augur", avoiding: []), "augur")
+    func testTheLineClearsTheScreenBeforeTheAgentStarts() {
+        // The shell echoes what it is given, and these agents draw inline
+        // rather than on the alternate screen — so without the clear the pane
+        // keeps "claude --resume <id>" above the agent for as long as it runs.
         XCTAssertEqual(
-            AgentResume.name(for: "codex", in: "solstone-journal", avoiding: []),
-            "solstone-journal")
+            AgentResume.commandLine(agent: "claude", kind: "id", value: "abc"),
+            "clear && 'claude' '--resume' 'abc'")
     }
 
-    func testANameStartsWithALetterAndIsShortEnough() {
-        let name = AgentResume.name(for: "claude", in: "2fa-rewrite", avoiding: [])
-        XCTAssertEqual(name.first?.isLowercase, true)
-        XCTAssertLessThanOrEqual(name.count, 32)
-        XCTAssertTrue(name.allSatisfy { $0.isLowercase || $0.isNumber || $0 == "-" || $0 == "_" })
+    func testCursorIsLaunchedByItsBinaryRatherThanItsLabel() {
+        XCTAssertEqual(
+            AgentResume.commandLine(agent: "cursor", kind: "id", value: "abc"),
+            "clear && 'cursor-agent' '--resume' 'abc'")
     }
 
-    func testAWorkspaceStartingWithADigitStillProducesAValidName() {
-        // herdr requires a leading lowercase letter and rejects the request
-        // outright otherwise.
-        let name = AgentResume.name(for: "9lives", in: "x", avoiding: [])
-        XCTAssertEqual(name.first?.isLetter, true)
+    func testEveryArgumentIsQuoted() {
+        // A session ref can be a path, and a path can contain anything.
+        let line = AgentResume.commandLine(
+            agent: "pi", kind: "path", value: "/s/it's here/one two.json")
+        XCTAssertEqual(line, #"clear && 'pi' '--session' '/s/it'\''s here/one two.json'"#)
     }
 
-    func testASecondAgentInTheSameWorkspaceGetsItsOwnName() {
-        let first = AgentResume.name(for: "claude", in: "augur", avoiding: [])
-        let second = AgentResume.name(for: "claude", in: "augur", avoiding: [first])
-        XCTAssertNotEqual(first, second, "a duplicate name makes herdr refuse the whole request")
+    func testAnAgentWithNoResumeFormHasNoLine() {
+        XCTAssertNil(AgentResume.commandLine(agent: "somethingnew", kind: "id", value: "abc"))
+    }
+
+    func testTheExecutablesAreTheOnesHerdrWouldRun() throws {
+        // The binary names live in detect/mod.rs rather than in the plan, so
+        // they get their own reading of the vendored source.
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(
+            contentsOf: root.appendingPathComponent("vendor/herdr/src/detect/mod.rs"),
+            encoding: .utf8)
+        guard let start = source.range(of: "pub fn interactive_agent_executable("),
+            let end = source.range(of: "pub fn parse_agent_label(")
+        else {
+            return XCTFail("detect/mod.rs changed shape; this test needs rewriting")
+        }
+        let table = String(source[start.lowerBound..<end.lowerBound])
+
+        for agent in AgentResume.supported {
+            let executable = AgentResume.executable(for: agent)
+            XCTAssertTrue(
+                table.contains("\"\(executable)\""),
+                "we would run \(executable) for \(agent), which herdr's own table does not name")
+        }
+        XCTAssertTrue(
+            table.contains("\"cursor-agent\""),
+            "cursor is the one whose binary is not its label; if that changed, so must we")
     }
 }

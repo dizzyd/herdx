@@ -1419,10 +1419,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     private func revive(_ id: UUID) {
         guard let record = hibernator.records.first(where: { $0.id == id }) else { return }
         notice("reviving \(record.label)…")
-        let live = Set(session?.lastSnapshot?.agents.compactMap(\.name) ?? [])
         hibernator.revive(
-            id, socket: LocalAPI.socketPath(sessionName: preferences.sessionName),
-            liveAgentNames: live
+            id, socket: LocalAPI.socketPath(sessionName: preferences.sessionName)
         ) { [weak self] result in
             guard let self else { return }
             switch result {

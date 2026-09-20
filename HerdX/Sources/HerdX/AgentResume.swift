@@ -54,6 +54,42 @@ enum AgentResume {
         }
     }
 
+    /// The whole line to submit to a pane's shell, or nil when the agent has
+    /// no resume form here.
+    ///
+    /// `clear &&` is not decoration. The shell echoes what it is given, so
+    /// without it the pane keeps a line reading `claude --resume 6d4c51cd-…`
+    /// above the agent for as long as the agent runs — Claude and most of
+    /// these render inline rather than on the alternate screen, so nothing
+    /// ever paints over it. Only the shell can remove it, between echoing the
+    /// line and starting the agent, which is what the clear does.
+    ///
+    /// Built here rather than through `agent.start` for that reason alone:
+    /// herdr submits exactly the argv it is given, with nothing before it.
+    static func commandLine(agent: String, kind: String, value: String) -> String? {
+        guard let arguments = arguments(agent: agent, kind: kind, value: value) else {
+            return nil
+        }
+        let argv = [executable(for: agent)] + arguments
+        return "clear && " + argv.map(quoted).joined(separator: " ")
+    }
+
+    /// What the agent is called on disk.
+    ///
+    /// herdr's `interactive_agent_executable`. Every one of these is its own
+    /// label except cursor, whose binary is `cursor-agent`.
+    static func executable(for agent: String) -> String {
+        agent == "cursor" ? "cursor-agent" : agent
+    }
+
+    /// POSIX single-quoting, as herdr's `interactive_shell_command` does it.
+    ///
+    /// Everything is quoted rather than only what needs it: a session ref can
+    /// be a path, and a path can contain anything.
+    private static func quoted(_ argument: String) -> String {
+        "'" + argument.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
     /// The agents herdr will resume from a path as well as from an id.
     static let acceptsPath: Set<String> = ["pi", "omp"]
 
@@ -64,43 +100,4 @@ enum AgentResume {
         "hermes", "opencode", "qodercli", "qwen", "kilo", "cursor", "agy", "grok", "letta",
     ]
 
-    /// A name for the agent herdr will accept.
-    ///
-    /// `agent.start` requires a name starting with a lowercase letter, at most
-    /// 32 characters of lowercase, digits, dash or underscore — and one that no
-    /// live agent is already using, or it refuses the whole request.
-    ///
-    /// Named after the workspace rather than after `agent-workspace`, because a
-    /// revived agent has to look like the one that was hibernated. herdr leaves
-    /// a detected agent unnamed, and a row with no name falls back to showing
-    /// its workspace — so a workspace called `augur` came back reading
-    /// `claude-augur`, which is a rename nobody asked for.
-    ///
-    /// Clearing the name afterwards would be truer still, and does not work: an
-    /// agent counts as launch-pending until it settles, a resumed agent that
-    /// wants you settles as *blocked*, and `agent.rename` refuses either way.
-    static func name(for agent: String, in workspace: String, avoiding taken: Set<String>)
-        -> String
-    {
-        let base = sanitised(workspace)
-        guard taken.contains(base) else { return base }
-        // Suffixed rather than randomised, so a second claude in the same
-        // workspace reads as the second one.
-        for suffix in 2...99 {
-            let candidate = sanitised("\(base)-\(suffix)")
-            if !taken.contains(candidate) { return candidate }
-        }
-        return sanitised("\(base)-\(UUID().uuidString.prefix(6))")
-    }
-
-    private static func sanitised(_ text: String) -> String {
-        var cleaned = text.lowercased().map { character -> Character in
-            character.isLetter || character.isNumber || character == "-" || character == "_"
-                ? character : "-"
-        }
-        // Must begin with a letter; a workspace called "2fa" would otherwise
-        // produce a name herdr rejects outright.
-        if cleaned.first?.isLetter != true { cleaned.insert("a", at: 0) }
-        return String(cleaned.prefix(32))
-    }
 }

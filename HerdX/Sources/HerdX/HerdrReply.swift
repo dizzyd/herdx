@@ -188,10 +188,8 @@ enum Reply {
         }
     }
 
-    /// herdr echoes the argv it ran, which is worth reading: it is the proof
-    /// the agent was started with the arguments meant for it.
-    struct AgentStarted: Decodable {
-        let argv: [String]
+    struct PaneInfo: Decodable {
+        let pane: PaneEntry
     }
 
     struct Layout: Decodable, Equatable {
