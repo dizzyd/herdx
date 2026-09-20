@@ -1,9 +1,14 @@
 import AppKit
 
-/// herdr's 38 stable endpoint methods, as the UI uses them.
+/// The herdr methods the UI uses, as requests.
 ///
 /// The payload shape is frozen for generation 1, so these are built as plain
 /// JSON rather than through a generated client.
+///
+/// Most go over the endpoint. A few — the ones hibernation reads the session
+/// with — are outside the client shell's allow-list and reach the local API
+/// socket through `LocalAPI` instead; the request is the same either way,
+/// which is why they live here with the rest.
 enum Command {
     case newTab, closeTab, nextTab, previousTab
     case splitRight, splitDown
@@ -14,7 +19,7 @@ enum Command {
     case newLocalWorkspace
     /// Asked before hibernating, never from a keystroke: what agents are in a
     /// workspace, what is running in a pane, and the shape of a tab.
-    case agentList
+    case paneList
     case paneProcessInfo(String)
     case layoutExport(String)
     case focusPane(String)
@@ -60,7 +65,7 @@ enum Command {
         case .resizePane: return "pane.resize"
         case .reloadConfig: return "server.reload_config"
         case .closeWorkspace: return "workspace.close"
-        case .agentList: return "agent.list"
+        case .paneList: return "pane.list"
         case .paneProcessInfo: return "pane.process_info"
         case .layoutExport: return "layout.export"
         // Client-side: no endpoint method, because none of it is the server's
