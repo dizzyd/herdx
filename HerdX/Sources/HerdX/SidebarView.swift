@@ -628,6 +628,13 @@ final class SidebarView: NSView {
         {
             return " (\(label))"
         }
+        // Then the tab, but only when it tells this agent from the others: two
+        // split panes share a tab, so its name would read the same on both
+        // rows and answer nothing.
+        if siblings.allSatisfy({ $0.paneID == agent.paneID || $0.tabID != agent.tabID }) {
+            let tab = Self.namedTab(tabID: agent.tabID, in: snapshot)
+            if !tab.isEmpty { return tab }
+        }
         let number = Self.paneNumber(of: agent.paneID)
         // `agent` rather than `display_agent`: the server sends the latter only
         // for an agent it was told about, so for a detected one — which is

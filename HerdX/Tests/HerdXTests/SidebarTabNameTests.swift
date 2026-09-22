@@ -10,32 +10,40 @@ final class SidebarTabNameTests: XCTestCase {
     /// A workspace holding some agents, for the rows that tell them apart.
     private func agentSnapshot(
         panes: [(id: String, label: String?, kind: String?)],
-        tabLabel: String = "1"
+        tabLabel: String = "1",
+        tabs: [(id: String, number: Int, label: String)]? = nil,
+        paneTabs: [String]? = nil
     ) -> Snapshot {
-        let paneJSON = panes.map { pane in
+        let tabList = tabs ?? [(id: "w1:t1", number: 1, label: tabLabel)]
+        let tabOf = { (index: Int) in paneTabs?[index] ?? tabList[0].id }
+        let paneJSON = panes.enumerated().map { index, pane in
             let label = pane.label.map { "\"\($0)\"" } ?? "null"
             return """
-                {"pane_id": "\(pane.id)", "tab_id": "w1:t1", "label": \(label),
+                {"pane_id": "\(pane.id)", "tab_id": "\(tabOf(index))", "label": \(label),
                  "focused": false}
                 """
         }.joined(separator: ",")
-        let agentJSON = panes.map { pane in
+        let agentJSON = panes.enumerated().map { index, pane in
             let kind = pane.kind.map { "\"\($0)\"" } ?? "null"
             return """
-                {"pane_id": "\(pane.id)", "workspace_id": "w1", "tab_id": "w1:t1",
+                {"pane_id": "\(pane.id)", "workspace_id": "w1", "tab_id": "\(tabOf(index))",
                  "agent": \(kind), "agent_status": "idle",
                  "state_change_seq": 1, "focused": false}
                 """
+        }.joined(separator: ",")
+        let tabJSON = tabList.map { tab in
+            """
+            {"tab_id": "\(tab.id)", "workspace_id": "w1", "number": \(tab.number),
+             "label": "\(tab.label)", "zoomed": false, "focused": false,
+             "agent_status": "idle"}
+            """
         }.joined(separator: ",")
         let json = """
             {"boot_id": "b", "revision": 1,
              "workspaces": [{"workspace_id": "w1", "number": 1, "label": "herdx",
                              "focused": false, "agent_status": "idle",
                              "active_tab_id": "w1:t1"}],
-             "tabs": [{"tab_id": "w1:t1", "workspace_id": "w1", "number": 1,
-                       "label": "\(tabLabel)", "zoomed": false, "focused": false,
-                       "agent_status": "idle"}],
-             "panes": [\(paneJSON)], "agents": [\(agentJSON)]}
+             "tabs": [\(tabJSON)], "panes": [\(paneJSON)], "agents": [\(agentJSON)]}
             """
         return try! JSONDecoder().decode(Snapshot.self, from: Data(json.utf8))
     }
@@ -149,6 +157,34 @@ final class SidebarTabNameTests: XCTestCase {
         XCTAssertEqual(places(pair), [" (claude 1)", " (codex 3)"])
     }
 
+    func testANamedTabIsUsedWhenTheAgentsAreInDifferentTabs() {
+        // Exactly the shape on Monolith: one pane named, the other in a tab
+        // that was renamed instead.
+        let pair = agentSnapshot(
+            panes: [
+                (id: "w1:p1", label: "Overall", kind: "claude"),
+                (id: "w1:p2", label: nil, kind: "claude"),
+            ],
+            tabs: [(id: "w1:t1", number: 1, label: "1"),
+                   (id: "w1:t2", number: 2, label: "vs-bestpack")],
+            paneTabs: ["w1:t1", "w1:t2"])
+
+        XCTAssertEqual(places(pair), [" (Overall)", " (vs-bestpack)"])
+    }
+
+    func testATabSharedByBothAgentsCannotTellThemApart() {
+        // Two split panes sit in one tab, so its name reads the same on both
+        // rows and answers nothing — the number has to do the work.
+        let pair = agentSnapshot(
+            panes: [
+                (id: "w1:p1", label: nil, kind: "claude"),
+                (id: "w1:p2", label: nil, kind: "claude"),
+            ],
+            tabLabel: "work")
+
+        XCTAssertEqual(places(pair), [" (claude 1)", " (claude 2)"])
+    }
+
     func testAnUnknownAgentLeavesJustTheNumber() {
         let pair = agentSnapshot(panes: [
             (id: "w1:p1", label: nil, kind: nil),
@@ -173,6 +209,39 @@ final class SidebarTabNameTests: XCTestCase {
         XCTAssertEqual(SidebarView.paneNumber(of: "w1:p2"), "2")
         XCTAssertEqual(SidebarView.paneNumber(of: "wA:p12"), "12")
         XCTAssertEqual(SidebarView.paneNumber(of: "nonsense"), "nonsense")
+    }
+
+    func testRenamingATabRebuildsTheAgentsList() {
+        // The reported case: the agents list is what was on screen, and its
+        // signature is built separately from the machine list's.
+        let view = SidebarView(frame: .zero)
+        view.arrangement = .priority
+        let endpoint = { (s: Snapshot) in
+            EndpointInfo(
+                index: 0, id: "local", label: "Local", status: .online, isRemote: false,
+                error: nil, needsInstall: false, snapshot: s)
+        }
+        let panes: [(id: String, label: String?, kind: String?)] = [
+            (id: "w1:p1", label: "Overall", kind: "claude"),
+            (id: "w1:p2", label: nil, kind: "claude"),
+        ]
+        let before = agentSnapshot(
+            panes: panes,
+            tabs: [(id: "w1:t1", number: 1, label: "1"), (id: "w1:t2", number: 2, label: "2")],
+            paneTabs: ["w1:t1", "w1:t2"])
+        view.update(endpoints: [endpoint(before)], active: 0)
+        let rebuilds = view.rebuilds
+
+        let after = agentSnapshot(
+            panes: panes,
+            tabs: [(id: "w1:t1", number: 1, label: "1"),
+                   (id: "w1:t2", number: 2, label: "vs-bestpack")],
+            paneTabs: ["w1:t1", "w1:t2"])
+        view.update(endpoints: [endpoint(after)], active: 0)
+
+        XCTAssertEqual(
+            view.rebuilds, rebuilds + 1,
+            "renaming a tab changes what an agent row reads and nothing else here")
     }
 
     func testRenamingATabRebuildsTheList() {
