@@ -408,8 +408,8 @@ final class SidebarView: NSView {
         var agents = ""
         if arrangement == .priority {
             let rows: [String] = endpoints.flatMap { endpoint -> [String] in
-                let list = endpoint.snapshot?.agents ?? []
-                return list.map { agent -> String in
+                guard let snapshot = endpoint.snapshot else { return [] }
+                return snapshot.agents.map { agent -> String in
                     let seen = priority.hasSeen(agent, on: endpoint.index)
                     // The band and the age are the reasons a row moves without
                     // anything on the wire changing — an agent crosses into
@@ -418,8 +418,11 @@ final class SidebarView: NSView {
                     // costs a rebuild an hour rather than one a tick.
                     let tier = priority.tier(agent, on: endpoint.index).rawValue
                     let quiet = priority.quietFor(agent, on: endpoint.index) ?? ""
+                    // The tab's name is in the row, and renaming a tab changes
+                    // nothing else here.
+                    let tab = Self.namedTab(tabID: agent.tabID, in: snapshot)
                     return "\(agent.paneID):\(agent.agentStatus):\(agent.stateChangeSeq):\(seen)"
-                        + ":\(tier):\(quiet)"
+                        + ":\(tier):\(quiet):\(tab)"
                 }
             }
             agents = rows.joined(separator: ",")
@@ -530,8 +533,10 @@ final class SidebarView: NSView {
                 band = tiers[index]
             }
 
-            let workspace = endpoint.snapshot?.workspaces
-                .first { $0.workspaceID == agent.workspaceID }?.label
+            let workspace = endpoint.snapshot.flatMap { snapshot in
+                snapshot.workspaces.first { $0.workspaceID == agent.workspaceID }
+                    .map { $0.label + Self.namedTab(tabID: agent.tabID, in: snapshot) }
+            }
             // "idle 3h" rather than "idle · 3h": how long it has been quiet is
             // part of what state it is in, not a second fact about it.
             let reason = [
@@ -580,7 +585,9 @@ final class SidebarView: NSView {
             // sidebar. The agent rows spell their age the same way.
             let age = AgentPriority.age(Date().timeIntervalSince(record.at))
             add(
-                title: record.label,
+                // The first tab is the one a revive lands in, so it is the one
+                // worth naming.
+                title: record.label + Self.namedTab(stored: record.tabs.first?.label),
                 subtitle: [agents.joined(separator: " · "), age]
                     .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "),
                 // No dot: the status colours say what an agent is doing, and
@@ -600,11 +607,32 @@ final class SidebarView: NSView {
     /// "herdx (claude)" is the whole reason to look. In a 240pt sidebar the
     /// width is worth spending only on the difference.
     static func namedTab(of workspace: Snapshot.Workspace, in snapshot: Snapshot) -> String {
-        guard let active = workspace.activeTabID,
-            let tab = snapshot.tabs.first(where: { $0.tabID == active }),
-            tab.label != String(tab.number)
-        else { return "" }
-        return " (\(tab.label))"
+        guard let active = workspace.activeTabID else { return "" }
+        return namedTab(tabID: active, in: snapshot)
+    }
+
+    /// One particular tab, for a row that is about one particular pane.
+    ///
+    /// The agents list names the tab the agent is *in*, which is not always
+    /// the one its workspace would open at — the whole reason to list agents
+    /// separately is that they are somewhere you are not.
+    static func namedTab(tabID: String, in snapshot: Snapshot) -> String {
+        guard let tab = snapshot.tabs.first(where: { $0.tabID == tabID }) else { return "" }
+        return named(tab.label, default: String(tab.number))
+    }
+
+    /// A stored tab's name, for a workspace that is no longer running.
+    ///
+    /// The number it would have been called by is not kept, so a label that is
+    /// only digits is taken for a default one. That is what herdr's defaults
+    /// look like, and the cost of being wrong is a bracket.
+    static func namedTab(stored label: String?) -> String {
+        guard let label, !label.isEmpty else { return "" }
+        return label.allSatisfy(\.isNumber) ? "" : " (\(label))"
+    }
+
+    private static func named(_ label: String, default fallback: String) -> String {
+        label == fallback ? "" : " (\(label))"
     }
 
     /// A band heading, with the rule that sets it off from the band above.

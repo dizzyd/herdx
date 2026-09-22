@@ -68,6 +68,31 @@ final class SidebarTabNameTests: XCTestCase {
         XCTAssertEqual(suffix(snapshot(activeTab: "w1:t9")), "")
     }
 
+    // MARK: - The other two lists that name the same workspace
+
+    func testAnAgentRowNamesTheTabTheAgentIsIn() {
+        // Not the workspace's active tab: the point of listing agents apart is
+        // that they are somewhere you are not.
+        let several = snapshot(
+            activeTab: "w1:t1",
+            tabs: [
+                (id: "w1:t1", number: 1, label: "notes"),
+                (id: "w1:t2", number: 2, label: "build"),
+            ])
+
+        XCTAssertEqual(SidebarView.namedTab(tabID: "w1:t2", in: several), " (build)")
+        XCTAssertEqual(SidebarView.namedTab(of: several.workspaces[0], in: several), " (notes)")
+    }
+
+    func testAStoredTabNameSurvivesHibernation() {
+        // A hibernated row has only the label it kept; the number it would
+        // otherwise be called by is not stored, so digits are taken as default.
+        XCTAssertEqual(SidebarView.namedTab(stored: "claude"), " (claude)")
+        XCTAssertEqual(SidebarView.namedTab(stored: "2"), "")
+        XCTAssertEqual(SidebarView.namedTab(stored: nil), "")
+        XCTAssertEqual(SidebarView.namedTab(stored: ""), "")
+    }
+
     func testRenamingATabRebuildsTheList() {
         // The row's text changes and nothing else about the workspace does, so
         // the name has to be part of what the list compares.
