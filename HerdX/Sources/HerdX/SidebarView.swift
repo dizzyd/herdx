@@ -418,9 +418,9 @@ final class SidebarView: NSView {
                     // costs a rebuild an hour rather than one a tick.
                     let tier = priority.tier(agent, on: endpoint.index).rawValue
                     let quiet = priority.quietFor(agent, on: endpoint.index) ?? ""
-                    // The tab's name is in the row, and renaming a tab changes
-                    // nothing else here.
-                    let tab = Self.namedTab(tabID: agent.tabID, in: snapshot)
+                    // Whichever name the row carries — renaming a pane or a
+                    // tab changes nothing else here.
+                    let tab = Self.namedPlace(of: agent, in: snapshot)
                     return "\(agent.paneID):\(agent.agentStatus):\(agent.stateChangeSeq):\(seen)"
                         + ":\(tier):\(quiet):\(tab)"
                 }
@@ -535,7 +535,7 @@ final class SidebarView: NSView {
 
             let workspace = endpoint.snapshot.flatMap { snapshot in
                 snapshot.workspaces.first { $0.workspaceID == agent.workspaceID }
-                    .map { $0.label + Self.namedTab(tabID: agent.tabID, in: snapshot) }
+                    .map { $0.label + Self.namedPlace(of: agent, in: snapshot) }
             }
             // "idle 3h" rather than "idle · 3h": how long it has been quiet is
             // part of what state it is in, not a second fact about it.
@@ -609,6 +609,24 @@ final class SidebarView: NSView {
     static func namedTab(of workspace: Snapshot.Workspace, in snapshot: Snapshot) -> String {
         guard let active = workspace.activeTabID else { return "" }
         return namedTab(tabID: active, in: snapshot)
+    }
+
+    /// The most specific name an agent's row can carry.
+    ///
+    /// A pane's own name when it has one, and the tab's otherwise. An agent
+    /// row is one agent in one pane, so the pane is the most specific thing
+    /// that is true of it — and a pane is only named because somebody named
+    /// it, where a tab carries its number until then.
+    ///
+    /// One bracket, not both. "herdx (claude · agent)" is what a 240pt sidebar
+    /// spends on truncating the rest of the row.
+    static func namedPlace(of agent: Snapshot.Agent, in snapshot: Snapshot) -> String {
+        if let label = snapshot.panes.first(where: { $0.paneID == agent.paneID })?.label,
+            !label.isEmpty
+        {
+            return " (\(label))"
+        }
+        return namedTab(tabID: agent.tabID, in: snapshot)
     }
 
     /// One particular tab, for a row that is about one particular pane.

@@ -7,6 +7,25 @@ import XCTest
 /// given a name.
 @MainActor
 final class SidebarTabNameTests: XCTestCase {
+    /// An agent in a pane, for the rows that name one.
+    private func agentSnapshot(paneLabel: String?, tabLabel: String) -> Snapshot {
+        let label = paneLabel.map { "\"\($0)\"" } ?? "null"
+        let json = """
+            {"boot_id": "b", "revision": 1,
+             "workspaces": [{"workspace_id": "w1", "number": 1, "label": "herdx",
+                             "focused": false, "agent_status": "idle",
+                             "active_tab_id": "w1:t1"}],
+             "tabs": [{"tab_id": "w1:t1", "workspace_id": "w1", "number": 1,
+                       "label": "\(tabLabel)", "zoomed": false, "focused": false,
+                       "agent_status": "idle"}],
+             "panes": [{"pane_id": "w1:p1", "tab_id": "w1:t1", "label": \(label),
+                        "focused": false}],
+             "agents": [{"pane_id": "w1:p1", "workspace_id": "w1", "tab_id": "w1:t1",
+                         "agent_status": "idle", "state_change_seq": 1, "focused": false}]}
+            """
+        return try! JSONDecoder().decode(Snapshot.self, from: Data(json.utf8))
+    }
+
     private func snapshot(
         workspace: String = "crucibulum", activeTab: String? = "w1:t1",
         tabs: [(id: String, number: Int, label: String)] = [(id: "w1:t1", number: 1, label: "1")]
@@ -82,6 +101,38 @@ final class SidebarTabNameTests: XCTestCase {
 
         XCTAssertEqual(SidebarView.namedTab(tabID: "w1:t2", in: several), " (build)")
         XCTAssertEqual(SidebarView.namedTab(of: several.workspaces[0], in: several), " (notes)")
+    }
+
+    func testANamedPaneWinsOverItsTab() {
+        // An agent row is one agent in one pane, so the pane is the most
+        // specific thing true of it — and a pane is named only deliberately,
+        // where a tab carries its number until somebody renames it.
+        let snapshot = agentSnapshot(paneLabel: "agent", tabLabel: "claude")
+
+        XCTAssertEqual(
+            SidebarView.namedPlace(of: snapshot.agents[0], in: snapshot), " (agent)")
+    }
+
+    func testTheTabIsUsedWhenThePaneHasNoName() {
+        let snapshot = agentSnapshot(paneLabel: nil, tabLabel: "claude")
+
+        XCTAssertEqual(
+            SidebarView.namedPlace(of: snapshot.agents[0], in: snapshot), " (claude)")
+    }
+
+    func testNeitherNamedSaysNothingExtra() {
+        // A tab still called by its number is not a name, and this is the
+        // ordinary case — nothing in brackets at all.
+        let snapshot = agentSnapshot(paneLabel: nil, tabLabel: "1")
+
+        XCTAssertEqual(SidebarView.namedPlace(of: snapshot.agents[0], in: snapshot), "")
+    }
+
+    func testAnEmptyPaneLabelIsNotAName() {
+        let snapshot = agentSnapshot(paneLabel: "", tabLabel: "claude")
+
+        XCTAssertEqual(
+            SidebarView.namedPlace(of: snapshot.agents[0], in: snapshot), " (claude)")
     }
 
     func testAStoredTabNameSurvivesHibernation() {
