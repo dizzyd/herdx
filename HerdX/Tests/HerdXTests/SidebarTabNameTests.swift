@@ -7,9 +7,26 @@ import XCTest
 /// given a name.
 @MainActor
 final class SidebarTabNameTests: XCTestCase {
-    /// An agent in a pane, for the rows that name one.
-    private func agentSnapshot(paneLabel: String?, tabLabel: String) -> Snapshot {
-        let label = paneLabel.map { "\"\($0)\"" } ?? "null"
+    /// A workspace holding some agents, for the rows that tell them apart.
+    private func agentSnapshot(
+        panes: [(id: String, label: String?, kind: String?)],
+        tabLabel: String = "1"
+    ) -> Snapshot {
+        let paneJSON = panes.map { pane in
+            let label = pane.label.map { "\"\($0)\"" } ?? "null"
+            return """
+                {"pane_id": "\(pane.id)", "tab_id": "w1:t1", "label": \(label),
+                 "focused": false}
+                """
+        }.joined(separator: ",")
+        let agentJSON = panes.map { pane in
+            let kind = pane.kind.map { "\"\($0)\"" } ?? "null"
+            return """
+                {"pane_id": "\(pane.id)", "workspace_id": "w1", "tab_id": "w1:t1",
+                 "agent": \(kind), "agent_status": "idle",
+                 "state_change_seq": 1, "focused": false}
+                """
+        }.joined(separator: ",")
         let json = """
             {"boot_id": "b", "revision": 1,
              "workspaces": [{"workspace_id": "w1", "number": 1, "label": "herdx",
@@ -18,12 +35,13 @@ final class SidebarTabNameTests: XCTestCase {
              "tabs": [{"tab_id": "w1:t1", "workspace_id": "w1", "number": 1,
                        "label": "\(tabLabel)", "zoomed": false, "focused": false,
                        "agent_status": "idle"}],
-             "panes": [{"pane_id": "w1:p1", "tab_id": "w1:t1", "label": \(label),
-                        "focused": false}],
-             "agents": [{"pane_id": "w1:p1", "workspace_id": "w1", "tab_id": "w1:t1",
-                         "agent_status": "idle", "state_change_seq": 1, "focused": false}]}
+             "panes": [\(paneJSON)], "agents": [\(agentJSON)]}
             """
         return try! JSONDecoder().decode(Snapshot.self, from: Data(json.utf8))
+    }
+
+    private func places(_ snapshot: Snapshot) -> [String] {
+        snapshot.agents.map { SidebarView.namedPlace(of: $0, in: snapshot) }
     }
 
     private func snapshot(
@@ -103,45 +121,58 @@ final class SidebarTabNameTests: XCTestCase {
         XCTAssertEqual(SidebarView.namedTab(of: several.workspaces[0], in: several), " (notes)")
     }
 
-    func testANamedPaneWinsOverItsTab() {
-        // An agent row is one agent in one pane, so the pane is the most
-        // specific thing true of it — and a pane is named only deliberately,
-        // where a tab carries its number until somebody renames it.
-        let snapshot = agentSnapshot(paneLabel: "agent", tabLabel: "claude")
+    func testALoneAgentSaysNothingExtra() {
+        // Its workspace has already said everything there is to say about
+        // where it is, even when its pane carries a name.
+        let alone = agentSnapshot(panes: [(id: "w1:p1", label: "agent", kind: "claude")])
 
-        XCTAssertEqual(
-            SidebarView.namedPlace(of: snapshot.agents[0], in: snapshot), " (agent)")
+        XCTAssertEqual(places(alone), [""])
     }
 
-    func testTheTabIsUsedWhenThePaneHasNoName() {
-        let snapshot = agentSnapshot(paneLabel: nil, tabLabel: "claude")
+    func testTwoAgentsAreToldApartByTheirPanes() {
+        let pair = agentSnapshot(panes: [
+            (id: "w1:p1", label: "agent", kind: "claude"),
+            (id: "w1:p2", label: "tests", kind: "claude"),
+        ])
 
-        XCTAssertEqual(
-            SidebarView.namedPlace(of: snapshot.agents[0], in: snapshot), " (claude)")
+        XCTAssertEqual(places(pair), [" (agent)", " (tests)"])
     }
 
-    func testNeitherNamedSaysNothingExtra() {
-        // A tab still called by its number is not a name, and this is the
-        // ordinary case — nothing in brackets at all.
-        let snapshot = agentSnapshot(paneLabel: nil, tabLabel: "1")
+    func testAnUnnamedPaneIsCalledByWhatIsRunningInIt() {
+        // From `agent`, not `display_agent`: a live server omits the latter
+        // for an agent it merely detected, which is nearly all of them.
+        let pair = agentSnapshot(panes: [
+            (id: "w1:p1", label: nil, kind: "claude"),
+            (id: "w1:p3", label: nil, kind: "codex"),
+        ])
 
-        XCTAssertEqual(SidebarView.namedPlace(of: snapshot.agents[0], in: snapshot), "")
+        XCTAssertEqual(places(pair), [" (claude 1)", " (codex 3)"])
     }
 
-    func testAnEmptyPaneLabelIsNotAName() {
-        let snapshot = agentSnapshot(paneLabel: "", tabLabel: "claude")
+    func testAnUnknownAgentLeavesJustTheNumber() {
+        let pair = agentSnapshot(panes: [
+            (id: "w1:p1", label: nil, kind: nil),
+            (id: "w1:p2", label: nil, kind: nil),
+        ])
 
-        XCTAssertEqual(
-            SidebarView.namedPlace(of: snapshot.agents[0], in: snapshot), " (claude)")
+        XCTAssertEqual(places(pair), [" (1)", " (2)"])
     }
 
-    func testAStoredTabNameSurvivesHibernation() {
-        // A hibernated row has only the label it kept; the number it would
-        // otherwise be called by is not stored, so digits are taken as default.
-        XCTAssertEqual(SidebarView.namedTab(stored: "claude"), " (claude)")
-        XCTAssertEqual(SidebarView.namedTab(stored: "2"), "")
-        XCTAssertEqual(SidebarView.namedTab(stored: nil), "")
-        XCTAssertEqual(SidebarView.namedTab(stored: ""), "")
+    func testANamedPaneAndAnUnnamedOneCanSitTogether() {
+        let pair = agentSnapshot(panes: [
+            (id: "w1:p1", label: "agent", kind: "claude"),
+            (id: "w1:p2", label: nil, kind: "claude"),
+        ])
+
+        XCTAssertEqual(places(pair), [" (agent)", " (claude 2)"])
+    }
+
+    func testThePaneNumberIsTheOneHerdrCallsItBy() {
+        // Its id rather than its position, so it keeps meaning the same pane
+        // after one beside it is closed.
+        XCTAssertEqual(SidebarView.paneNumber(of: "w1:p2"), "2")
+        XCTAssertEqual(SidebarView.paneNumber(of: "wA:p12"), "12")
+        XCTAssertEqual(SidebarView.paneNumber(of: "nonsense"), "nonsense")
     }
 
     func testRenamingATabRebuildsTheList() {

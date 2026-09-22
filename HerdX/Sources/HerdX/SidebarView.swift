@@ -585,9 +585,7 @@ final class SidebarView: NSView {
             // sidebar. The agent rows spell their age the same way.
             let age = AgentPriority.age(Date().timeIntervalSince(record.at))
             add(
-                // The first tab is the one a revive lands in, so it is the one
-                // worth naming.
-                title: record.label + Self.namedTab(stored: record.tabs.first?.label),
+                title: record.label,
                 subtitle: [agents.joined(separator: " · "), age]
                     .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "),
                 // No dot: the status colours say what an agent is doing, and
@@ -611,22 +609,42 @@ final class SidebarView: NSView {
         return namedTab(tabID: active, in: snapshot)
     }
 
-    /// The most specific name an agent's row can carry.
+    /// What tells two agents in one workspace apart, when there are two.
     ///
-    /// A pane's own name when it has one, and the tab's otherwise. An agent
-    /// row is one agent in one pane, so the pane is the most specific thing
-    /// that is true of it — and a pane is only named because somebody named
-    /// it, where a tab carries its number until then.
+    /// Nothing at all when there is one. A bracket that reads the same on
+    /// every row of a list is a column of noise: the workspace has already
+    /// said everything there is to say about where that agent is.
     ///
-    /// One bracket, not both. "herdx (claude · agent)" is what a 240pt sidebar
-    /// spends on truncating the rest of the row.
+    /// When there are several, the pane is what differs, so the pane is what
+    /// is named — its own name if somebody gave it one, and its number
+    /// otherwise. A bare number says little on its own, so it is prefixed
+    /// with what is running there when that is known: `(claude 2)`.
     static func namedPlace(of agent: Snapshot.Agent, in snapshot: Snapshot) -> String {
+        let siblings = snapshot.agents.filter { $0.workspaceID == agent.workspaceID }
+        guard siblings.count > 1 else { return "" }
+
         if let label = snapshot.panes.first(where: { $0.paneID == agent.paneID })?.label,
             !label.isEmpty
         {
             return " (\(label))"
         }
-        return namedTab(tabID: agent.tabID, in: snapshot)
+        let number = Self.paneNumber(of: agent.paneID)
+        // `agent` rather than `display_agent`: the server sends the latter only
+        // for an agent it was told about, so for a detected one — which is
+        // nearly all of them — it is not there at all.
+        let kind = [agent.agent, agent.displayAgent].compactMap { $0 }.first { !$0.isEmpty }
+        guard let kind else { return " (\(number))" }
+        return " (\(kind) \(number))"
+    }
+
+    /// The number herdr calls a pane by: the `2` of `w1:p2`.
+    ///
+    /// Its id rather than its position in the list, so it keeps meaning the
+    /// same pane after one beside it is closed.
+    static func paneNumber(of paneID: String) -> String {
+        guard let last = paneID.split(separator: ":").last else { return paneID }
+        let digits = last.drop { !$0.isNumber }
+        return digits.isEmpty ? String(last) : String(digits)
     }
 
     /// One particular tab, for a row that is about one particular pane.
@@ -637,16 +655,6 @@ final class SidebarView: NSView {
     static func namedTab(tabID: String, in snapshot: Snapshot) -> String {
         guard let tab = snapshot.tabs.first(where: { $0.tabID == tabID }) else { return "" }
         return named(tab.label, default: String(tab.number))
-    }
-
-    /// A stored tab's name, for a workspace that is no longer running.
-    ///
-    /// The number it would have been called by is not kept, so a label that is
-    /// only digits is taken for a default one. That is what herdr's defaults
-    /// look like, and the cost of being wrong is a bracket.
-    static func namedTab(stored label: String?) -> String {
-        guard let label, !label.isEmpty else { return "" }
-        return label.allSatisfy(\.isNumber) ? "" : " (\(label))"
     }
 
     private static func named(_ label: String, default fallback: String) -> String {

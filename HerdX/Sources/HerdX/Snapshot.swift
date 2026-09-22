@@ -108,6 +108,11 @@ struct Snapshot: Decodable {
         let workspaceID: String
         let tabID: String
         let name: String?
+        /// What kind of agent it is — "claude", "codex" — as herdr detected it.
+        ///
+        /// Not `display_agent`, which the server leaves out for an agent it
+        /// merely detected, and which is therefore nil for nearly all of them.
+        let agent: String?
         let displayAgent: String?
         let title: String?
         let agentStatus: AgentStatus
@@ -123,7 +128,7 @@ struct Snapshot: Decodable {
             case paneID = "pane_id"
             case workspaceID = "workspace_id"
             case tabID = "tab_id"
-            case name
+            case name, agent
             case displayAgent = "display_agent"
             case title
             case agentStatus = "agent_status"
