@@ -57,11 +57,18 @@ struct Snapshot: Decodable {
         let branch: String?
         let focused: Bool
         let agentStatus: AgentStatus
+        /// Which of its tabs is the one you would land in.
+        ///
+        /// A tab's own `focused` is about the session, not the workspace: only
+        /// one tab anywhere carries it, so it cannot say which tab a workspace
+        /// you are *not* in would open at.
+        let activeTabID: String?
 
         enum CodingKeys: String, CodingKey {
             case workspaceID = "workspace_id"
             case number, label, branch, focused
             case agentStatus = "agent_status"
+            case activeTabID = "active_tab_id"
         }
     }
 

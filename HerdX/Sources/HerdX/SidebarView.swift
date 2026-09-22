@@ -390,9 +390,16 @@ final class SidebarView: NSView {
         // sidebar shows; rebuilding every time would throw away hover state
         // mid-gesture.
         let machines = endpoints.map { endpoint -> String in
-            let workspaces = endpoint.snapshot?.workspaces
-                .map { "\($0.workspaceID):\($0.label):\($0.branch ?? ""):\($0.focused):\($0.agentStatus)" }
-                .joined(separator: ",") ?? ""
+            let workspaces = endpoint.snapshot.map { snapshot in
+                snapshot.workspaces
+                    .map {
+                        // The tab's name too: renaming a tab changes this row
+                        // and nothing else here would notice.
+                        "\($0.workspaceID):\($0.label):\($0.branch ?? ""):\($0.focused)"
+                            + ":\($0.agentStatus):\(Self.namedTab(of: $0, in: snapshot))"
+                    }
+                    .joined(separator: ",")
+            } ?? ""
             return "\(endpoint.id):\(endpoint.status):\(endpoint.error ?? ""):\(workspaces)"
         }.joined(separator: "|")
 
@@ -448,7 +455,7 @@ final class SidebarView: NSView {
                 }
                 for workspace in snapshot.workspaces {
                     add(
-                        title: workspace.label,
+                        title: workspace.label + Self.namedTab(of: workspace, in: snapshot),
                         // Not the machine: the row it sits under is the machine.
                         subtitle: workspace.branch,
                         status: priority.status(
@@ -584,6 +591,20 @@ final class SidebarView: NSView {
                 selected: false,
                 target: .hibernated(record.id, endpoint: endpoint))
         }
+    }
+
+    /// The workspace's active tab, in brackets, when it has been given a name.
+    ///
+    /// Only when named. herdr calls a tab by its number until somebody renames
+    /// it, and "crucibulum (1)" says nothing that "crucibulum" did not — while
+    /// "herdx (claude)" is the whole reason to look. In a 240pt sidebar the
+    /// width is worth spending only on the difference.
+    static func namedTab(of workspace: Snapshot.Workspace, in snapshot: Snapshot) -> String {
+        guard let active = workspace.activeTabID,
+            let tab = snapshot.tabs.first(where: { $0.tabID == active }),
+            tab.label != String(tab.number)
+        else { return "" }
+        return " (\(tab.label))"
     }
 
     /// A band heading, with the rule that sets it off from the band above.
