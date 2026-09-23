@@ -447,6 +447,9 @@ final class TerminalGridView: NSView {
         if ownsLinkGesture { linkPressCancelled = true }
         panes = latest.panes
         recomputePaneBackgrounds()
+        // Pruned on every surface rather than while drawing: a scene that has
+        // lost all its placements never draws, and would otherwise hold its
+        // images for the life of the session.
         imageCache.prune(keeping: latest.placements)
         syncPaneViews()
         refreshLinkHover()
@@ -616,7 +619,12 @@ final class TerminalGridView: NSView {
                 + labelClearance)
     }
 
-    /// The container paints only the background; panes draw themselves.
+    /// Draws the whole surface: the background, then every pane's content.
+    ///
+    /// The pane views deliberately have no `draw` of their own — see
+    /// `PaneContentView`, where relying on each child to draw itself left
+    /// panes blank at the mercy of per-view invalidation. They exist for
+    /// hit-testing and for what will hang off them later.
     override func draw(_ dirtyRect: NSRect) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
         // The whole view, not just `dirtyRect`: every cell is redrawn below,
@@ -682,11 +690,6 @@ final class TerminalGridView: NSView {
             options: [.usesLineFragmentOrigin])
     }
 
-    /// Drops images the scene no longer refers to.
-    ///
-    /// Done on every surface rather than while drawing, because a scene that
-    /// has lost all its placements never draws and would otherwise hold its
-    /// images for the life of the session.
     /// Draws the images the server placed in this pane.
     ///
     /// Placements come already clipped and in surface cell coordinates, and the
@@ -760,11 +763,6 @@ final class TerminalGridView: NSView {
         context.stroke(rect.insetBy(dx: 0.75, dy: 0.75))
     }
 
-    /// One border per pane, drawn only when there is more than one.
-    ///
-    /// The focused pane gets the accent colour and the others a faint line, so
-    /// which pane takes your keystrokes is obvious without a second outline
-    /// competing with it.
     /// Frames each pane and writes what it is on its own border.
     ///
     /// One frame per pane rather than a frame around the lot with a second one

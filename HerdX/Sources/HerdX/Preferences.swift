@@ -44,11 +44,6 @@ struct Preferences {
     var paneLabelSize: CGFloat
     /// Line height as a multiple of the font's natural one.
     var lineHeight: CGFloat
-    /// A loaded palette and what to call it, when one has been loaded.
-    ///
-    /// A whole palette rather than the two default colours: a kitty theme is
-    /// twenty colours, and keeping only two of them would throw away the part
-    /// that makes one theme look different from another.
     /// How the sidebar is arranged, as herdr's own panel puts it.
     var sidebarArrangement: String?
     /// The herdr session to attach to, by name. Nil opens whichever one the
@@ -69,6 +64,11 @@ struct Preferences {
     /// relaunched into. Everything not in here attaches the saved machines,
     /// which is what a machine in herdr's catalog is for.
     var localOnlySessions: [String]
+    /// A loaded palette and what to call it, when one has been loaded.
+    ///
+    /// A whole palette rather than the two default colours: a kitty theme is
+    /// twenty colours, and keeping only two of them would throw away the part
+    /// that makes one theme look different from another.
     var themeName: String?
     var themeColors: [String]?
 

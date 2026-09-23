@@ -1464,17 +1464,10 @@ pub unsafe extern "C" fn hx_pane_id(session: *const HxSession, id_index: u32) ->
     }
 }
 
-
-
-/// Why one endpoint is not connected, if it has said.
-///
-/// Read rather than taken: this is what a machine's row shows for as long as it
-/// is failing, and draining it would make the reason flicker past once and
-/// leave "not connected" standing on its own.
+/// Whether a machine is reachable but has no herdr installed.
 ///
 /// # Safety
-/// `session` must be live. The returned pointer must be released with
-/// `hx_string_free`.
+/// `session` must be live.
 #[no_mangle]
 pub unsafe extern "C" fn hx_endpoint_needs_install(
     session: *const HxSession,
@@ -1513,10 +1506,15 @@ pub unsafe extern "C" fn hx_set_focus(session: *const HxSession, focused: bool) 
     sent
 }
 
-/// Whether a machine is reachable but has no herdr installed.
+/// Why one endpoint is not connected, if it has said.
+///
+/// Read rather than taken: this is what a machine's row shows for as long as it
+/// is failing, and draining it would make the reason flicker past once and
+/// leave "not connected" standing on its own.
 ///
 /// # Safety
-/// `session` must be live.
+/// `session` must be live. The returned pointer must be released with
+/// `hx_string_free`.
 #[no_mangle]
 pub unsafe extern "C" fn hx_endpoint_error(
     session: *const HxSession,
