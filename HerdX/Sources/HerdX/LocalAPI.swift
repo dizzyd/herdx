@@ -19,7 +19,7 @@ import Foundation
 /// file — but this is still a second way to talk to herdr, and worth keeping
 /// small.
 enum LocalAPI {
-    struct Failure: Error, Equatable {
+    struct Failure: Error, Equatable, Sendable {
         let reason: String
     }
 
@@ -67,11 +67,16 @@ enum LocalAPI {
     /// One connection per request: the API socket answers a request and closes,
     /// which a long-lived connection finds out the hard way as a broken pipe on
     /// the second send.
+    ///
+    /// Main-actor isolated at both ends: every caller is on the main thread,
+    /// and saying so lets the reply closure hop back there without being
+    /// `@Sendable` — which the callers' main-thread state could not satisfy.
+    @MainActor
     static func send(
         _ command: Command,
         socket path: String?,
         timeout: TimeInterval = 5,
-        then: @escaping (Result<String, Failure>) -> Void
+        then: @escaping @MainActor (Result<String, Failure>) -> Void
     ) {
         let id = UUID().uuidString
         guard let json = command.requestJSON(id: id) else {
