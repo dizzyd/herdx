@@ -176,6 +176,15 @@ final class TerminalGridView: NSView {
     /// session that asked for it has ended can be told apart from one that
     /// belongs to the session now on screen.
     var copyModeGeneration = 0
+    /// Motions waiting for the one in flight to answer.
+    ///
+    /// Each motion is relative to where the cursor is now, and where it is now
+    /// is only known once the server has said. Two `w` presses before the
+    /// first reply both asked to advance from the same place and both landed
+    /// on the same word, so the second press did nothing.
+    var pendingMotions: [CopyMode.Motion] = []
+    /// Whether a motion request is out, so the next one waits for its answer.
+    var motionInFlight = false
     /// Raised with the status text when copy mode starts, changes or ends.
     var onCopyModeChanged: ((String?) -> Void)?
     /// Raised to run a copy-mode request that needs a reply.

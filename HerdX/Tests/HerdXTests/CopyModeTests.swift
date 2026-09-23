@@ -55,6 +55,72 @@ final class CopyModeTests: XCTestCase {
         return reply
     }
 
+    /// A cursor reply placing it at one column.
+    private func cursorAt(row: UInt64, column: Int) -> String {
+        #"{"result":{"cursor":{"row":\#(row),"col":\#(column)}}}"#
+    }
+
+    /// Each motion is relative to where the cursor is, and that comes back
+    /// from the server. Two presses before the first answer must not both ask
+    /// to move from the same place.
+    func testRapidMotionsAreAskedOneAtATime() {
+        let view = gridView(panes: [pane("w1:p1")])
+        var requests: [String] = []
+        var replies: [(String) -> Void] = []
+        view.onCopyModeRequest = { request, _, completion in
+            requests.append(request)
+            replies.append(completion)
+        }
+        view.enterCopyMode()
+
+        _ = view.handleCopyModeKey(keystroke("w"))
+        _ = view.handleCopyModeKey(keystroke("w"))
+
+        XCTAssertEqual(requests.count, 1, "the second w went out before the first was answered")
+
+        // The first lands on column 4; the second must start from there.
+        replies[0](cursorAt(row: 0, column: 4))
+        XCTAssertEqual(view.copyMode?.cursor.column, 4)
+        XCTAssertEqual(requests.count, 2, "the queued motion was never sent")
+        XCTAssertTrue(
+            requests[1].contains("\"col\":4"),
+            "the second motion asked to move from where the cursor no longer was: \(requests[1])")
+
+        replies[1](cursorAt(row: 0, column: 8))
+        XCTAssertEqual(view.copyMode?.cursor.column, 8)
+    }
+
+    /// A reply that carries nothing still has to let the queue move on.
+    func testAnUnusableReplyDoesNotStrandTheQueue() {
+        let view = gridView(panes: [pane("w1:p1")])
+        var replies: [(String) -> Void] = []
+        view.onCopyModeRequest = { _, _, completion in replies.append(completion) }
+        view.enterCopyMode()
+
+        _ = view.handleCopyModeKey(keystroke("w"))
+        _ = view.handleCopyModeKey(keystroke("w"))
+        replies[0]("")
+
+        XCTAssertEqual(replies.count, 2, "copy mode stopped moving after one lost reply")
+    }
+
+    /// Leaving copy mode drops what was waiting; it belongs to a session that
+    /// is gone.
+    func testLeavingCopyModeForgetsQueuedMotions() {
+        let view = gridView(panes: [pane("w1:p1")])
+        var replies: [(String) -> Void] = []
+        view.onCopyModeRequest = { _, _, completion in replies.append(completion) }
+        view.enterCopyMode()
+
+        _ = view.handleCopyModeKey(keystroke("w"))
+        _ = view.handleCopyModeKey(keystroke("w"))
+        view.exitCopyMode()
+        replies[0](cursorAt(row: 0, column: 4))
+
+        XCTAssertEqual(replies.count, 1, "a motion was sent for a copy mode nobody is in")
+        XCTAssertNil(view.copyMode)
+    }
+
     func testEachEntryIntoCopyModeIsANewSession() {
         let view = gridView(panes: [pane("w1:p1")])
 

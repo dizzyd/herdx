@@ -7,6 +7,8 @@ extension TerminalGridView {
             return
         }
         copyModeGeneration += 1
+        pendingMotions = []
+        motionInFlight = false
         var mode = CopyMode(
             generation: copyModeGeneration,
             paneID: pane.id,
@@ -21,6 +23,8 @@ extension TerminalGridView {
 
     func exitCopyMode() {
         copyMode = nil
+        pendingMotions = []
+        motionInFlight = false
         selection = nil
         needsDisplay = true
         onCopyModeChanged?(nil)
@@ -187,12 +191,32 @@ extension TerminalGridView {
         return mode
     }
 
+    /// Queues a motion, or runs it if nothing is in flight.
+    ///
+    /// A motion is relative to where the cursor is, and where it is comes back
+    /// from the server. Sending the next one before that answer arrives asks
+    /// it to move from where the cursor *was*: `ww` on "one two three" sent
+    /// two next-word requests from column 0 and both landed on "two", so the
+    /// second keystroke was spent for nothing.
     private func runMotion(_ motion: CopyMode.Motion) {
-        guard let issued = copyMode else { return }
+        guard copyMode != nil else { return }
+        pendingMotions.append(motion)
+        sendNextMotion()
+    }
+
+    private func sendNextMotion() {
+        guard !motionInFlight, let issued = copyMode, !pendingMotions.isEmpty else { return }
+        let motion = pendingMotions.removeFirst()
         let id = "motion-\(UUID().uuidString)"
-        guard let request = issued.motionRequest(motion, id: id) else { return }
+        guard let request = issued.motionRequest(motion, id: id) else {
+            return sendNextMotion()
+        }
+        motionInFlight = true
         onCopyModeRequest?(request, id) { [weak self] body in
-            guard let self, var mode = self.session(matching: issued),
+            guard let self else { return }
+            self.motionInFlight = false
+            defer { self.sendNextMotion() }
+            guard var mode = self.session(matching: issued),
                 let point = Self.cursor(fromReply: body)
             else { return }
             mode.cursor = point

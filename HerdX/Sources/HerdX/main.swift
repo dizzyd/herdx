@@ -748,7 +748,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
             self?.copyModeStatus.update(status)
         }
         gridView.onCopyModeRequest = { [weak session] request, id, reply in
-            guard let session, let snapshot = session.lastSnapshot else { return }
+            // Answered even when there is nothing to ask: motions are run one
+            // at a time, each from where the last one landed, so a request
+            // that never calls back would stop every later one.
+            guard let session, let snapshot = session.lastSnapshot else { return reply("") }
             session.request(request, bootID: snapshot.bootID, id: id, onReply: reply)
         }
         gridView.onFocusPane = { [weak self] paneID in
