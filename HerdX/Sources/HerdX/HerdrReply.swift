@@ -206,6 +206,21 @@ enum Reply {
         }
     }
 
+    /// The rejection a reply carries, if it is one.
+    ///
+    /// Decoded rather than searched for. Asking whether the text contains
+    /// `"error"` calls a successful read a failure as soon as what it returned
+    /// happens to contain that word — a pane full of build output, a workspace
+    /// somebody named `error` — and splitting the JSON on `"message":"` to get
+    /// the reason truncates any message with an escaped quote in it, which is
+    /// most messages that quote a path or a command.
+    static func rejection(in body: String) -> Failure? {
+        guard let data = body.data(using: .utf8),
+            let envelope = try? JSONDecoder().decode(Envelope<Empty>.self, from: data)
+        else { return nil }
+        return envelope.error
+    }
+
     /// Decodes a reply body, turning a rejection into an error rather than a
     /// silently empty result.
     static func decode<Result: Decodable>(_ type: Result.Type, from body: String) -> Swift.Result<

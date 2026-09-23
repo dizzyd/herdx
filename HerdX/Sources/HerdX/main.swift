@@ -1445,14 +1445,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         return "\(error)"
     }
 
-    /// Says that a command failed, and why if herdr said.
-    private func report(failure reply: String, for command: Command) {
-        let message =
-            reply
-            .split(separator: "\"message\":\"", maxSplits: 1).last?
-            .split(separator: "\"").first.map(String.init)
+    /// Says that a command failed, and why herdr said it did.
+    ///
+    /// The whole reply goes to stderr and only the reason to the window: the
+    /// notice is one line over somebody's terminal.
+    private func report(_ rejection: Reply.Failure, reply: String, for command: Command) {
         FileHandle.standardError.write(Data("herdx: \(command.method) failed: \(reply)\n".utf8))
-        notice("\(command.method) failed\(message.map { ": \($0)" } ?? "")")
+        notice("\(command.method) failed: \(rejection.text)")
     }
 
     /// A line over the terminal that clears itself.
@@ -1532,9 +1531,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         // and said nothing — which is how four commands came to be sending
         // parameters herdr does not accept without anyone noticing.
         session.request(json, bootID: boot, id: id) { [weak self] reply in
-            guard reply.contains("\"error\"") else { return }
+            guard let rejection = Reply.rejection(in: reply) else { return }
             MainActor.assumeIsolated {
-                self?.report(failure: reply, for: command)
+                self?.report(rejection, reply: reply, for: command)
             }
         }
     }
