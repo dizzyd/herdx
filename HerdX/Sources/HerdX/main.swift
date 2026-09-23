@@ -175,10 +175,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
                 x: 0, y: 0,
                 width: CGFloat(cols) * cell.width + SidebarView.width,
                 height: CGFloat(rows) * cell.height),
-            // Not `.fullSizeContentView`: drawing under the title bar means
-            // every pane below it needs safe-area insets, and that inset was
-            // shifting the terminal's dirty rect by exactly the title bar's
-            // height so it never painted.
+            // Not `.fullSizeContentView`, though it is half of the look the
+            // transparent title bar below is after: drawing under the title
+            // bar means every view beneath it needs safe-area insets, and that
+            // inset shifted the terminal's dirty rect by exactly the title
+            // bar's height, so it never painted at all.
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false)
@@ -187,11 +188,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         window.delegate = self
         window.center()
         // A transparent title bar takes the window's background colour, which
-        // is what carries the chrome up over the traffic lights. Not
-        // `.fullSizeContentView`, which is the other half of that look: drawing
-        // under the title bar means every view below needs safe-area insets,
-        // and that inset shifted the terminal's dirty rect by exactly the title
-        // bar's height so it never painted.
+        // is what carries the chrome up over the traffic lights.
         window.titlebarAppearsTransparent = true
 
 
