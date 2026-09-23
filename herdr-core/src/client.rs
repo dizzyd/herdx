@@ -246,13 +246,136 @@ impl EndpointConnection {
         self.writer.take()
     }
 
+    /// Reads the next server message.
+    ///
+    /// Against the graphics cap rather than the ordinary one. herdr sizes a
+    /// surface carrying images against `MAX_GRAPHICS_FRAME_SIZE` and the
+    /// ordinary 2 MB against everything else, so reading every established
+    /// frame against the smaller number refuses images the server was entitled
+    /// to send — and since the image is still on screen after reconnecting, the
+    /// next attempt refuses it too. The handshake keeps the smaller bound: its
+    /// reply is a JSON control message with no such allowance.
     pub fn recv(&mut self) -> io::Result<ServerMessage> {
-        match read_message(&mut self.reader, herdr_protocol::protocol::MAX_FRAME_SIZE) {
+        match read_message(
+            &mut self.reader,
+            herdr_protocol::protocol::MAX_GRAPHICS_FRAME_SIZE,
+        ) {
             Ok(message) => Ok(message),
             Err(error) => Err(io::Error::other(match self.reader.diagnostics() {
                 Some(details) => format!("{error}: {details}"),
                 None => error.to_string(),
             })),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use herdr_protocol::protocol::{
+        FrameData, PaneSurfaceFrame, SurfaceGraphicsAsset, SurfaceGraphicsAssetKey,
+        SurfaceGraphicsFormat, SurfaceGraphicsScene, SurfaceGraphicsSource, SurfaceGraphicsTarget,
+    };
+    use std::os::unix::net::UnixListener;
+
+    /// A 1024x1024 RGB image, which is what a plot or a screenshot in a pane
+    /// actually weighs: three megabytes, over MAX_FRAME_SIZE and far under the
+    /// graphics cap the server encoded it against.
+    fn big_surface() -> ServerMessage {
+        let data = vec![7u8; 1024 * 1024 * 3];
+        ServerMessage::PaneSurface(PaneSurfaceFrame {
+            boot_id: "boot".into(),
+            projection_revision: 1,
+            surface_revision: 1,
+            frame: FrameData {
+                cells: Vec::new(),
+                width: 0,
+                height: 0,
+                cursor: None,
+                hyperlinks: Vec::new(),
+                graphics: Vec::new(),
+            },
+            panes: Vec::new(),
+            splits: Vec::new(),
+            popup: None,
+            graphics: SurfaceGraphicsScene {
+                assets: vec![SurfaceGraphicsAsset {
+                    key: SurfaceGraphicsAssetKey {
+                        source: SurfaceGraphicsSource::Terminal {
+                            target: SurfaceGraphicsTarget::Pane {
+                                pane_id: "w1:p1".into(),
+                            },
+                            image_id: 1,
+                        },
+                        image_width: 1024,
+                        image_height: 1024,
+                        format: SurfaceGraphicsFormat::Rgb,
+                        data_len: data.len() as u64,
+                        data_fingerprint: 99,
+                    },
+                    data,
+                }],
+                placements: Vec::new(),
+                retained_assets: Vec::new(),
+            },
+        })
+    }
+
+    fn welcome() -> ServerMessage {
+        let welcome = EndpointServerWelcome {
+            generation: ENDPOINT_PROTOCOL_GENERATION,
+            server_version: herdr_protocol::VENDORED_HERDR_VERSION.into(),
+            snapshot_codec: SNAPSHOT_CODEC_V1.into(),
+            surface_codec: SURFACE_CODEC_V1.into(),
+            input_codec: INPUT_CODEC_V1.into(),
+            blob_codec: BLOB_CODEC_V1.into(),
+            methods: Vec::new(),
+            capabilities: Vec::new(),
+            error: None,
+        };
+        ServerMessage::EndpointControl {
+            kind: ENDPOINT_WELCOME_KIND.into(),
+            data: serde_json::to_string(&welcome).unwrap(),
+        }
+    }
+
+    /// herdr encodes a surface carrying images against MAX_GRAPHICS_FRAME_SIZE.
+    /// Reading it back against the smaller cap rejects it, and since the image
+    /// is still there after reconnecting, so does the next attempt.
+    #[test]
+    fn a_surface_carrying_an_image_is_not_rejected_as_oversized() {
+        let path = std::env::temp_dir().join(format!("herdx-graphics-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let listener = UnixListener::bind(&path).expect("bind");
+
+        // Nothing is joined: a client that refuses the frame stops reading, and
+        // three megabytes do not fit in a socket buffer, so the writer would
+        // block there for as long as the test waited for it.
+        std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept");
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut writer = std::io::BufWriter::new(stream);
+            let _: ClientMessage =
+                read_message(&mut reader, herdr_protocol::protocol::MAX_FRAME_SIZE).expect("hello");
+            write_message(&mut writer, &welcome()).expect("welcome");
+            writer.flush().unwrap();
+            let _ = write_message(&mut writer, &big_surface());
+            let _ = writer.flush();
+        });
+
+        let mut connection = EndpointConnection::connect(&path, &hello(80, 24, 8, 17))
+            .expect("the handshake itself is small");
+        let received = connection.recv();
+        drop(connection);
+        let _ = std::fs::remove_file(&path);
+
+        match received {
+            Ok(ServerMessage::PaneSurface(frame)) => {
+                assert_eq!(frame.graphics.assets.len(), 1);
+                assert_eq!(frame.graphics.assets[0].data.len(), 1024 * 1024 * 3);
+            }
+            Ok(other) => panic!("expected a pane surface, got {other:?}"),
+            Err(error) => panic!("a valid graphics surface was refused: {error}"),
         }
     }
 }
