@@ -19,6 +19,7 @@ import AppKit
 @MainActor
 final class Hibernator {
     private let store: HibernationStore
+    private let send: LocalAPI.Sender
     private(set) var records: [Hibernated]
     /// Workspaces with requests out, so a sweep cannot start a second attempt
     /// on top of the first.
@@ -26,8 +27,9 @@ final class Hibernator {
     /// Revivals under way, held so they outlive the call that started them.
     private var revivals: [UUID: Revival] = [:]
 
-    init(store: HibernationStore = .shared) {
+    init(store: HibernationStore = .shared, send: @escaping LocalAPI.Sender = LocalAPI.live) {
         self.store = store
+        self.send = send
         self.records = store.load()
     }
 
@@ -47,7 +49,8 @@ final class Hibernator {
         }
         guard revivals[id] == nil else { return }
 
-        let revival = Revival(record: record, socket: socket) { [weak self] result in
+        let revival = Revival(record: record, socket: socket, send: send) {
+            [weak self] result in
             guard let self else { return }
             self.revivals[id] = nil
             switch result {
@@ -57,11 +60,14 @@ final class Hibernator {
                 self.forget(id)
                 then(.success(record))
             case .failure(let error):
-                // Ordinarily a failed revive has undone itself and the record
-                // stays, so it can be tried again. Only when the half-made
-                // workspace could not be closed is the record dropped, because
-                // a hibernated row beside a running workspace is a lie.
-                if (error as? Revival.Failure)?.workspaceExists == true { self.forget(id) }
+                // The record stays, whatever happened to the half-made
+                // workspace. Dropping it when that husk could not be closed
+                // was the first way round, on the grounds that a hibernated
+                // row beside a running workspace is a lie — but the husk holds
+                // only the agents that were resumed before the failure, and
+                // the record is the only thing that still knows the session
+                // ids of the ones that were not. A visible lie can be undone
+                // by closing the husk; a forgotten session id cannot.
                 then(.failure(error))
             }
         }
@@ -130,7 +136,7 @@ final class Hibernator {
         func ask<Result: Decodable>(
             _ command: Command, _ type: Result.Type, _ keep: @escaping (Result) -> Void
         ) {
-            LocalAPI.send(command, socket: socket) { result in
+            send(command, socket) { result in
                 MainActor.assumeIsolated {
                     switch result {
                     case .failure(let failure):
@@ -164,13 +170,49 @@ final class Hibernator {
         }
     }
 
+    /// What a `workspace.close` reply says about the workspace.
+    ///
+    /// A refusal and a silence are not the same answer, and the record turns
+    /// on the difference. The server answering no means the workspace is still
+    /// running, so its record describes something on screen and has to go. No
+    /// answer at all means the close may well have happened — herdr closes the
+    /// workspace before it encodes the reply — so removing the record then can
+    /// drop the only pointer to conversations that are already gone.
+    enum CloseOutcome: Equatable {
+        case closed
+        case refused(String)
+        case unknown(String)
+    }
+
+    /// Reads one, without deciding anything, so the decision can be tested.
+    static func outcome(of result: Result<String, LocalAPI.Failure>) -> CloseOutcome {
+        switch result {
+        case .failure(let failure):
+            return .unknown(failure.reason)
+        case .success(let body):
+            guard let data = body.data(using: .utf8),
+                let envelope = try? JSONDecoder().decode(
+                    Reply.Envelope<Reply.Empty>.self, from: data)
+            else {
+                // Something answered and we could not read it. That is not the
+                // server saying no.
+                return .unknown("the reply to workspace.close could not be read")
+            }
+            if let error = envelope.error { return .refused(error.text) }
+            guard envelope.result != nil else {
+                return .unknown("the reply to workspace.close carried no result")
+            }
+            return .closed
+        }
+    }
+
     /// Writes the record, then closes the workspace.
     ///
     /// The record goes first and is taken back out if the close is refused: a
     /// row for a workspace that is still running is a confusing but harmless
     /// mistake, while a closed workspace nothing has a pointer to is a
     /// conversation nobody can reach again.
-    private func write(
+    func write(
         _ record: Hibernated, closing workspaceID: String, socket: String?,
         done: @escaping (Result<Hibernated, Error>) -> Void
     ) {
@@ -182,25 +224,23 @@ final class Hibernator {
             return done(.failure(error))
         }
 
-        LocalAPI.send(.closeWorkspace(workspaceID), socket: socket) { [weak self] result in
+        send(.closeWorkspace(workspaceID), socket) { [weak self] result in
             MainActor.assumeIsolated {
                 guard let self else { return }
-                // A nested function here would not inherit the actor, and this
-                // touches state only the main thread may touch.
-                let giveUp: (Error) -> Void = { error in
+                switch Self.outcome(of: result) {
+                case .closed:
+                    done(.success(record))
+                case .refused(let reason):
                     self.records.removeAll { $0.id == record.id }
                     try? self.store.save(self.records)
-                    done(.failure(error))
-                }
-                switch result {
-                case .failure(let failure):
-                    giveUp(failure)
-                case .success(let body):
-                    if case .failure(let failure) = Reply.decode(Reply.Empty.self, from: body) {
-                        giveUp(failure)
-                    } else {
-                        done(.success(record))
-                    }
+                    done(.failure(LocalAPI.Failure(reason: reason)))
+                case .unknown(let reason):
+                    done(
+                        .failure(
+                            LocalAPI.Failure(
+                                reason:
+                                    "\(reason) — \(record.label) was written down in case it closed"
+                            )))
                 }
             }
         }

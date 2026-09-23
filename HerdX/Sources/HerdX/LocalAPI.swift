@@ -71,6 +71,21 @@ enum LocalAPI {
     /// Main-actor isolated at both ends: every caller is on the main thread,
     /// and saying so lets the reply closure hop back there without being
     /// `@Sendable` — which the callers' main-thread state could not satisfy.
+    /// How a request reaches herdr, so a test can answer one without a socket.
+    ///
+    /// Hibernation and revival are long sequences whose failure paths decide
+    /// whether a conversation stays reachable, and those paths are the ones
+    /// worth testing. A real socket cannot be asked to lose a reply.
+    typealias Sender = @MainActor (
+        Command, String?, @escaping @MainActor (Result<String, Failure>) -> Void
+    ) -> Void
+
+    /// The one that talks to the socket.
+    @MainActor
+    static let live: Sender = { command, path, then in
+        send(command, socket: path, then: then)
+    }
+
     @MainActor
     static func send(
         _ command: Command,

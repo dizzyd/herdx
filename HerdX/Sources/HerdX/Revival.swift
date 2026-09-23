@@ -17,13 +17,6 @@ import AppKit
 final class Revival {
     struct Failure: Error, Equatable {
         let reason: String
-        /// True when a half-made workspace is still there after this failed.
-        ///
-        /// Only then must the record be dropped — a row describing a workspace
-        /// that is plainly running would be a lie. Ordinarily a failure undoes
-        /// what it made and this stays false, so the record survives and the
-        /// revive can be tried again.
-        var workspaceExists = false
     }
 
     /// How long to wait for a freshly made pane to reach a prompt.
@@ -46,6 +39,7 @@ final class Revival {
 
     private let record: Hibernated
     private let socket: String?
+    private let send: LocalAPI.Sender
     private let finish: (Result<Void, Error>) -> Void
 
     private var workspaceID: String?
@@ -58,10 +52,12 @@ final class Revival {
 
     init(
         record: Hibernated, socket: String?,
+        send: @escaping LocalAPI.Sender = LocalAPI.live,
         then finish: @escaping (Result<Void, Error>) -> Void
     ) {
         self.record = record
         self.socket = socket
+        self.send = send
         self.finish = finish
     }
 
@@ -150,7 +146,7 @@ final class Revival {
         in pane: String, called agent: String, tries: Int, then act: @escaping (Bool) -> Void
     ) {
         guard tries > 0 else { return act(false) }
-        LocalAPI.send(.paneGet(pane), socket: socket) { [weak self] result in
+        send(.paneGet(pane), socket) { [weak self] result in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 if case .success(let body) = result,
@@ -174,7 +170,7 @@ final class Revival {
         in pane: String, tries: Int, settled: Int = 0, then act: @escaping (Bool) -> Void
     ) {
         guard tries > 0 else { return act(false) }
-        LocalAPI.send(.paneProcessInfo(pane), socket: socket) { [weak self] result in
+        send(.paneProcessInfo(pane), socket) { [weak self] result in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 var ready = false
@@ -205,14 +201,14 @@ final class Revival {
     private func finishUp() {
         for (tab, layout) in applied where tab.zoomed {
             if let pane = layout.root.leaves.first?.pane.paneID {
-                LocalAPI.send(.zoomPaneWithID(pane), socket: socket) { _ in }
+                send(.zoomPaneWithID(pane), socket) { _ in }
             }
         }
         if let first = applied.first,
             let path = first.tab.focused,
             let pane = first.layout.root.leaf(at: path)?.paneID
         {
-            LocalAPI.send(.focusPane(pane), socket: socket) { _ in }
+            send(.focusPane(pane), socket) { _ in }
         }
         finish(.success(()))
     }
@@ -224,13 +220,17 @@ final class Revival {
     /// that still knows which conversations were in it — so the one to keep is
     /// the record. Leaving the husk and dropping the record was the first way
     /// round, and it cost two real workspaces their session ids.
+    ///
+    /// When the close is itself refused the husk stays, and the record stays
+    /// with it: by then the husk holds only the agents resumed before the
+    /// failure, and the record is all that knows the rest.
     private func fail(_ reason: String) {
         guard !failed else { return }
         failed = true
         guard let workspaceID else {
             return finish(.failure(Failure(reason: reason)))
         }
-        LocalAPI.send(.closeWorkspace(workspaceID), socket: socket) { [weak self] result in
+        send(.closeWorkspace(workspaceID), socket) { [weak self] result in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 let undone: Bool
@@ -243,9 +243,7 @@ final class Revival {
                 }
                 self.finish(
                     .failure(
-                        Failure(
-                            reason: undone ? reason : "\(reason) (and it is still open)",
-                            workspaceExists: !undone)))
+                        Failure(reason: undone ? reason : "\(reason) (and it is still open)")))
             }
         }
     }
@@ -253,7 +251,7 @@ final class Revival {
     private func ask<Result: Decodable>(
         _ command: Command, _ type: Result.Type, _ then: @escaping (Result) -> Void
     ) {
-        LocalAPI.send(command, socket: socket) { [weak self] result in
+        send(command, socket) { [weak self] result in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 // Routed through `fail` so every way out carries whether the
