@@ -51,6 +51,8 @@ enum HibernationPlan {
 
         var storedTabs: [Hibernated.Tab] = []
         var placed: Set<String> = []
+        // Panes one of the rules has actually looked at.
+        var judged: Set<String> = []
 
         for tab in tabs {
             guard let layout = layouts[tab.tabID] else {
@@ -82,6 +84,7 @@ enum HibernationPlan {
                     return .failure(
                         Refusal(reason: "\(info.runningDescription) is running in \(paneID)"))
                 }
+                judged.insert(paneID)
             }
 
             var storedAgents: [Hibernated.Agent] = []
@@ -94,6 +97,7 @@ enum HibernationPlan {
                         path: leaf.path, source: session.source, agent: session.agent,
                         kind: session.kind, value: session.value))
                 placed.insert(agent.paneID)
+                judged.insert(agent.paneID)
             }
 
             storedTabs.append(
@@ -113,6 +117,20 @@ enum HibernationPlan {
         if let stranded = agents.first(where: { !placed.contains($0.paneID) }) {
             return .failure(
                 Refusal(reason: "\(stranded.paneID) holds an agent but is in no tab's layout"))
+        }
+
+        // And every other pane the workspace reports must have been looked at
+        // by one of the rules above. The tabs, the layouts and the process
+        // readings all come from the snapshot, while the pane list is fetched
+        // after it — so a tab another client opened in between appears here
+        // and nowhere else. Nothing above would have judged it, it would not
+        // be written down, and closing the workspace would end whatever is
+        // running in it. Two readings that disagree are not a reading.
+        if let unplaced = panes.first(where: { !judged.contains($0.paneID) }) {
+            return .failure(
+                Refusal(
+                    reason: "\(unplaced.paneID) is in the workspace but in no tab's layout, so "
+                        + "what is running in it is unknown"))
         }
 
         return .success(

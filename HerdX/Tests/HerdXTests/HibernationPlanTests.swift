@@ -241,6 +241,28 @@ final class HibernationPlanTests: XCTestCase {
             "closing here would strand a conversation nothing points at any more")
     }
 
+    /// The tabs and the process readings come from the snapshot; the pane list
+    /// is fetched afterwards. A tab another client made in between is in the
+    /// pane list and nowhere else, so nothing above would have looked at it.
+    func testAPaneInNoLayoutIsNotClosedUnexamined() throws {
+        let reason = try XCTUnwrap(
+            refusal(plan(panes: [agentPane(), plainPane(), plainPane("w1:p3", tab: "w1:t2")])),
+            "the workspace would be closed with an unexamined pane in it")
+        XCTAssertTrue(reason.contains("w1:p3"), reason)
+    }
+
+    /// Answering for it does not help: it is still in no exported tree, so
+    /// closing the workspace would end it without writing it down.
+    func testAnUnplacedPaneRefusesEvenWithProcessInfo() throws {
+        let reason = try XCTUnwrap(
+            refusal(
+                plan(
+                    panes: [agentPane(), plainPane(), plainPane("w1:p3", tab: "w1:t2")],
+                    processes: ["w1:p2": idleShell("w1:p2"), "w1:p3": busyShell("w1:p3")])),
+            "a busy pane outside the layout was accepted")
+        XCTAssertTrue(reason.contains("w1:p3"), reason)
+    }
+
     func testAMissingLayoutRefuses() throws {
         let reason = try XCTUnwrap(refusal(plan(layouts: [:])))
         XCTAssertTrue(reason.contains("could not read the layout"))
