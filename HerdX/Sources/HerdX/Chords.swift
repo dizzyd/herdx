@@ -147,7 +147,24 @@ enum Command {
 
     /// herdr's `Method` is an adjacently tagged enum, so `params` is required
     /// even for methods that take nothing. Omitting it fails to parse.
+    /// Whether there is a server request in this at all.
+    ///
+    /// Several of these are not requests. Copy mode, the help and settings
+    /// sheets, detach and the sidebar are the client's own and herdr has no
+    /// method for them; `newLocalWorkspace` is a `workspace.create` that has
+    /// to be aimed at a machine first; `hibernateWorkspace` is a sequence of
+    /// requests over the local socket rather than one over the endpoint.
+    ///
+    /// `invoke` resolves or intercepts each of them before anything is built,
+    /// which is a rule the type cannot state — so this is where it is checked.
+    var hasRequest: Bool { !method.isEmpty }
+
     func requestJSON(id: String) -> String? {
+        // Rather than a request with an empty method, which herdr rejects
+        // without a word. That silence is how four commands here were broken
+        // for a long time without anybody noticing, and a command that reached
+        // this without passing through `invoke` would be the fifth.
+        guard hasRequest else { return nil }
         let body: [String: Any] = ["id": id, "method": method, "params": params]
         guard let data = try? JSONSerialization.data(withJSONObject: body) else { return nil }
         return String(decoding: data, as: UTF8.self)
