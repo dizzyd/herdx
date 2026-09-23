@@ -233,6 +233,13 @@ fn save_machine_in(
             catalog.ssh.push(entry);
         }
     }
+    // A selection herdr cannot honour is worse than no selection: it validates
+    // the whole catalog on load and refuses one that points at a disabled
+    // machine, so this would cost the user every machine rather than one.
+    // `Catalog::set_enabled` upstream does the same.
+    if !enabled && catalog.selected_profile.as_deref() == Some(id.as_str()) {
+        catalog.selected_profile = None;
+    }
     write_catalog_in(directory, &catalog)?;
     Ok(id)
 }
@@ -277,6 +284,11 @@ pub fn remove_machine(id: &str) -> Result<(), String> {
 fn remove_machine_in(directory: &Path, id: &str) -> Result<(), String> {
     let mut catalog = load_catalog_in(directory)?;
     catalog.ssh.retain(|entry| entry.id != id);
+    // Same rule as disabling one, and the same cost for getting it wrong.
+    // `Catalog::remove_ssh` upstream does the same.
+    if catalog.selected_profile.as_deref() == Some(id) {
+        catalog.selected_profile = None;
+    }
     write_catalog_in(directory, &catalog)
 }
 
@@ -699,6 +711,89 @@ mod tests {
         assert_eq!(saved[0].label, "First");
         assert_eq!(saved[1].label, "Second");
         assert_eq!(saved[1].session, "work");
+
+        let written = load_catalog_in(dir.path()).unwrap();
+        assert_eq!(
+            written.selected_profile.as_deref(),
+            Some("00112233445566778899aabbccddeeff"),
+            "herdr's selection is its own and must survive our rewrite"
+        );
+    }
+
+    /// One enabled machine, selected.
+    fn selected_catalog(dir: &TempDir, enabled: bool) {
+        std::fs::write(
+            dir.catalog(),
+            format!(
+                r#"{{
+              "version": 1,
+              "selected_profile": "00112233445566778899aabbccddeeff",
+              "ssh": [
+                {{
+                  "id": "00112233445566778899aabbccddeeff",
+                  "label": "Only",
+                  "target": "user@only",
+                  "session": "default",
+                  "enabled": {enabled}
+                }}
+              ]
+            }}"#
+            ),
+        )
+        .unwrap();
+    }
+
+    /// herdr rejects the whole catalog when the selection is absent, so this
+    /// is not one machine gone — it is every machine the user has.
+    #[test]
+    fn removing_the_selected_machine_clears_the_selection() {
+        let dir = TempDir::new("remove-selected");
+        selected_catalog(&dir, true);
+
+        remove_machine_in(dir.path(), "00112233445566778899aabbccddeeff").unwrap();
+
+        let written = load_catalog_in(dir.path()).unwrap();
+        assert!(written.ssh.is_empty());
+        assert_eq!(
+            written.selected_profile, None,
+            "the catalog still selects a machine that is not in it"
+        );
+    }
+
+    /// Same rule: herdr rejects a selection that is present but disabled.
+    #[test]
+    fn disabling_the_selected_machine_clears_the_selection() {
+        let dir = TempDir::new("disable-selected");
+        selected_catalog(&dir, true);
+
+        save_machine_in(
+            dir.path(),
+            Some("00112233445566778899aabbccddeeff"),
+            "Only",
+            "user@only",
+            "default",
+            false,
+        )
+        .unwrap();
+
+        let written = load_catalog_in(dir.path()).unwrap();
+        assert_eq!(written.ssh.len(), 1);
+        assert!(!written.ssh[0].enabled);
+        assert_eq!(
+            written.selected_profile, None,
+            "the catalog still selects a disabled machine"
+        );
+    }
+
+    /// Disabling one machine says nothing about a different selection.
+    #[test]
+    fn disabling_another_machine_leaves_the_selection_alone() {
+        let dir = TempDir::new("disable-other");
+        selected_catalog(&dir, true);
+        let other = save_machine_in(dir.path(), None, "Other", "user@other", "default", true)
+            .unwrap();
+
+        save_machine_in(dir.path(), Some(&other), "Other", "user@other", "default", false).unwrap();
 
         let written = load_catalog_in(dir.path()).unwrap();
         assert_eq!(
