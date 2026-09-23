@@ -6,6 +6,14 @@ import AppKit
 /// the context that distinguishes two rows with the same name underneath. A
 /// single line forced "paperless-go" and "paperless-go" to be told apart by a
 /// truncated suffix.
+/// A document view that fills from the top.
+///
+/// An unflipped one anchors its content to the bottom, so a sidebar with three
+/// rows in it would draw them against the bottom edge of the window.
+final class FlippedClipView: NSView {
+    override var isFlipped: Bool { true }
+}
+
 final class SidebarRow: NSView {
     enum Target: Equatable {
         case endpoint(Int)
@@ -290,6 +298,16 @@ final class SidebarView: NSView {
     }
 
     private let stack = NSStackView()
+    /// The rows scroll; the arrangement switch above them does not.
+    ///
+    /// Without this the stack simply grew past the bottom of the window and
+    /// the rows below it could not be reached by any means — no scroller, no
+    /// wheel, nothing to drag. A machine with enough workspaces, or a long
+    /// hibernated band under them, put real rows out of reach.
+    private let scroll = NSScrollView()
+    /// Flipped, so the rows start at the top and stay there when there are too
+    /// few to fill the height.
+    private let document = FlippedClipView()
     private(set) var rebuilds = 0
     /// The headings and rows as built, for tests.
     ///
@@ -337,8 +355,20 @@ final class SidebarView: NSView {
         stack.spacing = 2
         stack.edgeInsets = NSEdgeInsets(top: 12, left: 6, bottom: 12, right: 6)
         stack.translatesAutoresizingMaskIntoConstraints = false
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.drawsBackground = false
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        // Overlay, so the rows keep their full width and the scroller is not a
+        // permanent stripe down a 240pt sidebar.
+        scroll.scrollerStyle = .overlay
+        scroll.horizontalScrollElasticity = .none
+        document.translatesAutoresizingMaskIntoConstraints = false
+        document.addSubview(stack)
+        scroll.documentView = document
+
         addSubview(modes)
-        addSubview(stack)
+        addSubview(scroll)
         NSLayoutConstraint.activate([
             // Centred in a band the height of the tab strip, so the switch and
             // the tabs sit on the same line by construction rather than by a
@@ -347,9 +377,17 @@ final class SidebarView: NSView {
                 equalTo: topAnchor, constant: TabBarView.height / 2),
             modes.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
             modes.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            stack.topAnchor.constraint(equalTo: topAnchor, constant: TabBarView.height),
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: topAnchor, constant: TabBarView.height),
+            scroll.leadingAnchor.constraint(equalTo: leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
+            scroll.bottomAnchor.constraint(equalTo: bottomAnchor),
+            // The document is as wide as the view and as tall as its rows, so
+            // the stack's own height is what there is to scroll through.
+            document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+            stack.topAnchor.constraint(equalTo: document.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: document.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: document.trailingAnchor),
+            stack.bottomAnchor.constraint(equalTo: document.bottomAnchor),
         ])
     }
 
@@ -819,6 +857,9 @@ final class SidebarView: NSView {
         guard let next = Self.step(from: current, by: offset, count: rows.count) else {
             return false
         }
+        // The list scrolls now, so a row can be selected while off screen —
+        // which reads as the arrow key having done nothing at all.
+        rows[next].scrollToVisible(rows[next].bounds)
         select(rows[next].target)
         return true
     }
