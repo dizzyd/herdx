@@ -570,7 +570,7 @@ struct EndpointState {
     /// of a blocking read.
     halt: Arc<Halt>,
     /// The live connection's write half, so disposal can close it.
-    writer: Arc<Mutex<Option<crate::endpoint::WriteHalf>>>,
+    writer: Arc<Mutex<Outbound>>,
     /// The reconnect thread and the writer thread, joined on disposal.
     workers: Vec<std::thread::JoinHandle<()>>,
 }
@@ -593,7 +593,7 @@ impl Drop for EndpointState {
         }
         // The read half died with the thread that held it; this is the write
         // half, and dropping it is what lets ChildGuard reap an ssh child.
-        *self.writer.lock().unwrap() = None;
+        self.writer.lock().unwrap().writer = None;
     }
 }
 
@@ -763,6 +763,65 @@ fn begin_attachment(shared: &Shared, announced_surface: bool) {
     shared.resync_pending.store(false, Ordering::Release);
 }
 
+/// The write half, and the messages that must outlive not having one.
+///
+/// Outbound messages are queued before the connection is up, but the queue
+/// alone is not enough: the writer thread used to dequeue while there was no
+/// writer and drop what it found, so anything sent during a handshake — or
+/// between a connection dying and the next one — was silently discarded.
+///
+/// Two kinds of message, and only one of them survives. Input and endpoint
+/// requests are actions, and a keystroke meant for a machine that went away
+/// must not arrive minutes later in whatever is on screen by then; those are
+/// dropped, deliberately. Geometry and focus are not actions but descriptions
+/// of this client, which the server holds per connection — so dropping one
+/// leaves the two disagreeing until something else happens to change it. A
+/// window resized while the welcome was in flight rendered at the old size,
+/// and an unsent focus left this client unpromoted, which silently discards
+/// its host theme.
+#[derive(Default)]
+struct Outbound {
+    writer: Option<crate::endpoint::WriteHalf>,
+    resize: Option<ClientMessage>,
+    focus: Option<ClientMessage>,
+}
+
+impl Outbound {
+    /// Holds a message that describes the client, and drops one that does not.
+    fn remember(&mut self, message: ClientMessage) {
+        match message {
+            ClientMessage::ClientShellResize { .. } => self.resize = Some(message),
+            ClientMessage::ClientShellFocus { .. } => self.focus = Some(message),
+            _ => {}
+        }
+    }
+
+    /// Writes one message, remembering it again if the connection has gone.
+    fn write(&mut self, message: ClientMessage) {
+        let Some(writer) = self.writer.as_mut() else {
+            return self.remember(message);
+        };
+        if crate::protocol::write_message(writer, &message).is_err() || writer.flush().is_err() {
+            // The connection went away; the endpoint thread will install a new
+            // writer when it reconnects, and this goes out then if it must.
+            self.writer = None;
+            self.remember(message);
+        }
+    }
+
+    /// Installs a new writer and tells it what it missed.
+    ///
+    /// Before anything queued behind it: the server should learn this client's
+    /// size and focus in the same state the hello described, not after a
+    /// keystroke has already been acted on at the wrong geometry.
+    fn attach(&mut self, writer: Option<crate::endpoint::WriteHalf>) {
+        self.writer = writer;
+        for message in [self.resize.take(), self.focus.take()].into_iter().flatten() {
+            self.write(message);
+        }
+    }
+}
+
 /// Starts one endpoint's connection and receive loop on its own thread.
 fn spawn_endpoint(
     endpoint: crate::endpoint::Endpoint,
@@ -777,22 +836,11 @@ fn spawn_endpoint(
 
     // Outbound messages are funnelled through one queue that survives
     // reconnects, so input is never lost to a machine that briefly went away.
-    let outbound = Arc::new(Mutex::new(
-        None::<crate::endpoint::WriteHalf>,
-    ));
+    let outbound = Arc::new(Mutex::new(Outbound::default()));
     let writer_slot = Arc::clone(&outbound);
     let writer_thread = std::thread::spawn(move || {
         for message in rx {
-            let mut slot = writer_slot.lock().unwrap();
-            if let Some(writer) = slot.as_mut() {
-                if crate::protocol::write_message(writer, &message).is_err()
-                    || writer.flush().is_err()
-                {
-                    // The connection went away; the endpoint thread will
-                    // install a new writer when it reconnects.
-                    *slot = None;
-                }
-            }
+            writer_slot.lock().unwrap().write(message);
         }
     });
 
@@ -815,7 +863,7 @@ fn spawn_endpoint(
                 &|interrupt| thread_halt.arm(interrupt),
             ) {
                 Ok(mut conn) => {
-                    *writer_for_loop.lock().unwrap() = conn.take_writer();
+                    writer_for_loop.lock().unwrap().attach(conn.take_writer());
                     begin_attachment(&thread_shared, hello.surface_active);
                     thread_shared.connected.store(true, Ordering::Release);
                     thread_status.store(HX_ENDPOINT_ONLINE, Ordering::Release);
@@ -833,7 +881,7 @@ fn spawn_endpoint(
                         Arc::clone(&thread_status),
                         thread_outbound.clone(),
                     );
-                    *writer_for_loop.lock().unwrap() = None;
+                    writer_for_loop.lock().unwrap().writer = None;
                     thread_halt.disarm();
                 }
                 Err(err) => {
@@ -2123,6 +2171,152 @@ mod tests {
         let after = unsafe { out.assume_init() }.revision;
 
         assert_ne!(before, after, "the renderer would skip this frame as idle");
+    }
+
+    fn test_welcome() -> ServerMessage {
+        use herdr_protocol::protocol::endpoint::{
+            EndpointServerWelcome, ENDPOINT_PROTOCOL_GENERATION, ENDPOINT_WELCOME_KIND,
+            BLOB_CODEC_V1, INPUT_CODEC_V1, SNAPSHOT_CODEC_V1, SURFACE_CODEC_V1,
+        };
+        let welcome = EndpointServerWelcome {
+            generation: ENDPOINT_PROTOCOL_GENERATION,
+            server_version: herdr_protocol::VENDORED_HERDR_VERSION.into(),
+            snapshot_codec: SNAPSHOT_CODEC_V1.into(),
+            surface_codec: SURFACE_CODEC_V1.into(),
+            input_codec: INPUT_CODEC_V1.into(),
+            blob_codec: BLOB_CODEC_V1.into(),
+            methods: Vec::new(),
+            capabilities: Vec::new(),
+            error: None,
+        };
+        ServerMessage::EndpointControl {
+            kind: ENDPOINT_WELCOME_KIND.into(),
+            data: serde_json::to_string(&welcome).unwrap(),
+        }
+    }
+
+    /// A resize that lands while the welcome is still in flight has no writer
+    /// to go out on, and the server would otherwise keep rendering the size
+    /// the hello described.
+    #[test]
+    fn geometry_and_focus_sent_before_the_writer_exists_are_not_lost() {
+        let mut outbound = Outbound::default();
+        outbound.write(ClientMessage::ClientShellResize {
+            cell_width_px: 8,
+            cell_height_px: 17,
+            surface_size: herdr_protocol::protocol::ClientSurfaceSize { cols: 132, rows: 43 },
+            pixel_mouse: true,
+        });
+        outbound.write(ClientMessage::ClientShellFocus { focused: true });
+
+        assert!(outbound.resize.is_some(), "the resize was dropped");
+        assert!(outbound.focus.is_some(), "the focus was dropped");
+
+        // Only the latest of each is worth keeping: the window has one size.
+        outbound.write(ClientMessage::ClientShellResize {
+            cell_width_px: 8,
+            cell_height_px: 17,
+            surface_size: herdr_protocol::protocol::ClientSurfaceSize { cols: 100, rows: 30 },
+            pixel_mouse: true,
+        });
+        let Some(ClientMessage::ClientShellResize { surface_size, .. }) = &outbound.resize else {
+            panic!("expected a held resize");
+        };
+        assert_eq!((surface_size.cols, surface_size.rows), (100, 30));
+    }
+
+    /// The same thing over a real socket, with the welcome held back so the
+    /// resize is guaranteed to arrive while there is no writer.
+    #[test]
+    fn a_resize_during_a_slow_handshake_reaches_the_server() {
+        use std::os::unix::net::UnixListener;
+
+        let path = std::env::temp_dir().join(format!(
+            "herdx-handshake-{}-{:?}.sock",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let listener = UnixListener::bind(&path).expect("bind");
+        let (welcomed, may_welcome) = std::sync::mpsc::channel::<()>();
+        let (saw, seen) = std::sync::mpsc::channel::<ClientMessage>();
+
+        std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept");
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut writer = std::io::BufWriter::new(stream);
+            let _: ClientMessage =
+                crate::protocol::read_message(&mut reader, herdr_protocol::protocol::MAX_FRAME_SIZE)
+                    .expect("hello");
+            // Slow server: the client resizes while this is still pending.
+            may_welcome.recv().expect("go");
+            crate::protocol::write_message(&mut writer, &test_welcome()).expect("welcome");
+            writer.flush().unwrap();
+            while let Ok(message) = crate::protocol::read_message::<_, ClientMessage>(
+                &mut reader,
+                herdr_protocol::protocol::MAX_FRAME_SIZE,
+            ) {
+                if saw.send(message).is_err() {
+                    break;
+                }
+            }
+        });
+
+        let state = spawn_endpoint(
+            crate::endpoint::Endpoint {
+                id: "local".into(),
+                label: "Local".into(),
+                kind: crate::endpoint::EndpointKind::Local,
+            },
+            true,
+            window(80, 24),
+            path.clone(),
+        );
+
+        state
+            .outbound
+            .send(ClientMessage::ClientShellResize {
+                cell_width_px: 8,
+                cell_height_px: 17,
+                surface_size: herdr_protocol::protocol::ClientSurfaceSize { cols: 132, rows: 43 },
+                pixel_mouse: true,
+            })
+            .expect("queue the resize");
+
+        // Wait until the writer thread has taken it and found no writer, so
+        // this really is the case where it used to be thrown away.
+        let held = std::time::Instant::now();
+        while state.writer.lock().unwrap().resize.is_none() {
+            assert!(held.elapsed() < std::time::Duration::from_secs(5), "never held");
+            std::thread::yield_now();
+        }
+
+        welcomed.send(()).expect("let the welcome through");
+        let message = seen
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the server never heard the resize");
+        let ClientMessage::ClientShellResize { surface_size, .. } = message else {
+            panic!("expected a resize, got {message:?}");
+        };
+        assert_eq!((surface_size.cols, surface_size.rows), (132, 43));
+
+        drop(state);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Input is not held. Replaying a keystroke into whatever is on screen
+    /// minutes later is worse than losing it.
+    #[test]
+    fn input_sent_with_no_connection_is_dropped_rather_than_replayed() {
+        let mut outbound = Outbound::default();
+        outbound.write(ClientMessage::ClientShellFocus { focused: true });
+        outbound.write(ClientMessage::ClientShellEndpointRequest {
+            boot_id: "boot".into(),
+            request: "{}".into(),
+        });
+        assert!(outbound.focus.is_some());
+        // Nothing else is held, and the request is simply gone.
+        assert!(outbound.resize.is_none());
     }
 
     #[test]
