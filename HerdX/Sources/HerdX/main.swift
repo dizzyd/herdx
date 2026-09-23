@@ -183,6 +183,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
             backing: .buffered,
             defer: false)
         window.title = "HerdX"
+        window.acceptsMouseMovedEvents = true
         window.delegate = self
         window.center()
         // A transparent title bar takes the window's background colour, which
@@ -1938,6 +1939,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     func windowDidResignKey(_ notification: Notification) {
         chords.reset()
         gridView.prefixArmed = false
+        gridView.clearLinkHover()
+    }
+
+    func windowDidBecomeKey(_ notification: Notification) {
+        gridView.refreshLinkHover()
     }
 
     private func buildMenu() {

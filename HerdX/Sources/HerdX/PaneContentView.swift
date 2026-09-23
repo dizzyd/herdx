@@ -63,4 +63,7 @@ final class PaneContentView: NSView {
     override func otherMouseDown(with event: NSEvent) { owner.otherMouseDown(with: event) }
     override func otherMouseUp(with event: NSEvent) { owner.otherMouseUp(with: event) }
     override func scrollWheel(with event: NSEvent) { owner.scrollWheel(with: event) }
+    override func mouseMoved(with event: NSEvent) { owner.mouseMoved(with: event) }
+    override func mouseEntered(with event: NSEvent) { owner.mouseEntered(with: event) }
+    override func mouseExited(with event: NSEvent) { owner.mouseExited(with: event) }
 }

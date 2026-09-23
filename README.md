@@ -107,6 +107,15 @@ terminal is paths, URLs and identifiers.
 Paste is its own protocol event rather than committed text, so the pane can wrap
 it in bracketed-paste markers when the program asked for them.
 
+Hold ⌘ over a web link to see its destination; ⌘-click opens it in the default
+browser. Both explicit OSC 8 hyperlinks and visible HTTP/HTTPS URLs work. herdr
+does not say where a row soft-wrapped, so a printed URL is followed onto the next
+row when its text runs to the pane's edge — the way iTerm and Ghostty guess it —
+and a long wrapped URL opens the address on screen rather than the half on the
+row clicked. ⌘-click belongs to HerdX even inside a program that asked for mouse
+reporting, as in Terminal and iTerm; ordinary clicks still go to the program,
+and ⌥ is still the way to select text out of one.
+
 ### Chrome
 
 The sidebar is two levels: every attached machine, and its workspaces. Tabs live

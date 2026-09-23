@@ -81,6 +81,7 @@ final class TerminalGridView: NSView {
         guard padding != panePadding || size != labelSize else { return }
         panePadding = padding
         labelSize = size
+        refreshLinkHover()
         reportGridSize()
         needsDisplay = true
     }
@@ -185,6 +186,116 @@ final class TerminalGridView: NSView {
     /// Raised when a selection is copied, with the request to read its text.
     var onReadSelection: ((String) -> Void)?
 
+    var openLink: (URL) -> Void = { url in _ = NSWorkspace.shared.open(url) }
+    // Allows AppKit gesture tests to exercise delivery without a live server.
+    var linkResolverForTesting: ((CGPoint) -> TerminalLink?)?
+    /// Everything the hover drives hangs off this setter, and only fires on a
+    /// real change: hover is re-resolved on every surface revision, and the
+    /// underline, tooltip and cursor rects must not be redone per frame.
+    /// The pointing hand comes from a cursor rect rather than `NSCursor.set`,
+    /// so AppKit owns restoring it and nothing here fights another cursor.
+    private var hoveredLink: TerminalLink? {
+        didSet {
+            guard hoveredLink != oldValue else { return }
+            toolTip = hoveredLink?.url.absoluteString
+            needsDisplay = true
+            window?.invalidateCursorRects(for: self)
+        }
+    }
+    private var pressedLink: TerminalLink?
+    private var ownsLinkGesture = false
+    private var linkPressCancelled = false
+    private var pressedRevision: UInt64?
+    private var pressedEndpoint: Int?
+    private weak var pressedSession: HerdrSession?
+    private var linkTrackingArea: NSTrackingArea?
+
+    override func updateTrackingAreas() {
+        if let linkTrackingArea { removeTrackingArea(linkTrackingArea) }
+        let area = NSTrackingArea(rect: bounds,
+            options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+            owner: self, userInfo: nil)
+        linkTrackingArea = area
+        addTrackingArea(area)
+        super.updateTrackingAreas()
+    }
+
+    private func link(at location: CGPoint) -> TerminalLink? {
+        if let linkResolverForTesting { return linkResolverForTesting(location) }
+        guard cellSize.width > 0, cellSize.height > 0 else { return nil }
+        let column = Int(floor((location.x - contentOrigin.x) / cellSize.width))
+        let row = Int(floor((location.y - contentOrigin.y) / cellSize.height))
+        guard let pane = panes.first(where: {
+            column >= $0.inner.x && column < $0.inner.x + $0.inner.width
+                && row >= $0.inner.y && row < $0.inner.y + $0.inner.height
+        }) else { return nil }
+        return session?.withGrid {
+            TerminalLinks.resolve($0, pane: pane, column: column, row: row)
+        } ?? nil
+    }
+
+    private func updateLinkHover(at location: CGPoint, command: Bool) {
+        hoveredLink = command && bounds.contains(location) ? link(at: location) : nil
+    }
+
+    func refreshLinkHover() {
+        guard let window else { return }
+        let pointer = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        guard bounds.contains(pointer) else {
+            hoveredLink = nil
+            return
+        }
+        updateLinkHover(at: pointer,
+            command: window.isKeyWindow && NSEvent.modifierFlags.contains(.command))
+    }
+
+    func clearLinkHover() {
+        hoveredLink = nil
+        if ownsLinkGesture { linkPressCancelled = true }
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        guard window?.isKeyWindow == true else { clearLinkHover(); return }
+        updateLinkHover(at: convert(event.locationInWindow, from: nil),
+            command: event.modifierFlags.contains(.command))
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        hoveredLink = nil
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        mouseMoved(with: event)
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        refreshLinkHover()
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        guard let hoveredLink else { return }
+        for span in hoveredLink.spans {
+            addCursorRect(CGRect(x: contentOrigin.x + CGFloat(span.columns.lowerBound) * cellSize.width,
+                y: contentOrigin.y + CGFloat(span.row) * cellSize.height,
+                width: CGFloat(span.columns.count) * cellSize.width, height: cellSize.height),
+                cursor: .pointingHand)
+        }
+    }
+
+    override func flagsChanged(with event: NSEvent) {
+        if let window {
+            guard window.isKeyWindow else { clearLinkHover(); return }
+            if ownsLinkGesture && !event.modifierFlags.contains(.command) {
+                linkPressCancelled = true
+            }
+            updateLinkHover(at: convert(window.mouseLocationOutsideOfEventStream, from: nil),
+                command: event.modifierFlags.contains(.command))
+        }
+        super.flagsChanged(with: event)
+    }
+
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
 
@@ -207,6 +318,7 @@ final class TerminalGridView: NSView {
         glyphs = GlyphRunDrawer(base: font, lineHeight: lineHeight)
         cellSize = glyphs.cellSize
         syncPaneViews()
+        refreshLinkHover()
         // The grid size changed under the server; make it re-lay-out.
         reportedGridSize = nil
         let size = gridSize
@@ -237,6 +349,7 @@ final class TerminalGridView: NSView {
 
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
+        refreshLinkHover()
         // A live resize drag fires this continuously; only the grid size
         // matters to the server, so report it when it actually changes.
         //
@@ -275,6 +388,14 @@ final class TerminalGridView: NSView {
     /// reference on the new one — it is a live pane belonging to other work,
     /// and typing would go to it.
     func forgetSurface() {
+        pressedLink = nil
+        pressedRevision = nil
+        pressedEndpoint = nil
+        pressedSession = nil
+        // Keep ownership through mouse-up even when switching machines;
+        // otherwise the new pane receives a release without a press.
+        linkPressCancelled = true
+        hoveredLink = nil
         lastRevision = .max
         panes = []
         paneBackgrounds = [:]
@@ -296,10 +417,12 @@ final class TerminalGridView: NSView {
         }
         guard let latest, latest.revision != lastRevision else { return }
         lastRevision = latest.revision
+        if ownsLinkGesture { linkPressCancelled = true }
         panes = latest.panes
         recomputePaneBackgrounds()
         imageCache.prune(keeping: latest.placements)
         syncPaneViews()
+        refreshLinkHover()
         needsDisplay = true
     }
 
@@ -497,6 +620,7 @@ final class TerminalGridView: NSView {
                     drawImages(grid, in: context, within: pane.inner)
                 }
                 drawSelection(grid, in: context)
+                drawLinkHover(in: context)
                 drawCopyModeCursor(in: context)
                 drawCursor(grid, in: context)
                 drawMarkedText(grid, in: context)
@@ -742,6 +866,16 @@ final class TerminalGridView: NSView {
                     y: CGFloat(pane.inner.y + viewportRow) * cellSize.height,
                     width: CGFloat(span.count) * cellSize.width,
                     height: cellSize.height))
+        }
+    }
+
+    private func drawLinkHover(in context: CGContext) {
+        guard let hoveredLink else { return }
+        context.setFillColor(chrome.accent.cgColor)
+        for span in hoveredLink.spans {
+            context.fill(CGRect(x: CGFloat(span.columns.lowerBound) * cellSize.width,
+                y: CGFloat(span.row + 1) * cellSize.height - 1,
+                width: CGFloat(span.columns.count) * cellSize.width, height: 1))
         }
     }
 
@@ -1060,6 +1194,17 @@ extension TerminalGridView {
 
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
+        if ownsLinkGesture { return }
+        if event.modifierFlags.contains(.command), event.clickCount == 1,
+            let target = link(at: convert(event.locationInWindow, from: nil)) {
+            pressedLink = target
+            ownsLinkGesture = true
+            pressedRevision = lastRevision
+            pressedEndpoint = session?.activeEndpoint
+            pressedSession = session
+            linkPressCancelled = false
+            return
+        }
         guard let hit = hit(event) else { return }
 
         if dragSelectsText(event, pane: hit.pane) {
@@ -1082,6 +1227,27 @@ extension TerminalGridView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        if ownsLinkGesture {
+            ownsLinkGesture = false
+            defer {
+                pressedRevision = nil
+                pressedLink = nil
+                pressedEndpoint = nil
+                pressedSession = nil
+                linkPressCancelled = false
+            }
+            guard let pressedLink else { return }
+            if !linkPressCancelled,
+                pressedRevision == lastRevision,
+                pressedEndpoint == session?.activeEndpoint,
+                (session == nil ? pressedEndpoint == nil : pressedSession === session),
+                event.modifierFlags.contains(.command),
+                let current = link(at: convert(event.locationInWindow, from: nil)),
+                current == pressedLink {
+                openLink(current.url)
+            }
+            return
+        }
         if selection != nil {
             // An empty selection is just a click; clear it so a stray highlight
             // does not linger.
@@ -1092,6 +1258,7 @@ extension TerminalGridView {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        if ownsLinkGesture { linkPressCancelled = true; return }
         if selection != nil, let hit = hit(event) {
             selection?.extend(to: point(in: hit.pane, column: hit.column, row: hit.row))
             needsDisplay = true
@@ -1208,6 +1375,8 @@ extension TerminalGridView {
 
     override func scrollWheel(with event: NSEvent) {
         guard let session, let hit = hit(event) else { return }
+        hoveredLink = nil
+        if ownsLinkGesture { linkPressCancelled = true }
 
         // Trackpads report fractional pixel deltas; the protocol counts rows, so
         // accumulate and only send whole ones. Otherwise a slow drag scrolls
