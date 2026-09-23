@@ -133,6 +133,11 @@ pub struct HxGrid {
     pub cursor_visible: bool,
     pub cursor_shape: u8,
     /// Bumped on every committed surface so the renderer can skip idle frames.
+    ///
+    /// Counted locally and never reset. Not the server's surface revision:
+    /// that belongs to one connection and starts again at 1 on the next, so a
+    /// renderer keying on it holds a dead connection's output after a
+    /// reconnect.
     pub revision: u64,
     pub panes: *const HxPane,
     pub pane_count: usize,
@@ -157,7 +162,19 @@ pub(crate) struct Grid {
     cursor_y: u16,
     cursor_visible: bool,
     cursor_shape: u8,
+    /// The server's revision for this surface, which is what a patch names as
+    /// its base. It belongs to one connection and starts again at 1 on the
+    /// next, so it says whether a patch fits — not whether what is on screen
+    /// is still current.
     revision: u64,
+    /// What is on screen, counted locally and never reset.
+    ///
+    /// The renderer needs to know that the picture changed, and after a
+    /// reconnect the wire revision cannot tell it: a fresh connection's first
+    /// surface is revision 1, the same number the last one left behind, so
+    /// equal revisions meant "nothing to copy" and the previous machine's
+    /// output stayed up until something happened to arrive at revision 2.
+    stamp: u64,
     panes: Vec<HxPane>,
     pane_ids: Vec<String>,
     placements: Vec<HxPlacement>,
@@ -237,6 +254,7 @@ impl Grid {
         self.set_cursor(frame.frame.cursor.as_ref());
         self.replace_panes(&frame.panes);
         self.placements = assets.ingest(&frame.graphics);
+        self.stamp = self.stamp.wrapping_add(1);
         self.flatten();
     }
 
@@ -265,6 +283,7 @@ impl Grid {
             self.set_cursor(patch.cursor.as_ref());
         }
         self.revision = patch.surface_revision;
+        self.stamp = self.stamp.wrapping_add(1);
         self.flatten();
         true
     }
@@ -1290,7 +1309,7 @@ pub unsafe extern "C" fn hx_grid_acquire(session: *mut HxSession, out: *mut HxGr
         if back.cells.is_empty() {
             return false;
         }
-        if back.revision != session.front.revision || session.front.cells.is_empty() {
+        if back.stamp != session.front.stamp || session.front.cells.is_empty() {
             session.front.clone_from(&back);
             // The borrowed slices must point into the front clone, not the
             // receive thread's grid (which may be replaced at any moment).
@@ -1321,7 +1340,7 @@ pub unsafe extern "C" fn hx_grid_acquire(session: *mut HxSession, out: *mut HxGr
             cursor_y: front.cursor_y,
             cursor_visible: front.cursor_visible,
             cursor_shape: front.cursor_shape,
-            revision: front.revision,
+            revision: front.stamp,
             panes: front.panes.as_ptr(),
             pane_count: front.panes.len(),
             placements: front.placements.as_ptr(),
@@ -2008,6 +2027,102 @@ mod tests {
         install(&mut grid, &surface(4));
         assert!(grid.link_targets.is_empty());
         assert_eq!(grid.cells[0].hyperlink, u32::MAX);
+    }
+
+    /// A session with no transport: enough to exercise the front buffer.
+    fn detached_session(shared: &Arc<Shared>) -> HxSession {
+        let (outbound, _rx) = std::sync::mpsc::channel();
+        HxSession {
+            endpoints: Vec::new(),
+            active: 0,
+            shared: Arc::clone(shared),
+            outbound,
+            geometry: Mutex::new(window(80, 24)),
+            front: Grid::default(),
+            front_hyperlinks: Vec::new(),
+            front_asset: Vec::new(),
+        }
+    }
+
+    fn acquired_text(session: &mut HxSession) -> String {
+        let mut out = std::mem::MaybeUninit::<HxGrid>::uninit();
+        assert!(unsafe { hx_grid_acquire(session, out.as_mut_ptr()) });
+        let grid = unsafe { out.assume_init() };
+        let glyphs = unsafe { std::slice::from_raw_parts(grid.glyphs, grid.glyph_bytes) };
+        String::from_utf8_lossy(glyphs).into_owned()
+    }
+
+    /// Surface revisions belong to one connection and start again at 1 on the
+    /// next, so the front buffer cannot use them to tell one machine's output
+    /// from another's.
+    #[test]
+    fn a_reconnect_that_replays_revision_one_still_reaches_the_screen() {
+        let shared = Arc::new(shared());
+        let mut session = detached_session(&shared);
+
+        let mut first = surface(1);
+        first.frame.cells = vec![cell("A")];
+        first.frame.width = 1;
+        first.frame.height = 1;
+        shared
+            .grid
+            .lock()
+            .unwrap()
+            .replace(&first, &mut AssetCache::default());
+        assert_eq!(acquired_text(&mut session), "A");
+
+        // The connection dropped and came back. The new server numbers its
+        // first surface 1, exactly as the old one did.
+        let mut second = surface(1);
+        second.frame.cells = vec![cell("B")];
+        second.frame.width = 1;
+        second.frame.height = 1;
+        shared
+            .grid
+            .lock()
+            .unwrap()
+            .replace(&second, &mut AssetCache::default());
+
+        assert_eq!(
+            acquired_text(&mut session),
+            "B",
+            "the front buffer kept the previous connection's surface"
+        );
+    }
+
+    /// And the renderer above it has to see the change too.
+    #[test]
+    fn the_reported_revision_moves_when_the_picture_does() {
+        let shared = Arc::new(shared());
+        let mut session = detached_session(&shared);
+
+        let mut first = surface(1);
+        first.frame.cells = vec![cell("A")];
+        first.frame.width = 1;
+        first.frame.height = 1;
+        shared
+            .grid
+            .lock()
+            .unwrap()
+            .replace(&first, &mut AssetCache::default());
+        let mut out = std::mem::MaybeUninit::<HxGrid>::uninit();
+        assert!(unsafe { hx_grid_acquire(&mut session, out.as_mut_ptr()) });
+        let before = unsafe { out.assume_init() }.revision;
+
+        let mut second = surface(1);
+        second.frame.cells = vec![cell("B")];
+        second.frame.width = 1;
+        second.frame.height = 1;
+        shared
+            .grid
+            .lock()
+            .unwrap()
+            .replace(&second, &mut AssetCache::default());
+        let mut out = std::mem::MaybeUninit::<HxGrid>::uninit();
+        assert!(unsafe { hx_grid_acquire(&mut session, out.as_mut_ptr()) });
+        let after = unsafe { out.assume_init() }.revision;
+
+        assert_ne!(before, after, "the renderer would skip this frame as idle");
     }
 
     #[test]
