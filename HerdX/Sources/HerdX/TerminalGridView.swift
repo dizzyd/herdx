@@ -137,7 +137,7 @@ final class TerminalGridView: NSView {
 
     /// Where cell (0, 0) lands, chosen so the *content* sits against the frame
     /// inset rather than the surface's top-left corner.
-    private var contentOrigin: CGPoint {
+    var contentOrigin: CGPoint {
         CGPoint(
             x: panePadding + frameInset - CGFloat(dead.offsetX) * cellSize.width,
             y: panePadding + frameInset + labelClearance
@@ -198,6 +198,9 @@ final class TerminalGridView: NSView {
     var openLink: (URL) -> Void = { url in _ = NSWorkspace.shared.open(url) }
     // Allows AppKit gesture tests to exercise delivery without a live server.
     var linkResolverForTesting: ((CGPoint) -> TerminalLink?)?
+    // And to see what reached the program, which otherwise needs a live server
+    // to observe at all.
+    var mouseReportForTesting: ((UInt16, String) -> Void)?
     /// Everything the hover drives hangs off this setter, and only fires on a
     /// real change: hover is re-resolved on every surface revision, and the
     /// underline, tooltip and cursor rects must not be redone per frame.
@@ -212,7 +215,22 @@ final class TerminalGridView: NSView {
         }
     }
     private var pressedLink: TerminalLink?
-    private var ownsLinkGesture = false
+    /// What the press now under way is doing, decided when it went down.
+    ///
+    /// Inferring it afterwards from whatever state happened to be lying around
+    /// is how a click into a mouse-reporting program got its drag and its
+    /// release swallowed by a selection made somewhere else a minute earlier:
+    /// the program saw a button go down and never come up.
+    private enum MouseGesture {
+        case selecting(paneID: String)
+        case reporting
+        case link
+    }
+    private var gesture: MouseGesture?
+    private var ownsLinkGesture: Bool {
+        if case .link = gesture { return true }
+        return false
+    }
     private var linkPressCancelled = false
     private var pressedRevision: UInt64?
     private var pressedEndpoint: Int?
@@ -1173,6 +1191,9 @@ extension TerminalGridView {
     }
 
     private func send(_ event: NSEvent, kind: UInt16, button: UInt8) {
+        if let mouseReportForTesting, let hit = hit(event) {
+            mouseReportForTesting(kind, hit.pane.id)
+        }
         guard let session, let hit = hit(event) else { return }
         // Clicking an unfocused pane focuses it. herdr leaves this to the
         // client shell, which is us.
@@ -1201,13 +1222,24 @@ extension TerminalGridView {
             row: pane.viewportTopRow + UInt64(localRow), column: localColumn)
     }
 
+    /// Where the pointer is in surface cells, whichever pane that lands in.
+    private func cellLocation(of event: NSEvent) -> (column: Int, row: Int)? {
+        guard cellSize.width > 0, cellSize.height > 0 else { return nil }
+        let location = convert(event.locationInWindow, from: nil)
+        let origin = contentOrigin
+        return (
+            Int(floor((location.x - origin.x) / cellSize.width)),
+            Int(floor((location.y - origin.y) / cellSize.height))
+        )
+    }
+
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
-        if ownsLinkGesture { return }
+        if gesture != nil { return }
         if event.modifierFlags.contains(.command), event.clickCount == 1,
             let target = link(at: convert(event.locationInWindow, from: nil)) {
             pressedLink = target
-            ownsLinkGesture = true
+            gesture = .link
             pressedRevision = lastRevision
             pressedEndpoint = session?.activeEndpoint
             pressedSession = session
@@ -1217,6 +1249,7 @@ extension TerminalGridView {
         guard let hit = hit(event) else { return }
 
         if dragSelectsText(event, pane: hit.pane) {
+            gesture = .selecting(paneID: hit.pane.id)
             switch event.clickCount {
             case 2: selectWord(in: hit.pane, column: hit.column, row: hit.row)
             case 3...: selectLine(in: hit.pane, row: hit.row)
@@ -1232,12 +1265,15 @@ extension TerminalGridView {
             if !hit.pane.focused { onFocusPane?(hit.pane.id) }
             return
         }
+        gesture = .reporting
         send(event, kind: UInt16(HX_MOUSE_DOWN), button: UInt8(HX_BUTTON_LEFT))
     }
 
     override func mouseUp(with event: NSEvent) {
-        if ownsLinkGesture {
-            ownsLinkGesture = false
+        let finished = gesture
+        gesture = nil
+        switch finished {
+        case .link:
             defer {
                 pressedRevision = nil
                 pressedLink = nil
@@ -1255,25 +1291,33 @@ extension TerminalGridView {
                 current == pressedLink {
                 openLink(current.url)
             }
-            return
-        }
-        if selection != nil {
+        case .selecting:
             // An empty selection is just a click; clear it so a stray highlight
             // does not linger.
             if selection?.isEmpty == true { selection = nil; needsDisplay = true }
-            return
+        case .reporting, nil:
+            send(event, kind: UInt16(HX_MOUSE_UP), button: UInt8(HX_BUTTON_LEFT))
         }
-        send(event, kind: UInt16(HX_MOUSE_UP), button: UInt8(HX_BUTTON_LEFT))
     }
 
     override func mouseDragged(with event: NSEvent) {
-        if ownsLinkGesture { linkPressCancelled = true; return }
-        if selection != nil, let hit = hit(event) {
-            selection?.extend(to: point(in: hit.pane, column: hit.column, row: hit.row))
+        switch gesture {
+        case .link:
+            linkPressCancelled = true
+        case .selecting(let paneID):
+            // Measured against the pane the press began in rather than
+            // whatever is under the pointer now. Dragging into a neighbour
+            // used to take that pane's rect and scrollback offset and store
+            // the result in this pane's selection, so a copy asked for rows
+            // that were never highlighted.
+            guard selection != nil, let owner = panes.first(where: { $0.id == paneID }),
+                let cell = cellLocation(of: event)
+            else { return }
+            selection?.extend(to: point(in: owner, column: cell.column, row: cell.row))
             needsDisplay = true
-            return
+        case .reporting, nil:
+            send(event, kind: UInt16(HX_MOUSE_DRAG), button: UInt8(HX_BUTTON_LEFT))
         }
-        send(event, kind: UInt16(HX_MOUSE_DRAG), button: UInt8(HX_BUTTON_LEFT))
     }
 
     /// Characters a double-click treats as part of a word.
