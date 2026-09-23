@@ -15,7 +15,13 @@ typedef struct {
   uint16_t modifier;  // ratatui modifier bits + herdr underline-style in 12..15
   uint16_t glyph_len;
   uint32_t glyph_off;
+  uint32_t hyperlink; // index into HxGrid.hyperlinks; UINT32_MAX means none
 } HxCell;
+
+typedef struct {
+  const uint8_t *bytes;
+  size_t len;
+} HxHyperlink;
 
 /// One pane's placement inside the shared surface, in cell units.
 typedef struct {
@@ -60,6 +66,8 @@ typedef struct {
   size_t cell_count;
   const uint8_t *glyphs;
   size_t glyph_bytes;
+  const HxHyperlink *hyperlinks;
+  size_t hyperlink_count;
   uint16_t cursor_x;
   uint16_t cursor_y;
   bool cursor_visible;

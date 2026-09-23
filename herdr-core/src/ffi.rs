@@ -36,6 +36,15 @@ pub struct HxCell {
     pub modifier: u16,
     pub glyph_len: u16,
     pub glyph_off: u32,
+    /// Index into HxGrid.hyperlinks; u32::MAX means no link.
+    pub hyperlink: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct HxHyperlink {
+    pub bytes: *const u8,
+    pub len: usize,
 }
 
 /// One pane's placement inside the shared surface, in cell units.
@@ -117,6 +126,8 @@ pub struct HxGrid {
     pub cell_count: usize,
     pub glyphs: *const u8,
     pub glyph_bytes: usize,
+    pub hyperlinks: *const HxHyperlink,
+    pub hyperlink_count: usize,
     pub cursor_x: u16,
     pub cursor_y: u16,
     pub cursor_visible: bool,
@@ -139,6 +150,9 @@ pub(crate) struct Grid {
     source: Vec<CellData>,
     cells: Vec<HxCell>,
     glyphs: Vec<u8>,
+    /// Legacy patches carry cells but no table; the server falls back to a
+    /// complete surface when a patch intersects linked cells.
+    link_targets: Vec<String>,
     cursor_x: u16,
     cursor_y: u16,
     cursor_visible: bool,
@@ -218,6 +232,7 @@ impl Grid {
         self.width = frame.frame.width;
         self.height = frame.frame.height;
         self.source = frame.frame.cells.clone();
+        self.link_targets = frame.frame.hyperlinks.clone();
         self.revision = frame.surface_revision;
         self.set_cursor(frame.frame.cursor.as_ref());
         self.replace_panes(&frame.panes);
@@ -322,6 +337,10 @@ impl Grid {
                 modifier: cell.modifier,
                 glyph_len: bytes.len() as u16,
                 glyph_off: off,
+                hyperlink: cell
+                    .hyperlink
+                    .filter(|index| (*index as usize) < self.link_targets.len())
+                    .unwrap_or(u32::MAX),
             });
         }
     }
@@ -574,6 +593,7 @@ pub struct HxSession {
     /// receive thread's buffer, so pointers handed to the caller stay valid
     /// without holding a lock across the FFI boundary.
     front: Grid,
+    front_hyperlinks: Vec<HxHyperlink>,
     /// Image bytes copied out for the caller, for the same reason.
     front_asset: Vec<u8>,
 }
@@ -604,6 +624,7 @@ impl HxSession {
         // The new surface has not arrived yet; showing the previous machine's
         // grid under the new machine's name would be worse than showing none.
         self.front = Grid::default();
+        self.front_hyperlinks.clear();
     }
 }
 
@@ -684,6 +705,7 @@ pub unsafe extern "C" fn hx_session_connect(
             cell_height_px,
         }),
         front: Grid::default(),
+        front_hyperlinks: Vec::new(),
         front_asset: Vec::new(),
     }))
 }
@@ -1270,6 +1292,17 @@ pub unsafe extern "C" fn hx_grid_acquire(session: *mut HxSession, out: *mut HxGr
         }
         if back.revision != session.front.revision || session.front.cells.is_empty() {
             session.front.clone_from(&back);
+            // The borrowed slices must point into the front clone, not the
+            // receive thread's grid (which may be replaced at any moment).
+            session.front_hyperlinks = session
+                .front
+                .link_targets
+                .iter()
+                .map(|target| HxHyperlink {
+                    bytes: target.as_ptr(),
+                    len: target.len(),
+                })
+                .collect();
         }
     }
     let front = &session.front;
@@ -1282,6 +1315,8 @@ pub unsafe extern "C" fn hx_grid_acquire(session: *mut HxSession, out: *mut HxGr
             cell_count: front.cells.len(),
             glyphs: front.glyphs.as_ptr(),
             glyph_bytes: front.glyphs.len(),
+            hyperlinks: session.front_hyperlinks.as_ptr(),
+            hyperlink_count: session.front_hyperlinks.len(),
             cursor_x: front.cursor_x,
             cursor_y: front.cursor_y,
             cursor_visible: front.cursor_visible,
@@ -1945,6 +1980,34 @@ mod tests {
         assert_eq!(grid.pane_ids, vec!["p1".to_string()]);
         assert!(grid.cursor_visible);
         assert_eq!((grid.cursor_x, grid.cursor_y, grid.cursor_shape), (1, 0, 2));
+    }
+
+    #[test]
+    fn hyperlink_targets_follow_full_surfaces_and_legacy_patches() {
+        let mut grid = Grid::default();
+        let mut first = surface(1);
+        first.frame.hyperlinks = vec!["https://first.example".into()];
+        first.frame.cells[0].hyperlink = Some(0);
+        install(&mut grid, &first);
+        assert_eq!(grid.cells[0].hyperlink, 0);
+        assert_eq!(grid.link_targets[0], "https://first.example");
+
+        grid.apply_patch(&patch(1, 2, vec![PaneSurfacePatchRow {
+            x: 1, y: 0, cells: vec![cell("B")],
+        }]));
+        assert_eq!(grid.cells[0].hyperlink, 0);
+        assert_eq!(grid.link_targets[0], "https://first.example");
+
+        let mut next = surface(3);
+        next.frame.hyperlinks = vec!["https://second.example".into()];
+        next.frame.cells[0].hyperlink = Some(0);
+        next.frame.cells[1].hyperlink = Some(99);
+        install(&mut grid, &next);
+        assert_eq!(grid.link_targets[grid.cells[0].hyperlink as usize], "https://second.example");
+        assert_eq!(grid.cells[1].hyperlink, u32::MAX);
+        install(&mut grid, &surface(4));
+        assert!(grid.link_targets.is_empty());
+        assert_eq!(grid.cells[0].hyperlink, u32::MAX);
     }
 
     #[test]

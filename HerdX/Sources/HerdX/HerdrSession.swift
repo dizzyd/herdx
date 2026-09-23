@@ -47,6 +47,7 @@ struct GridView {
     let height: Int
     let cells: UnsafeBufferPointer<HxCell>
     let glyphs: UnsafeBufferPointer<UInt8>
+    let hyperlinks: UnsafeBufferPointer<HxHyperlink>
     let cursor: (x: Int, y: Int, visible: Bool, shape: UInt8)
     let revision: UInt64
     let panes: [PaneView]
@@ -58,6 +59,14 @@ struct GridView {
         let bytes = UnsafeBufferPointer(
             start: base + Int(cell.glyph_off), count: Int(cell.glyph_len))
         return String(decoding: bytes, as: UTF8.self)
+    }
+
+    func hyperlink(at index: Int) -> String? {
+        guard hyperlinks.indices.contains(index), let bytes = hyperlinks[index].bytes else {
+            return nil
+        }
+        return String(decoding: UnsafeBufferPointer(start: bytes, count: hyperlinks[index].len),
+            as: UTF8.self)
     }
 }
 
@@ -265,6 +274,7 @@ final class HerdrSession {
                 height: Int(raw.height),
                 cells: UnsafeBufferPointer(start: raw.cells, count: raw.cell_count),
                 glyphs: UnsafeBufferPointer(start: raw.glyphs, count: raw.glyph_bytes),
+                hyperlinks: UnsafeBufferPointer(start: raw.hyperlinks, count: raw.hyperlink_count),
                 cursor: (Int(raw.cursor_x), Int(raw.cursor_y), raw.cursor_visible, raw.cursor_shape),
                 revision: raw.revision,
                 panes: panes,
