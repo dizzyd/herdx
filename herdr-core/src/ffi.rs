@@ -279,9 +279,10 @@ impl Grid {
             slice.clone_from_slice(&row.cells);
         }
         self.merge_panes(&patch.panes);
-        if patch.cursor.is_some() {
-            self.set_cursor(patch.cursor.as_ref());
-        }
+        // Unconditionally: the field is the final cursor, so None is an answer
+        // — there is not one — rather than nothing to say. Applying it only
+        // when present left the last cursor drawn where it had been.
+        self.set_cursor(patch.cursor.as_ref());
         self.revision = patch.surface_revision;
         self.stamp = self.stamp.wrapping_add(1);
         self.flatten();
@@ -2317,6 +2318,24 @@ mod tests {
         assert!(outbound.focus.is_some());
         // Nothing else is held, and the request is simply gone.
         assert!(outbound.resize.is_none());
+    }
+
+    /// `PaneSurfacePatch::cursor` is the final cursor, and None is an answer:
+    /// it means there is not one. Applying it only when present left the last
+    /// one drawn where it had been.
+    #[test]
+    fn a_patch_that_removes_the_cursor_removes_it() {
+        let mut grid = Grid::default();
+        install(&mut grid, &surface(1));
+        assert!(grid.cursor_visible, "the fixture needs a cursor to remove");
+
+        assert!(grid.apply_patch(&patch(
+            1,
+            2,
+            vec![PaneSurfacePatchRow { x: 0, y: 0, cells: vec![cell("Z")] }]
+        )));
+
+        assert!(!grid.cursor_visible, "the removed cursor is still drawn");
     }
 
     #[test]
