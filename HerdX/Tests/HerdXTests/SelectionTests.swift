@@ -61,6 +61,25 @@ final class SelectionTests: XCTestCase {
         XCTAssertEqual(drag.span(onRow: 4, width: 80), 2..<3)
     }
 
+    /// A selection outlives the width it was made at: dragging the split
+    /// beside it narrows the pane under it.
+    func testNarrowingThePaneUnderASelectionDoesNotTrap() {
+        let wide = selection(from: point(0, 70), to: point(0, 75), origin: .span)
+        XCTAssertNil(wide.span(onRow: 0, width: 40), "the whole selection is off the new edge")
+        XCTAssertEqual(wide.span(onRow: 0, width: 80), 70..<76)
+    }
+
+    /// Part on, part off: what is left of it still highlights.
+    func testASelectionStraddlingTheNewEdgeIsClipped() {
+        let straddling = selection(from: point(0, 30), to: point(0, 75), origin: .span)
+        XCTAssertEqual(straddling.span(onRow: 0, width: 40), 30..<40)
+    }
+
+    func testAPaneWithNoWidthHasNothingToHighlight() {
+        let any = selection(from: point(0, 0), to: point(0, 5), origin: .span)
+        XCTAssertNil(any.span(onRow: 0, width: 0))
+    }
+
     func testAOneCellSelectionProducesAReadRequest() {
         let word = selection(from: point(7, 5), to: point(7, 5), origin: .span)
         guard let request = word.readRequest(id: "selection-1"),

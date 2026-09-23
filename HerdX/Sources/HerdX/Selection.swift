@@ -58,14 +58,21 @@ struct Selection {
     ///
     /// Returns nil when the row lies outside the selection.
     func span(onRow row: UInt64, width: Int) -> Range<Int>? {
+        guard width > 0 else { return nil }
         let (start, end) = ordered
         guard row >= start.row, row <= end.row else { return nil }
         let first = row == start.row ? start.column : 0
         // The last row stops at the cursor; earlier rows run to the edge,
         // which is how a terminal selection reads.
         let last = row == end.row ? end.column : width - 1
-        guard last >= first else { return nil }
-        return first..<min(last + 1, width)
+        // Both ends are clipped, not only the far one. A selection outlives the
+        // width it was made at — narrowing a split under it leaves a start past
+        // the new edge, and clipping the end alone builds a range that runs
+        // backwards, which is a trap rather than an empty selection.
+        let lower = min(max(first, 0), width)
+        let upper = min(max(last + 1, 0), width)
+        guard lower < upper else { return nil }
+        return lower..<upper
     }
 
     /// A request to read this selection's text.
