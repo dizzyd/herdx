@@ -79,6 +79,46 @@ final class CopyModeTests: XCTestCase {
         XCTAssertEqual(view.selection?.paneID, "w1:p1")
     }
 
+    /// The reply herdr's own test produces for "alpha beta alpha" searched
+    /// forward from column 0: two matches, and the one it went to is the
+    /// second.
+    private var alphaBetaAlpha: String {
+        """
+        {"id":"search","result":{"pane_id":"w1:p1","total":2,"current":1,
+         "matches":[{"start":{"row":0,"col":0},"end":{"row":0,"col":5}},
+                    {"start":{"row":0,"col":11},"end":{"row":0,"col":16}}]}}
+        """
+    }
+
+    func testTheSearchGoesToTheMatchTheServerChose() {
+        let found = TerminalGridView.selectedMatch(fromReply: alphaBetaAlpha)
+        XCTAssertEqual(
+            found?.start.column, 11,
+            "searching forward from column 0 landed back on column 0, so n never moved")
+        XCTAssertEqual(found?.end.column, 16)
+    }
+
+    func testAMissingCurrentFallsBackToTheFirstMatch() {
+        let reply = """
+            {"id":"search","result":{"matches":[{"start":{"row":3,"col":2},
+             "end":{"row":3,"col":7}}]}}
+            """
+        XCTAssertEqual(TerminalGridView.selectedMatch(fromReply: reply)?.start.column, 2)
+    }
+
+    func testACurrentThatNamesNoMatchIsNotTrusted() {
+        let reply = """
+            {"id":"search","result":{"current":9,"matches":[{"start":{"row":3,"col":2},
+             "end":{"row":3,"col":7}}]}}
+            """
+        XCTAssertEqual(TerminalGridView.selectedMatch(fromReply: reply)?.start.column, 2)
+    }
+
+    func testNoMatchesIsNoMove() {
+        XCTAssertNil(
+            TerminalGridView.selectedMatch(fromReply: #"{"id":"search","result":{"matches":[]}}"#))
+    }
+
     func testALateSearchReplyDoesNotMoveTheSessionThatReplacedIt() {
         // The reported failure: search in pane A, leave copy mode, enter it in
         // pane B, and A's delayed reply arrives.

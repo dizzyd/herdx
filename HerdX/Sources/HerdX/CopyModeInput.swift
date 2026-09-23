@@ -229,7 +229,7 @@ extension TerminalGridView {
                 return
             }
             guard var mode = self.session(matching: issued),
-                let match = Self.firstMatch(fromReply: body)
+                let match = Self.selectedMatch(fromReply: body)
             else { return }
             mode.cursor = match.start
             mode.anchor = match.end
@@ -271,7 +271,15 @@ extension TerminalGridView {
         return Selection.Point(row: cursor.row, column: cursor.col)
     }
 
-    private static func firstMatch(fromReply body: String)
+    /// The match the server went to, not the first one it found.
+    ///
+    /// `matches` is every hit in document order and `current` indexes the one
+    /// the search actually selected — searching forward from the top of
+    /// "alpha beta alpha" answers with two matches and `current: 1`. Taking
+    /// the first instead sent the cursor to column 0, which is where the
+    /// search started, so pressing n again asked the same question and got the
+    /// same answer: the cursor never moved off the first hit.
+    static func selectedMatch(fromReply body: String)
         -> (start: Selection.Point, end: Selection.Point)?
     {
         struct Reply: Decodable {
@@ -285,13 +293,18 @@ extension TerminalGridView {
                     let end: Point
                 }
                 let matches: [Range]?
+                let current: Int?
             }
             let result: Result?
         }
         guard let data = body.data(using: .utf8),
             let reply = try? JSONDecoder().decode(Reply.self, from: data),
-            let match = reply.result?.matches?.first
+            let matches = reply.result?.matches, !matches.isEmpty
         else { return nil }
+        // Bounds-checked rather than trusted: an index that does not name one
+        // of these matches is worse than the first, which is at least real.
+        let chosen = reply.result?.current.flatMap { matches.indices.contains($0) ? $0 : nil } ?? 0
+        let match = matches[chosen]
         return (
             Selection.Point(row: match.start.row, column: match.start.col),
             Selection.Point(row: match.end.row, column: match.end.col)
