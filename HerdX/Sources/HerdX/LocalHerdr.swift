@@ -73,8 +73,8 @@ extension LocalHerdr {
         let alert = NSAlert()
         alert.messageText = "HerdX needs herdr"
         alert.informativeText =
-            "HerdX draws the terminals; herdr runs them. Install herdr, then run  herdr  "
-            + "in a terminal to start a session — this window will pick it up on its own."
+            "HerdX draws the terminals; herdr runs them. Install herdr and this window "
+            + "will start a session on its own — there is nothing else to set up."
 
         let field = NSTextField(string: installCommand)
         field.font = .monospacedSystemFont(ofSize: 12, weight: .regular)

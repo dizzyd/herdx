@@ -106,6 +106,24 @@ enum SessionCatalog {
         return true
     }
 
+    /// Starts the server for herdr's own default session.
+    ///
+    /// Nameless on purpose. Which session is the default is herdr's business,
+    /// and a name spelled out here would be a second answer to that question —
+    /// on a Mac whose default is called something else it would not start that
+    /// session, it would quietly invent another one beside it.
+    static func startDefault() -> Bool {
+        guard let process = command(["server"]) else { return false }
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+        } catch {
+            return false
+        }
+        return true
+    }
+
     /// Stops a session's server.
     ///
     /// Destructive in a way that attaching and detaching are not: herdr keeps

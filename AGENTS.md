@@ -112,6 +112,7 @@ All are development-only and read from the environment.
 | `HERDX_PROBE_COMMANDS=1` | Run commands against a live server and report what it made of them — throwaway sessions only |
 | `HERDX_PROBE_RESIZE=1` | Put resize mode up so it can be photographed |
 | `HERDX_ENDPOINT=<id>` | Pick an endpoint for one run (`local`, or a profile id) without writing the selection the TUI shares |
+| `HERDX_SESSION=<name>` | Aim one run at a named session, running or not, without writing the selection — and the only way to watch the window start a server, which otherwise means starting the default session you are sitting in |
 | `HERDX_HIBERNATION_STORE=<path>` | Keep hibernated workspaces somewhere throwaway, so a probe cannot leave the real app a row for a workspace that no longer exists |
 | `HERDX_HIBERNATE_AFTER_SECONDS=<n>` | Sweep workspaces idle this long instead of the configured hours, which nothing can wait for |
 

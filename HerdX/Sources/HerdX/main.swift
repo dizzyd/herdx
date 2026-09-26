@@ -60,6 +60,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     private var appliedKeyProfile: String?
     /// True while resize mode owns the keyboard.
     private var resizing = false
+    /// Whether this run has already launched a herdr server. Once, and only
+    /// once: the point is to save someone a trip to a terminal, not to keep
+    /// putting back a server they have deliberately stopped.
+    private var startedLocalHerdr = false
 
     /// Runs without ever showing a window.
     ///
@@ -253,7 +257,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
             statusTitle = "waiting for herdr… (\(lastConnectError ?? "no server"))"
             gridView.placeholder = herdrExplanation ?? "waiting for herdr…"
             applyTitle()
-            reconnect()
+            if !startLocalHerdr() { reconnect() }
         }
 
         buildMenu()
@@ -343,9 +347,74 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
                 + "\n\nHelp ▸ Install herdr… will copy that line for you."
         case .installed:
             return "herdr is installed but not running.\n\n"
-                + "run  herdr  in a terminal to start a session."
+                + "Session ▸ New Session… will start one."
         case .running:
             return nil
+        }
+    }
+
+    /// Starts herdr on this Mac, rather than asking for it to be started
+    /// somewhere else.
+    ///
+    /// This app is a client, but "herdr is installed but not running — go and
+    /// run it in another terminal" is a strange thing for a Mac app to say
+    /// about a program it can start itself, and it was the first thing anyone
+    /// saw. herdr's own default session, named by herdr rather than guessed
+    /// here; the server keeps running afterwards, which is the point of herdr
+    /// and is what a session started any other way does too.
+    ///
+    /// Returns false when it did not try, so the caller can fall back to
+    /// waiting. Three reasons not to: there is nothing to start, the run is a
+    /// capture or a probe — spawning a server from a screenshot is the kind of
+    /// side effect nobody goes looking for — or the environment named a socket,
+    /// which means a test run aimed somewhere deliberate, and answering it with
+    /// the *default* session would be aiming somewhere else entirely.
+    @discardableResult
+    private func startLocalHerdr() -> Bool {
+        let named = AppDelegate.namedSession
+        // The session the window is on, not herdr's default: a window aimed at
+        // a named session that is not running wants *that* server, and starting
+        // the default one would leave it looking at the same dead socket.
+        let wanted = sessionTitle ?? named
+        guard !startedLocalHerdr,
+            case .installed = LocalHerdr.state(serverIsUp: false),
+            // A named session is a developer asking for this on purpose, and is
+            // the only way to watch it happen; otherwise a headless run or one
+            // aimed at a socket keeps its hands to itself.
+            named != nil || (!AppDelegate.isHeadless && !SessionCatalog.environmentPicksSocket),
+            wanted.map(SessionCatalog.start) ?? SessionCatalog.startDefault()
+        else { return false }
+        startedLocalHerdr = true
+        statusTitle = "starting herdr…"
+        gridView.placeholder = "starting herdr…"
+        applyTitle()
+        waitForLocalHerdr(until: Date().addingTimeInterval(10))
+        return true
+    }
+
+    /// Waits for the server just launched to start listening, then hands over
+    /// to the ordinary wait, which puts the first workspace in an empty session
+    /// and attaches the window to it.
+    private func waitForLocalHerdr(until deadline: Date) {
+        let name = sessionTitle ?? AppDelegate.namedSession
+        let isTheOne: (SessionEntry) -> Bool = { entry in
+            entry.running && (name.map { entry.name == $0 } ?? entry.isDefault)
+        }
+        if let entry = SessionCatalog.list().first(where: isTheOne) {
+            waitForSession(named: entry.name, until: deadline)
+            return
+        }
+        guard Date() < deadline else {
+            // Back to waiting rather than an alert: the window already says
+            // what is wrong, and a server may yet arrive from somewhere else.
+            statusTitle = "herdr did not start"
+            gridView.placeholder = herdrExplanation ?? "waiting for herdr…"
+            applyTitle()
+            reconnect()
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            MainActor.assumeIsolated { self?.waitForLocalHerdr(until: deadline) }
         }
     }
 
@@ -498,8 +567,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     /// to, and refusing to open a window over it would help nobody. With no
     /// choice — or an environment that names a socket for this run — the core
     /// picks, and this only puts a name to whatever it picked.
+    /// Dev affordance: `HERDX_SESSION=<name>` aims one run at a named session,
+    /// running or not, without writing the choice into settings.
+    ///
+    /// The twin of `HERDX_ENDPOINT`, and the only way to watch this window
+    /// start a server: the real path starts herdr's *default* session, which on
+    /// any Mac that has one is the session the developer is sitting in.
+    private static var namedSession: String? {
+        ProcessInfo.processInfo.environment["HERDX_SESSION"]
+    }
+
     private func resolvedSession() -> (name: String?, socket: String?) {
         let sessions = SessionCatalog.list()
+        if let named = AppDelegate.namedSession {
+            // Its own socket even when it is stopped, so the connection fails
+            // where it should rather than falling through to the default
+            // session — which is the one this is being kept away from.
+            return (named, sessions.first { $0.name == named }?.clientSocket)
+        }
         if !SessionCatalog.environmentPicksSocket, let saved = preferences.sessionName,
             let entry = sessions.first(where: { $0.name == saved && $0.running })
         {
@@ -545,8 +630,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     }
 
     private func adopt(session name: String) {
-        preferences.sessionName = name
-        Preferences.current = preferences
+        // A run the environment aimed keeps its aim to itself, exactly as
+        // `resolvedSession` ignores the saved name for one. Otherwise a probe
+        // would leave the real app pointed at a throwaway session.
+        if AppDelegate.namedSession == nil {
+            preferences.sessionName = name
+            Preferences.current = preferences
+        }
         reattach()
     }
 
@@ -816,11 +906,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                 MainActor.assumeIsolated {
                     guard let self else { return }
+                    // A server this window started of its own accord may have
+                    // arrived while this was waiting; connecting a second time
+                    // would drop the session that is already up.
+                    if self.session != nil {
+                        self.reconnecting = false
+                        return
+                    }
                     if self.connect() {
                         self.reconnecting = false
                         self.window.makeFirstResponder(self.gridView)
                         return
                     }
+                    // herdr may have been installed since the window opened, in
+                    // which case there is now something here to start.
+                    self.startLocalHerdr()
                     attempt(delay: min(delay * 2, 5))
                 }
             }
@@ -951,6 +1051,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
                 continue
             }
             events.present(event, window: window)
+        }
+        // A herdr that is not running does not look like a failure to connect:
+        // the core makes a session either way and reconnects endpoints on its
+        // own, so what it looks like is a local endpoint that never comes up.
+        // The flag is checked first because this runs sixty times a second.
+        if !startedLocalHerdr,
+            session.endpoints.first(where: { !$0.isRemote })?.status == .offline
+        {
+            startLocalHerdr()
         }
         updatePlaceholder(session: session)
         gridView.refreshIfNeeded()
