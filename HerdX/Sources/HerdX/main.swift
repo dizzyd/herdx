@@ -1946,14 +1946,126 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     }
 
     private func buildMenu() {
-        let main = NSMenu()
+        NSApp.mainMenu = makeMainMenu()
+    }
 
-        let appItem = NSMenuItem()
-        let appMenu = NSMenu()
+    /// Builds the menu bar.
+    ///
+    /// Returned rather than installed, so a test can walk the real thing: every
+    /// way a Mac menu goes wrong is invisible in the source. An item whose
+    /// command is not in `allByTag` clicks and does nothing; two items claiming
+    /// one keystroke leave whichever AppKit finds second unreachable; and a
+    /// missing standard item — Hide, Services, Minimize — is noticed only by
+    /// the person who reaches for it and finds it gone.
+    func makeMainMenu() -> NSMenu {
+        let main = NSMenu()
+        main.addItem(applicationMenu())
+        main.addItem(commandMenu(titled: "Shell", rows: Command.shellRows))
+        main.addItem(editMenu())
+        main.addItem(viewMenu())
+        main.addItem(sessionMenuItem())
+        main.addItem(windowMenu())
+        main.addItem(helpMenu())
+        return main
+    }
+
+    /// The app menu: what macOS puts under the application's own name.
+    ///
+    /// The order is the system's, not a preference — About, settings, Services,
+    /// the three hide items, Quit — because it is the one menu whose contents
+    /// every Mac user already knows. Machines sits beside Settings for the same
+    /// reason Mail keeps Accounts there: it is a thing you configure once, not
+    /// a thing you do to the window in front of you.
+    private func applicationMenu() -> NSMenuItem {
+        let item = NSMenuItem()
+        let menu = NSMenu(title: "HerdX")
+        // Spelled out because macOS only substitutes the application's name
+        // into these titles for a menu that came from a nib.
+        menu.addItem(
+            withTitle: "About HerdX",
+            action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        menu.addItem(.separator())
         let settings = NSMenuItem(
             title: "Settings…", action: #selector(showPreferences(_:)), keyEquivalent: ",")
         settings.target = self
-        appMenu.addItem(settings)
+        menu.addItem(settings)
+        let machines = NSMenuItem(
+            title: "Machines…", action: #selector(showMachines(_:)), keyEquivalent: "m")
+        machines.keyEquivalentModifierMask = [.command, .shift]
+        machines.target = self
+        menu.addItem(machines)
+        menu.addItem(.separator())
+        // Handed to AppKit rather than filled in here: the system owns the
+        // contents, and telling it which menu to own is the only way in.
+        let services = NSMenu(title: "Services")
+        let servicesItem = NSMenuItem(title: "Services", action: nil, keyEquivalent: "")
+        servicesItem.submenu = services
+        NSApp.servicesMenu = services
+        menu.addItem(servicesItem)
+        menu.addItem(.separator())
+        // No target: `hide:` and the two beside it are NSApplication's, and
+        // NSApplication is the last link in the responder chain.
+        menu.addItem(
+            withTitle: "Hide HerdX", action: #selector(NSApplication.hide(_:)),
+            keyEquivalent: "h")
+        let hideOthers = NSMenuItem(
+            title: "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)),
+            keyEquivalent: "h")
+        hideOthers.keyEquivalentModifierMask = [.command, .option]
+        menu.addItem(hideOthers)
+        menu.addItem(
+            withTitle: "Show All", action: #selector(NSApplication.unhideAllApplications(_:)),
+            keyEquivalent: "")
+        menu.addItem(.separator())
+        menu.addItem(
+            withTitle: "Quit HerdX", action: #selector(NSApplication.terminate(_:)),
+            keyEquivalent: "q")
+        item.submenu = menu
+        return item
+    }
+
+    /// The standard Edit menu, aimed at the first responder rather than at this
+    /// object, which is what makes one ⌘C mean the terminal's selection in the
+    /// terminal and a text field's in Settings.
+    ///
+    /// Undo and Cut do nothing in a terminal and are greyed there, but the
+    /// Settings and Machines windows are full of text fields that have both —
+    /// until now with no menu item to reach them by.
+    private func editMenu() -> NSMenuItem {
+        let item = NSMenuItem()
+        let menu = NSMenu(title: "Edit")
+        // Spelled as strings because neither is declared on NSResponder; they
+        // are what AppKit's own Edit menu sends, and the field editor answers.
+        menu.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+        let redo = NSMenuItem(title: "Redo", action: Selector(("redo:")), keyEquivalent: "z")
+        redo.keyEquivalentModifierMask = [.command, .shift]
+        menu.addItem(redo)
+        menu.addItem(.separator())
+        menu.addItem(
+            withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        menu.addItem(
+            withTitle: "Copy", action: #selector(TerminalGridView.copy(_:)), keyEquivalent: "c")
+        menu.addItem(
+            withTitle: "Paste", action: #selector(TerminalGridView.paste(_:)), keyEquivalent: "v")
+        menu.addItem(
+            withTitle: "Select All", action: #selector(NSResponder.selectAll(_:)),
+            keyEquivalent: "a")
+        menu.addItem(.separator())
+        let find = NSMenuItem(
+            title: "Find…", action: #selector(findInPane(_:)), keyEquivalent: "f")
+        find.target = self
+        menu.addItem(find)
+        add(rows: Command.editRows, to: menu)
+        item.submenu = menu
+        return item
+    }
+
+    /// What the window shows: the sidebar, how it is ordered, the zoomed pane,
+    /// and the palette everything is drawn in.
+    private func viewMenu() -> NSMenuItem {
+        let item = NSMenuItem()
+        let menu = NSMenu(title: "View")
+        add(rows: Command.sidebarRows, to: menu)
         // herdr has no binding for this — it is a config setting there — so
         // this is HerdX's own, and it goes in the menu rather than into a
         // keymap read from the server.
@@ -1963,69 +2075,100 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         agents.keyEquivalentModifierMask = [.command, .option]
         agents.target = self
         arrangementItem = agents
-        appMenu.addItem(agents)
-        appMenu.addItem(.separator())
-
+        menu.addItem(agents)
+        menu.addItem(.separator())
+        add(rows: Command.paneViewRows, to: menu)
+        // Beside Zoom Pane because they are the same wish at two scales, and
+        // ⌃⌘F is the system's: AppKit swaps the title for "Exit Full Screen"
+        // itself, which is why this one is not retitled in `validateMenuItem`.
+        let fullScreen = NSMenuItem(
+            title: "Enter Full Screen", action: #selector(NSWindow.toggleFullScreen(_:)),
+            keyEquivalent: "f")
+        fullScreen.keyEquivalentModifierMask = [.command, .control]
+        menu.addItem(fullScreen)
+        menu.addItem(.separator())
         let themes = NSMenuItem(
             title: "Themes…", action: #selector(showThemes(_:)), keyEquivalent: "t")
         themes.keyEquivalentModifierMask = [.command, .option]
         themes.target = self
-        appMenu.addItem(themes)
-        let machines = NSMenuItem(
-            title: "Machines…", action: #selector(showMachines(_:)), keyEquivalent: "m")
-        machines.keyEquivalentModifierMask = [.command, .shift]
-        machines.target = self
-        appMenu.addItem(machines)
-        appMenu.addItem(.separator())
-        appMenu.addItem(
-            withTitle: "Quit HerdX", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-        appItem.submenu = appMenu
-        main.addItem(appItem)
+        menu.addItem(themes)
+        item.submenu = menu
+        return item
+    }
 
-        let sessionItem = NSMenuItem()
+    private func sessionMenuItem() -> NSMenuItem {
+        let item = NSMenuItem()
         sessionMenu.delegate = self
         // The delegate decides what is enabled; left to AppKit, every item with
         // no responder in the chain would be greyed out.
         sessionMenu.autoenablesItems = false
-        sessionItem.submenu = sessionMenu
-        main.addItem(sessionItem)
+        item.submenu = sessionMenu
+        return item
+    }
 
-        let editItem = NSMenuItem()
-        let editMenu = NSMenu(title: "Edit")
-        // Routed to the first responder, so the grid view handles them.
-        editMenu.addItem(
-            withTitle: "Copy", action: #selector(TerminalGridView.copy(_:)), keyEquivalent: "c")
-        editMenu.addItem(
-            withTitle: "Paste", action: #selector(TerminalGridView.paste(_:)), keyEquivalent: "v")
-        editMenu.addItem(
-            withTitle: "Select All", action: #selector(NSResponder.selectAll(_:)),
-            keyEquivalent: "a")
-        editMenu.addItem(.separator())
-        let find = NSMenuItem(
-            title: "Find…", action: #selector(findInPane(_:)), keyEquivalent: "f")
-        find.target = self
-        editMenu.addItem(find)
-        editItem.submenu = editMenu
-        main.addItem(editItem)
+    /// The standard Window menu, carrying the moves between what is already
+    /// open. Next Tab and the pane arrows are here rather than in Shell because
+    /// this is where a Mac user looks for them.
+    private func windowMenu() -> NSMenuItem {
+        let item = NSMenuItem()
+        let menu = NSMenu(title: "Window")
+        menu.addItem(
+            withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)),
+            keyEquivalent: "m")
+        menu.addItem(
+            withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+        menu.addItem(.separator())
+        add(rows: Command.windowRows, to: menu)
+        menu.addItem(.separator())
+        menu.addItem(
+            withTitle: "Bring All to Front", action: #selector(NSApplication.arrangeInFront(_:)),
+            keyEquivalent: "")
+        item.submenu = menu
+        // AppKit keeps the list of open windows at the foot of whichever menu
+        // it is told is this one. Settings and Machines are ordinary windows,
+        // and this is the only way back to one that has gone behind the
+        // terminal.
+        NSApp.windowsMenu = menu
+        return item
+    }
 
-        let shellItem = NSMenuItem()
-        let shellMenu = NSMenu(title: "Shell")
-        for (title, key, command) in Command.menuLayout {
-            if title.isEmpty {
-                shellMenu.addItem(.separator())
-                continue
+    private func helpMenu() -> NSMenuItem {
+        let item = NSMenuItem()
+        let menu = NSMenu(title: "Help")
+        add(rows: Command.helpRows, to: menu)
+        item.submenu = menu
+        // Named to AppKit, so the system's help handling finds this menu rather
+        // than one that merely happens to be called Help.
+        NSApp.helpMenu = menu
+        return item
+    }
+
+    /// A menu made only of herdr commands.
+    private func commandMenu(titled title: String, rows: [Command.Row]) -> NSMenuItem {
+        let item = NSMenuItem()
+        let menu = NSMenu(title: title)
+        add(rows: rows, to: menu)
+        item.submenu = menu
+        return item
+    }
+
+    /// Turns a table of rows into menu items. The command travels as the tag,
+    /// which is the only part of it that survives a round trip through AppKit.
+    private func add(rows: [Command.Row], to menu: NSMenu) {
+        for row in rows {
+            switch row {
+            case .separator:
+                menu.addItem(.separator())
+            case .item(let title, let key, let command):
+                let item = NSMenuItem(
+                    title: title, action: #selector(menuCommand(_:)),
+                    keyEquivalent: key.equivalent)
+                item.keyEquivalentModifierMask = key.modifiers
+                item.tag = command.tag
+                item.target = self
+                menu.addItem(item)
             }
-            let item = NSMenuItem(
-                title: title, action: #selector(menuCommand(_:)), keyEquivalent: key.equivalent)
-            item.keyEquivalentModifierMask = key.modifiers
-            item.tag = command.tag
-            item.target = self
-            shellMenu.addItem(item)
         }
-        shellItem.submenu = shellMenu
-        main.addItem(shellItem)
-
-        NSApp.mainMenu = main
     }
 
     /// Dev affordance: `HERDX_CAPTURE=/path.png` renders the window and exits.
