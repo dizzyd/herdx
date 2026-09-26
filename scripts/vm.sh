@@ -51,6 +51,16 @@ need() { command -v "$1" >/dev/null || { echo "missing: $1 — brew install $2" 
 
 vm_ip() { tart ip "$VM_NAME" --wait 120; }
 
+# One shell-quoted word per argument. ssh hands what it is given to a shell at
+# the far end, so an unquoted `HERDX_PROBE_INPUT=echo hello` arrives as two
+# words: `env` takes the assignment and then tries to run `hello`. Quotes,
+# dollars and semicolons go the same way, only less visibly.
+quote() {
+  local out="" arg
+  for arg in "$@"; do out="$out $(printf '%q' "$arg")"; done
+  printf '%s' "$out"
+}
+
 ssh_vm() { sshpass -p "$PASS" ssh "${SSH_OPTS[@]}" "$USER_NAME@$(vm_ip)" "$@"; }
 scp_to() { sshpass -p "$PASS" scp -r "${SSH_OPTS[@]}" "$1" "$USER_NAME@$(vm_ip):$2"; }
 scp_from() { sshpass -p "$PASS" scp "${SSH_OPTS[@]}" "$USER_NAME@$(vm_ip):$1" "$2"; }
@@ -112,7 +122,7 @@ capture)
   shift 2
   # `env` rather than a prefix assignment, because this crosses into the login
   # session through two sudos and a plain VAR=x would be eaten by the first.
-  ssh_vm "sudo launchctl asuser $GUI_UID sudo -u $USER_NAME env HERDX_CAPTURE=/tmp/shot.png ${*} /Applications/HerdX.app/Contents/MacOS/HerdX"
+  ssh_vm "sudo launchctl asuser $GUI_UID sudo -u $USER_NAME env HERDX_CAPTURE=/tmp/shot.png $(quote "$@") /Applications/HerdX.app/Contents/MacOS/HerdX"
   scp_from "/tmp/shot.png" "$OUT"
   echo "$OUT"
   ;;
@@ -127,7 +137,7 @@ gui)
   # Anything that has to happen inside the login session rather than beside it.
   need sshpass sshpass
   shift
-  ssh_vm "sudo launchctl asuser $GUI_UID sudo -u $USER_NAME $*"
+  ssh_vm "sudo launchctl asuser $GUI_UID sudo -u $USER_NAME $(quote "$@")"
   ;;
 
 snapshot)
