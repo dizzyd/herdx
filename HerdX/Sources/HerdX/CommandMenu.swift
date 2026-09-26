@@ -119,8 +119,9 @@ extension Command {
     /// items that are HerdX's own rather than herdr's — sorting the sidebar,
     /// and the theme picker.
     static let sidebarRows: [Row] = [
-        // Titled for what it does next. ⌃⌘S is what the rest of the Mac uses
-        // for a sidebar.
+        // Titled for what it does next, and retitled by `validateMenuItem`
+        // when the sidebar is already collapsed. ⌃⌘S is what the rest of the
+        // Mac uses for a sidebar.
         .item("Hide Sidebar", Key(equivalent: "s", modifiers: [.command, .control]), .toggleSidebar)
     ]
 

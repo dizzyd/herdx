@@ -7,7 +7,7 @@ import AppKit
 /// an input source, not a terminal emulator.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSplitViewDelegate,
-    NSMenuDelegate
+    NSMenuDelegate, NSMenuItemValidation
 {
     private var window: NSWindow!
     private var gridView: TerminalGridView!
@@ -1847,7 +1847,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     }
 
     @objc private func menuCommand(_ sender: NSMenuItem) {
-        guard let session, let command = Command.allByTag[sender.tag] else { return }
+        guard let command = Command.allByTag[sender.tag] else { return }
+        // ⌘W closes what is in front of you. When that is Settings or Machines,
+        // closing a herdr tab instead is the kind of surprise you notice only
+        // after the tab has gone — so this one item follows the front window.
+        // Decided here as well as in `validateMenuItem`, because a key
+        // equivalent can fire without the menu ever being opened.
+        if case .closeTab = command, !terminalIsFrontmost {
+            NSApp.keyWindow?.performClose(sender)
+            return
+        }
+        guard let session else { return }
         invoke(command, session: session)
     }
 
@@ -2169,6 +2179,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
                 menu.addItem(item)
             }
         }
+    }
+
+    /// Greys out what cannot work, and retitles the two items whose meaning
+    /// depends on what is in front.
+    ///
+    /// Only items aimed at this object arrive here. The Edit menu's are aimed
+    /// at the first responder and validated by whoever holds it, which is how
+    /// Undo can be live in a Settings text field and dead in the terminal.
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        switch item.action {
+        case #selector(menuCommand(_:)):
+            guard let command = Command.allByTag[item.tag] else { return false }
+            if case .closeTab = command {
+                guard terminalIsFrontmost else {
+                    item.title = "Close Window"
+                    return NSApp.keyWindow?.styleMask.contains(.closable) ?? false
+                }
+                item.title = "Close Tab"
+            }
+            if case .toggleSidebar = command {
+                let collapsed = windowSplit.map { $0.isSubviewCollapsed(sidebar) } ?? false
+                item.title = collapsed ? "Show Sidebar" : "Hide Sidebar"
+            }
+            return session != nil
+        case #selector(findInPane(_:)):
+            return session != nil
+        default:
+            return true
+        }
+    }
+
+    /// Whether the keyboard is aimed at the terminal window.
+    ///
+    /// No key window means the app is not active, and the terminal is then what
+    /// a keystroke would arrive at. A sheet counts as something else: ⌘W while
+    /// a rename prompt is up should not reach past it and close a tab.
+    private var terminalIsFrontmost: Bool {
+        let key = NSApp.keyWindow
+        return key == nil || key === window
     }
 
     /// Dev affordance: `HERDX_CAPTURE=/path.png` renders the window and exits.
