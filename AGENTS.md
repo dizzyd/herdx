@@ -1,7 +1,7 @@
 # Working on HerdX
 
-`README.md` explains what HerdX is and how it is put together. This file is
-about working on it: the rules that protect the person whose machine this runs
+`README.md` is for someone using HerdX; `ARCHITECTURE.md` explains how it is
+put together and why. This file is about working on it: the rules that protect the person whose machine this runs
 on, and the things that have already cost a day each to learn.
 
 ## Two rules that are not negotiable
