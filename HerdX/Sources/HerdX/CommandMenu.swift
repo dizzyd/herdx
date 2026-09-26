@@ -146,7 +146,12 @@ extension Command {
     ]
 
     static let helpRows: [Row] = [
-        // Shift-command-slash is what a Mac calls Help.
+        // Shift-command-slash is what a Mac calls Help, and the system takes it
+        // before any app does: with a Help menu in the bar it opens that menu
+        // rather than firing the item under it. Measured, not assumed — a
+        // synthetic ⌘T reached New Tab in the same run where ⇧⌘/ reached
+        // nothing. The keystroke stays on the item because it is the one this
+        // menu should show, and the menu the system opens has that item first.
         .item("Keyboard Shortcuts", Key(equivalent: "/", modifiers: [.command, .shift]), .help)
     ]
 
