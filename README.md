@@ -69,6 +69,7 @@ and every prefix binding your herdr config defines.
 | ⌘F | find in this pane |
 | ⌥⌘C | copy mode |
 | ⌃⌘S | show or hide the sidebar |
+| ⌃⌘F | full screen |
 | ⌥⌘A | sort the sidebar by agent |
 | ⌥⌘T | themes |
 | ⌘, | settings |
@@ -95,6 +96,21 @@ without the mouse: `hjkl` and arrows, `ctrl-f`/`ctrl-b` by page, `g`/`G` for the
 ends, `/` and `?` to search, `n` for the next match. `v` starts a selection, `y`
 or Return copies it, `q` or Esc leaves — and Esc clears a selection before it
 exits, so mashing it cannot lose work.
+
+### Sessions
+
+A window is one herdr session, and the **Session** menu lists every session on
+this Mac. Switching moves the window to another one, and **New Session…** starts
+one under a name of your own — a second window's worth of work kept apart from
+the first.
+
+**Stop** ends a session and everything running in it, for every client attached
+to it, which is why it asks first. HerdX will not start that one again
+afterwards: it starts a session when there is none to attach to, and being told
+to stop one is not the same as there being none.
+
+**Attach Machines** decides whether the saved remotes come along with the
+session in front of you, or it stays local.
 
 ### Several machines
 
