@@ -91,7 +91,18 @@ boot)
   # the same interruption as the app's own window would be.
   nohup tart run "$VM_NAME" --no-graphics >"${TMPDIR:-/tmp}/$VM_NAME.log" 2>&1 &
   echo "booting…"
-  ssh_vm true
+  # Until it answers, not once: a guest hands out its IP before sshd is
+  # listening, and the refusal that comes back in between is instant. One
+  # attempt turns "still booting" into a failed command and, under `set -e`,
+  # into an abandoned boot.
+  deadline=$(( $(date +%s) + 300 ))
+  until ssh_vm true 2>/dev/null; do
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+      echo "$VM_NAME never answered ssh" >&2
+      exit 1
+    fi
+    sleep 2
+  done
   echo "up at $(vm_ip)"
   ;;
 
