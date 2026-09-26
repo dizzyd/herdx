@@ -72,6 +72,29 @@ thin binary if you give it the Rust spelling; and the universal build lands in
 via `--show-bin-path` rather than a hardcoded path. `bundle.sh` asserts both
 slices are present before it claims success.
 
+## A Mac that has never seen herdr
+
+Some of this app only exists on a machine where herdr is not installed, and a
+developer's Mac cannot be argued into that state — `HERDR_CONFIG_DIR` does not
+isolate the CLI, so faking it aims the run at the real session. `scripts/vm.sh`
+clones a throwaway macOS guest for it.
+
+```sh
+./scripts/vm.sh create      # clone the base image, once
+./scripts/vm.sh boot        # headless; no window on anybody's display
+./scripts/vm.sh install     # bundle here, copy the app in
+./scripts/vm.sh capture out.png HERDX_CAPTURE_DELAY=5
+./scripts/vm.sh snapshot    # keep this state
+./scripts/vm.sh restore     # and this is how "fresh" comes back
+```
+
+Capture *in the guest* with `HERDX_CAPTURE`, which needs no window server
+permission. Filming the VM's window from the host needs the guest in front on a
+real display, which is the thing the VM is for avoiding. What comes back is not
+identical to this Mac, though: the guest is macOS 15 and renders a whole
+`NSAlert` offscreen, where macOS 26 renders only the parts that are not layer
+backed.
+
 ## Verify by measuring, never by reasoning
 
 Nearly every bug in this app's history looked obviously-fixed in the source and
@@ -106,7 +129,7 @@ All are development-only and read from the environment.
 | `HERDX_CAPTURE_COMPOSITED=1` | Ask the window server instead of `cacheDisplay` (needs Screen Recording; returns nil without it) |
 | `HERDX_CAPTURE_SETTINGS` / `_MACHINES` / `_THEMES` | Photograph those windows |
 | `HERDX_CAPTURE_HELP=<action>` | Photograph the sheet an action opens |
-| `HERDX_CAPTURE_INSTALL=1` | Photograph the first-run dialog's command field, which a Mac with herdr on it never sees (an `NSAlert`'s own furniture does not survive `cacheDisplay`) |
+| `HERDX_CAPTURE_INSTALL=1` | Photograph the first-run dialog, which a Mac with herdr on it never reaches |
 | `HERDX_PROBE_INPUT=<text>` | Report input state, then type through the real AppKit path |
 | `HERDX_PROBE_CHORDS=1` | Report any prefix binding no keystroke can reach |
 | `HERDX_PROBE_COMMANDS=1` | Run commands against a live server and report what it made of them — throwaway sessions only |
