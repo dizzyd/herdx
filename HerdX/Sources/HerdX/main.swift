@@ -251,6 +251,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
             // A server that is not running yet is not fatal: herdr sessions
             // outlive their clients, so wait for one instead of giving up.
             statusTitle = "waiting for herdr… (\(lastConnectError ?? "no server"))"
+            gridView.placeholder = herdrExplanation ?? "waiting for herdr…"
             applyTitle()
             reconnect()
         }
@@ -300,6 +301,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         // real size even if no frame change fired after the handshake.
         gridView.reportGridSize()
 
+        // An app with no herdr has nothing to draw and no way to be useful, so
+        // the first run says so outright rather than leaving the explanation as
+        // grey text in the middle of an empty terminal. Only when nothing
+        // answered: a running server means this is not that situation.
+        if session == nil, !AppDelegate.isHeadless, case .missing = LocalHerdr.state(serverIsUp: false) {
+            LocalHerdr.offerInstall(over: window)
+        }
+
         installCaptureHookIfRequested()
         installInputProbeIfRequested()
         // Its own slow timer, not the sixty-a-second one: this asks a server
@@ -317,6 +326,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
 
     private var workspaceTitle: String?
 
+    /// Why nothing is answering, or nil when herdr is fine and the silence is
+    /// something else.
+    ///
+    /// Split out because the same situations arrive by two routes, and only one
+    /// of them was covered. A session whose local endpoint goes quiet gets this
+    /// through `updatePlaceholder` — but someone with no herdr at all never has
+    /// a session for that to run on, so the terminal stayed blank and the whole
+    /// story was a window subtitle reading "waiting for herdr… (no server)".
+    /// That is the one person who most needs telling.
+    private var herdrExplanation: String? {
+        switch LocalHerdr.state(serverIsUp: false) {
+        case .missing:
+            return "HerdX is a client for herdr, which is not installed.\n\n"
+                + LocalHerdr.installCommand
+                + "\n\nHelp ▸ Install herdr… will copy that line for you."
+        case .installed:
+            return "herdr is installed but not running.\n\n"
+                + "run  herdr  in a terminal to start a session."
+        case .running:
+            return nil
+        }
+    }
+
     /// Explains an empty terminal, rather than leaving it blank.
     private func updatePlaceholder(session: HerdrSession) {
         let endpoints = session.endpoints
@@ -330,19 +362,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         case .offline where !active.isRemote:
             // The local machine going quiet usually means herdr is not there
             // at all, which "Local is offline" does not begin to say.
-            switch LocalHerdr.state(serverIsUp: false) {
-            case .missing:
-                gridView.placeholder =
-                    "HerdX is a client for herdr, which is not installed.\n\n"
-                    + LocalHerdr.installCommand
-                    + "\n\nthen run  herdr  to start a session."
-            case .installed:
-                gridView.placeholder =
-                    "herdr is installed but not running.\n\n"
-                    + "run  herdr  in a terminal to start a session."
-            case .running:
-                gridView.placeholder = active.error ?? "\(active.label) is offline"
-            }
+            gridView.placeholder =
+                herdrExplanation ?? active.error ?? "\(active.label) is offline"
         case .offline:
             gridView.placeholder = active.error ?? "\(active.label) is offline"
         case .online:
@@ -562,7 +583,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
             return
         }
         guard LocalHerdr.binaryPath() != nil else {
-            alert("herdr is not installed", LocalHerdr.installCommand)
+            // The same offer as the first run makes, rather than the command as
+            // text in an alert nobody can copy from.
+            LocalHerdr.offerInstall(over: window)
             return
         }
         guard SessionCatalog.start(name) else {
@@ -1660,6 +1683,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         machinesWindow.present()
     }
 
+    @objc private func showInstallHerdr(_ sender: Any?) {
+        LocalHerdr.offerInstall(over: window)
+    }
+
     /// Remembers the colours when they are not the ones we asked for.
     ///
     /// A surface painted in colours we did not publish was composed against
@@ -1836,6 +1863,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         knownMachines = nil
         if !connect() {
             statusTitle = "waiting for herdr… (\(lastConnectError ?? "no server"))"
+            gridView.placeholder = herdrExplanation ?? "waiting for herdr…"
             reconnect()
         }
         applyTitle()
@@ -2146,6 +2174,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         let item = NSMenuItem()
         let menu = NSMenu(title: "Help")
         add(rows: Command.helpRows, to: menu)
+        // The one thing someone with no herdr needs, and the only way back to
+        // it once the dialog at launch has been dismissed. Hidden by
+        // `validateMenuItem` on a Mac that already has herdr.
+        let install = NSMenuItem(
+            title: "Install herdr…", action: #selector(showInstallHerdr(_:)), keyEquivalent: "")
+        install.target = self
+        menu.addItem(install)
         item.submenu = menu
         // Named to AppKit, so the system's help handling finds this menu rather
         // than one that merely happens to be called Help.
@@ -2205,6 +2240,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
             return session != nil
         case #selector(findInPane(_:)):
             return session != nil
+        case #selector(showInstallHerdr(_:)):
+            // Offering to install what is already installed reads as the app
+            // not knowing what is on the machine it is running on.
+            item.isHidden = LocalHerdr.binaryPath() != nil
+            return true
         default:
             return true
         }
@@ -2357,6 +2397,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
             let sheetAction = environment["HERDX_CAPTURE_HELP"]
                 .flatMap { Keymap.Action(rawValue: $0) ?? .help }
             let helpWanted = sheetAction != nil
+            // The first-run dialog, which launch only puts up on a Mac with no
+            // herdr — a state a machine with herdr cannot be argued into.
+            let installWanted = environment["HERDX_CAPTURE_INSTALL"] != nil
+            // What comes back is the command field on a blank card, not the
+            // whole dialog: an NSAlert draws its icon, text and buttons through
+            // layers, and `cacheDisplay` walks subviews. Letting the run loop
+            // spin first was tried and changed nothing — it is not a race. The
+            // question this can still answer is the one worth asking, which is
+            // whether the command renders in the field or leaves a gap.
+            if installWanted { LocalHerdr.offerInstall(over: self.window) }
             if settings { self.showPreferences(nil) }
             if let sheetAction, let session = self.session {
                 self.perform(sheetAction, session: session)
@@ -2369,7 +2419,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
                     ?? self.machinesWindow.window?.contentView)
                 : settings
                 ? self.preferencesWindow?.window?.contentView
-                : (helpWanted
+                : (helpWanted || installWanted
                     ? self.window.attachedSheet?.contentView : self.window.contentView)
             guard let view = target
             else {

@@ -82,6 +82,17 @@ final class MenuBarTests: XCTestCase {
         XCTAssertTrue(NSApp.servicesMenu === services, "Services would stay empty")
     }
 
+    /// The only route back to the install command once the dialog at launch has
+    /// been dismissed, and the only one a new user has at all: the command is
+    /// painted into the terminal as glyphs, which nothing can select or copy.
+    func testHelpOffersTheInstallCommand() {
+        let help = menuBar().items.compactMap(\.submenu).first { $0.title == "Help" }
+        XCTAssertNotNil(help)
+        XCTAssertTrue(
+            help?.items.contains { $0.title == "Install herdr…" } ?? false,
+            "nothing in the menu bar hands over the install command")
+    }
+
     /// Each command item carries its command as a tag and nothing else; a tag
     /// that is not in `allByTag` clicks and does nothing.
     func testEveryCommandItemInTheBarResolvesBackToACommand() {

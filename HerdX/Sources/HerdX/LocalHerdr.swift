@@ -50,4 +50,63 @@ enum LocalHerdr {
 
     /// The install line herdr's own README gives.
     static let installCommand = "curl -fsSL https://herdr.dev/install.sh | sh"
+
+    static let homePage = URL(string: "https://herdr.dev")!
+}
+
+extension LocalHerdr {
+    /// Offers the install line in a form it can be taken away from.
+    ///
+    /// The line was only ever painted into the terminal as placeholder text —
+    /// glyphs in a custom view, with nothing to select and no pasteboard
+    /// anywhere near them. So the first thing a new user saw was a curl
+    /// pipeline they had to retype by hand from a window that had no other way
+    /// to give it to them. This is the one moment the app has nothing else to
+    /// offer, and handing over a command it is asking you to run is the least
+    /// it can do.
+    ///
+    /// A selectable field as well as the Copy button: a dialog that copies on a
+    /// click is fine until someone wants to read the thing before piping it
+    /// into a shell, which is a reasonable way to feel about `curl … | sh`.
+    @MainActor
+    static func offerInstall(over parent: NSWindow?) {
+        let alert = NSAlert()
+        alert.messageText = "HerdX needs herdr"
+        alert.informativeText =
+            "HerdX draws the terminals; herdr runs them. Install herdr, then run  herdr  "
+            + "in a terminal to start a session — this window will pick it up on its own."
+
+        let field = NSTextField(string: installCommand)
+        field.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        field.isEditable = false
+        // Selectable, and sized here: an accessory view gets no layout pass, so
+        // one without a frame is a dialog with a gap where the command should be.
+        field.isSelectable = true
+        field.frame = NSRect(x: 0, y: 0, width: 360, height: 24)
+        alert.accessoryView = field
+
+        alert.addButton(withTitle: "Copy Command")
+        alert.addButton(withTitle: "Open herdr.dev")
+        alert.addButton(withTitle: "Close")
+
+        let answer: (NSApplication.ModalResponse) -> Void = { response in
+            switch response {
+            case .alertFirstButtonReturn:
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(installCommand, forType: .string)
+            case .alertSecondButtonReturn:
+                NSWorkspace.shared.open(homePage)
+            default:
+                break
+            }
+        }
+
+        // A sheet where there is a window to hang it on: the explanation behind
+        // it is half of the answer, and a detached dialog covers it.
+        if let parent {
+            alert.beginSheetModal(for: parent, completionHandler: answer)
+        } else {
+            answer(alert.runModal())
+        }
+    }
 }
