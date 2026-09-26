@@ -622,9 +622,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     private func resolvedSession() -> (name: String?, socket: String?) {
         let sessions = SessionCatalog.list()
         if let named = AppDelegate.namedSession {
-            // Its own socket even when it is stopped, so the connection fails
-            // where it should rather than falling through to the default
-            // session — which is the one this is being kept away from.
+            // Its own socket, which herdr lists for a stopped session as well as
+            // a running one. A name herdr has never heard of has no socket here
+            // at all, and `connect` refuses rather than passing nil on — nil
+            // means "the one the core would pick", which is the real session
+            // this exists to stay away from.
             return (named, sessions.first { $0.name == named }?.clientSocket)
         }
         if !SessionCatalog.environmentPicksSocket, let saved = preferences.sessionName,
@@ -867,6 +869,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         let cell = gridView.cellSize
         let chosen = resolvedSession()
         sessionTitle = chosen.name
+        // A run aimed at a session by name connects to that session or to
+        // nothing. herdr lists a session it knows about whether or not it is
+        // running, so no socket here means no such session — and handing the
+        // core a nil socket would aim this run at whichever session it would
+        // have picked, which is the developer's own. It would attach, publish a
+        // theme and resize the surface, all under the throwaway name.
+        //
+        // Returning false is not the end of it: the caller starts the session
+        // that was asked for and comes back, which is also what makes
+        // `HERDX_SESSION` work for a name that has never been used.
+        if AppDelegate.namedSession != nil, chosen.socket == nil {
+            lastConnectError = "no session named “\(chosen.name ?? "")” yet"
+            return false
+        }
         let session: HerdrSession
         do {
             session = try HerdrSession(
