@@ -64,6 +64,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     /// once: the point is to save someone a trip to a terminal, not to keep
     /// putting back a server they have deliberately stopped.
     private var startedLocalHerdr = false
+    /// Likewise for the offer to install herdr here, which is a dialog and can
+    /// only be shown once without becoming something to fight with. Distinct
+    /// from `offeredInstall`, which is about herdr on other machines.
+    private var offeredLocalInstall = false
 
     /// Runs without ever showing a window.
     ///
@@ -305,13 +309,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         // real size even if no frame change fired after the handshake.
         gridView.reportGridSize()
 
-        // An app with no herdr has nothing to draw and no way to be useful, so
-        // the first run says so outright rather than leaving the explanation as
-        // grey text in the middle of an empty terminal. Only when nothing
-        // answered: a running server means this is not that situation.
-        if session == nil, !AppDelegate.isHeadless, case .missing = LocalHerdr.state(serverIsUp: false) {
-            LocalHerdr.offerInstall(over: window)
-        }
 
         installCaptureHookIfRequested()
         installInputProbeIfRequested()
@@ -350,6 +347,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
                 + "Session ▸ New Session… will start one."
         case .running:
             return nil
+        }
+    }
+
+    /// What to do about a local machine that is not answering: start the server
+    /// if herdr is here, and offer to fetch it if it is not.
+    ///
+    /// One door for both, because both are answers to the same fact and neither
+    /// could hang off the thing that looks like it — see the caller.
+    /// Dev affordance: `HERDX_CAPTURE_INSTALL=1` puts the first-run dialog up on
+    /// a Mac that has herdr, which otherwise never reaches it.
+    ///
+    /// Through the same tick the real thing comes through, so what this puts on
+    /// screen is the dialog rather than a second one built beside it.
+    ///
+    /// What a capture gets back differs by macOS, which is worth knowing before
+    /// deciding the dialog is broken: the macOS 15 guest in `scripts/vm.sh`
+    /// renders the whole alert, and macOS 26 renders only the command field.
+    /// `cacheDisplay` walks subviews, and an alert whose furniture is layer
+    /// backed leaves it nothing to walk. Raising it at launch, from a tick, and
+    /// after a run loop spin all came back byte for byte identical. The field is
+    /// the part this app owns, so the flag still answers what it is for.
+    static var pretendsHerdrIsMissing: Bool {
+        ProcessInfo.processInfo.environment["HERDX_CAPTURE_INSTALL"] != nil
+    }
+
+    private func answerForMissingHerdr() {
+        if AppDelegate.pretendsHerdrIsMissing {
+            guard !offeredLocalInstall else { return }
+            offeredLocalInstall = true
+            LocalHerdr.offerInstall(over: window)
+            return
+        }
+        switch LocalHerdr.state(serverIsUp: false) {
+        case .missing:
+            guard !offeredLocalInstall else { return }
+            offeredLocalInstall = true
+            // Headless runs are allowed this one: a window that is never
+            // ordered in cannot put a sheet on anybody's screen, and it is the
+            // only way to photograph a dialog that a Mac with herdr on it never
+            // reaches. The capture hook ends the sheet so terminate is not held.
+            LocalHerdr.offerInstall(over: window)
+        case .installed:
+            startLocalHerdr()
+        case .running:
+            break
         }
     }
 
@@ -1052,14 +1094,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
             }
             events.present(event, window: window)
         }
-        // A herdr that is not running does not look like a failure to connect:
-        // the core makes a session either way and reconnects endpoints on its
-        // own, so what it looks like is a local endpoint that never comes up.
-        // The flag is checked first because this runs sixty times a second.
-        if !startedLocalHerdr,
-            session.endpoints.first(where: { !$0.isRemote })?.status == .offline
+        // A herdr that is neither installed nor running does not look like a
+        // failure to connect: the core makes a session either way and
+        // reconnects endpoints on its own, so what it looks like is a local
+        // endpoint that never comes up. Both answers hang off that one fact,
+        // and hanging either off the connection meant it never fired at all.
+        // The flags are checked first because this runs sixty times a second.
+        if !startedLocalHerdr || !offeredLocalInstall,
+            AppDelegate.pretendsHerdrIsMissing
+                || session.endpoints.first(where: { !$0.isRemote })?.status == .offline
         {
-            startLocalHerdr()
+            answerForMissingHerdr()
         }
         updatePlaceholder(session: session)
         gridView.refreshIfNeeded()
@@ -2506,16 +2551,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
             let sheetAction = environment["HERDX_CAPTURE_HELP"]
                 .flatMap { Keymap.Action(rawValue: $0) ?? .help }
             let helpWanted = sheetAction != nil
-            // The first-run dialog, which launch only puts up on a Mac with no
-            // herdr — a state a machine with herdr cannot be argued into.
-            let installWanted = environment["HERDX_CAPTURE_INSTALL"] != nil
-            // What comes back is the command field on a blank card, not the
-            // whole dialog: an NSAlert draws its icon, text and buttons through
-            // layers, and `cacheDisplay` walks subviews. Letting the run loop
-            // spin first was tried and changed nothing — it is not a race. The
-            // question this can still answer is the one worth asking, which is
-            // whether the command renders in the field or leaves a gap.
-            if installWanted { LocalHerdr.offerInstall(over: self.window) }
             if settings { self.showPreferences(nil) }
             if let sheetAction, let session = self.session {
                 self.perform(sheetAction, session: session)
@@ -2528,8 +2563,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
                     ?? self.machinesWindow.window?.contentView)
                 : settings
                 ? self.preferencesWindow?.window?.contentView
-                : (helpWanted || installWanted
-                    ? self.window.attachedSheet?.contentView : self.window.contentView)
+                // Any sheet, not only one this run asked for: the first-run
+                // dialog puts itself up, and photographing the window behind it
+                // would be a picture of the app looking fine.
+                : (self.window.attachedSheet?.contentView ?? self.window.contentView)
             guard let view = target
             else {
                 NSApp.terminate(nil)

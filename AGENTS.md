@@ -88,6 +88,10 @@ clones a throwaway macOS guest for it.
 ./scripts/vm.sh restore     # and this is how "fresh" comes back
 ```
 
+Two bugs lived in that state undisturbed: the first-run dialog hung off
+`connect()` failing, which never happens, and the sidebar's first line on a new
+Mac read "No such file or directory". Neither is visible from here.
+
 Capture *in the guest* with `HERDX_CAPTURE`, which needs no window server
 permission. Filming the VM's window from the host needs the guest in front on a
 real display, which is the thing the VM is for avoiding. What comes back is not
