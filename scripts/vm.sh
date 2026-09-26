@@ -148,9 +148,21 @@ snapshot)
   ;;
 
 restore)
+  # The copy is made before the original is touched, and made under another
+  # name so a clone that fails half way cannot leave the working VM deleted and
+  # nothing in its place. Stopping and deleting first is how `restore` came to
+  # be a way of destroying a VM when no snapshot had ever been taken — which is
+  # exactly what `create` suggests running when a VM already exists.
+  tart get "$SNAP" >/dev/null 2>&1 || {
+    echo "no snapshot $SNAP — ./scripts/vm.sh snapshot takes one" >&2
+    exit 1
+  }
+  STAGING="${VM_NAME}-restoring"
+  tart delete "$STAGING" 2>/dev/null || true
+  tart clone "$SNAP" "$STAGING"
   tart stop "$VM_NAME" --timeout 60 2>/dev/null || true
   tart delete "$VM_NAME" 2>/dev/null || true
-  tart clone "$SNAP" "$VM_NAME"
+  tart rename "$STAGING" "$VM_NAME"
   echo "restored $VM_NAME from $SNAP — ./scripts/vm.sh boot"
   ;;
 
