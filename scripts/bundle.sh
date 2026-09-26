@@ -109,6 +109,9 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundleVersion</key><string>$BUILD_NUMBER</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
+  <!-- The About panel's third line. Without it the panel shows a name and a
+       version over blank space, which reads as an unfinished app. -->
+  <key>NSHumanReadableCopyright</key><string>Copyright 2026 Dave (Dizzy) Smith</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSPrincipalClass</key><string>NSApplication</string>
 </dict>
