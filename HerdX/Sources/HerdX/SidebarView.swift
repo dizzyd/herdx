@@ -724,6 +724,13 @@ final class SidebarView: NSView {
         let subtitle: String
         switch endpoint.status {
         case .connecting: subtitle = "connecting…"
+        case .offline where !endpoint.isRemote:
+            // A local machine that is not answering is herdr not being there,
+            // and what the socket has to say about that is "No such file or
+            // directory" — an errno, and the first words a new user read. The
+            // terminal beside this says which of the two it is; the raw text
+            // stays on as the detail.
+            subtitle = "herdr not running"
         case .offline:
             // The reason, not just the fact. ssh explains itself perfectly
             // well — an unknown host key, a refused key, no herdr on the far
