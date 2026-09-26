@@ -60,10 +60,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     private var appliedKeyProfile: String?
     /// True while resize mode owns the keyboard.
     private var resizing = false
-    /// Whether this run has already launched a herdr server. Once, and only
-    /// once: the point is to save someone a trip to a terminal, not to keep
-    /// putting back a server they have deliberately stopped.
-    private var startedLocalHerdr = false
+    /// Whether this run may still start a herdr server.
+    ///
+    /// Spent by starting one — the point is to save someone a trip to a
+    /// terminal, not to keep putting one back — and spent just as surely by
+    /// Stop Session, which is someone saying they want it stopped. Without that
+    /// second half, stopping a server this app did not start put it straight
+    /// back a sixtieth of a second later, because the flag had never been set.
+    private var mayStartLocalHerdr = true
     /// Likewise for the offer to install herdr here, which is a dialog and can
     /// only be shown once without becoming something to fight with. Distinct
     /// from `offeredInstall`, which is about herdr on other machines.
@@ -418,7 +422,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         // a named session that is not running wants *that* server, and starting
         // the default one would leave it looking at the same dead socket.
         let wanted = sessionTitle ?? named
-        guard !startedLocalHerdr,
+        guard mayStartLocalHerdr,
             case .installed = LocalHerdr.state(serverIsUp: false),
             // A named session is a developer asking for this on purpose, and is
             // the only way to watch it happen; otherwise a headless run or one
@@ -426,7 +430,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
             named != nil || (!AppDelegate.isHeadless && !SessionCatalog.environmentPicksSocket),
             wanted.map(SessionCatalog.start) ?? SessionCatalog.startDefault()
         else { return false }
-        startedLocalHerdr = true
+        mayStartLocalHerdr = false
         statusTitle = "starting herdr…"
         gridView.placeholder = "starting herdr…"
         applyTitle()
@@ -793,6 +797,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
             return
         }
         notice("stopped \(name)")
+        // Asked for, so not undone: the window is about to find a local endpoint
+        // that will not come up, which is the same thing it starts a server for.
+        mayStartLocalHerdr = false
         let running = SessionCatalog.list().filter { $0.running && $0.name != name }
         if let next = running.first(where: \.isDefault) ?? running.first {
             adopt(session: next.name)
@@ -1116,7 +1123,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         // endpoint that never comes up. Both answers hang off that one fact,
         // and hanging either off the connection meant it never fired at all.
         // The flags are checked first because this runs sixty times a second.
-        if !startedLocalHerdr || !offeredLocalInstall,
+        if mayStartLocalHerdr || !offeredLocalInstall,
             AppDelegate.pretendsHerdrIsMissing
                 || session.endpoints.first(where: { !$0.isRemote })?.status == .offline
         {
