@@ -54,8 +54,8 @@ a window-level header.
 
 ### Keyboard
 
-Everything is in the menu bar, and ⇧⌘/ opens a list of both these and your
-prefix bindings.
+Everything is in the menu bar, and Help ▸ Keyboard Shortcuts lists both these
+and every prefix binding your herdr config defines.
 
 | | |
 | --- | --- |
@@ -99,8 +99,9 @@ exits, so mashing it cannot lose work.
 ### Several machines
 
 Machines come from herdr's own catalog, and **Machines…** (⇧⌘M) edits it. Each
-one is `ssh <target> herdr` under the hood; if a machine has no herdr on it, HerdX
-offers to run herdr's installer there in a pane.
+one runs herdr over ssh, speaking the same protocol as the local server; if a
+machine has no herdr on it, HerdX offers to run herdr's installer there in a
+pane.
 
 Every machine stays attached so its agents keep reporting, but only the one you
 are looking at is asked to render — which is what makes watching several of them
