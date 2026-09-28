@@ -211,9 +211,11 @@ have to be removed by name. Check what you put back, rather than assuming.
   drawn over the terminal takes `Chrome`; anything in a standard Mac window
   takes system colours; a system control sitting on the chrome must be told the
   chrome's appearance. Four separate bugs came from getting this wrong.
-- **Chrome is built from the colour the panes are actually painted in**, not
-  from the configured one. A program that sets its own background wins on
-  screen, and the window should follow what is on screen.
+- **Chrome is built from the theme, and a pane's padding from its own edge
+  cells.** Both used to follow a colour guessed from how much of a pane it
+  covered, so a program's own background would win — until a tool's output
+  block scrolled to fill a pane and recoloured the whole window. Nothing on the
+  wire says what a program meant as its background; do not guess one.
 - **Context belongs to the thing it describes.** A working directory and an
   agent state belong to a pane, so they are drawn on that pane's frame — not in
   a window-level header that silently changes meaning as focus moves.

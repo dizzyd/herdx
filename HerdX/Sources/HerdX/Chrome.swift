@@ -24,12 +24,11 @@ struct Chrome {
     var separator: NSColor
     var isDark: Bool
 
-    /// `background` is the colour the terminal is actually painted in, which
-    /// is not always the configured one: a program that sets its own wins on
-    /// screen, and chrome built from the preference instead of from the screen
-    /// left a black sidebar beside blue panes.
-    init(theme: Theme, background: NSColor? = nil) {
-        let resolved = background ?? theme.background
+    /// From the theme alone, not from what programs paint: which colour a pane
+    /// "really" is can only be guessed from its cells, and the guess recoloured
+    /// the whole window whenever a highlight filled a pane.
+    init(theme: Theme) {
+        let resolved = theme.background
         let dark = resolved.isDarkish
         let base = resolved.usingColorSpace(.sRGB) ?? resolved
         let text = theme.foreground.usingColorSpace(.sRGB) ?? theme.foreground

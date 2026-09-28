@@ -35,9 +35,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     private var terminalSplit: ChromeSplitView?
     /// The terminal palette the chrome was last built from.
     private var terminalTheme: Theme = .dark
-    /// The colour the panes are actually painted in, when it differs from the
-    /// configured background.
-    private var observedBackground: NSColor?
     /// The theme under the highlight in the theme list, shown whatever the
     /// appearance.
     ///
@@ -125,12 +122,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         let cell = gridView.cellSize
         let cols = 120
         let rows = 34
-
-        gridView.onBackgroundChanged = { [weak self] color in
-            guard let self, color != self.observedBackground else { return }
-            self.observedBackground = color
-            self.applyChrome()
-        }
 
         sidebar = SidebarView()
         sidebar.onSelect = { [weak self] command in
@@ -529,14 +520,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         publish(theme: terminalTheme)
     }
 
-    /// Recolours the chrome from the terminal, without telling the server
-    /// anything.
-    ///
-    /// Separate from `applyTheme` because it also runs when a program inside a
-    /// pane changes colour, and publishing our palette back on that would be
-    /// answering the server with what it just said.
+    /// Builds the window's chrome from the terminal theme.
     private func applyChrome() {
-        let palette = Chrome(theme: terminalTheme, background: observedBackground)
+        let palette = Chrome(theme: terminalTheme)
         gridView.chrome = palette
         gridView.needsDisplay = true
         // The title bar is transparent, so the window's own colour is what
@@ -544,10 +530,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         window.backgroundColor = palette.surface
         // And the title, the traffic lights and everything else AppKit draws up
         // there sits on that colour, so it has to be told what the colour is.
-        // Taking this from the Window setting instead is what put a black title
-        // on a dark title bar: the setting chooses a palette, but a program
-        // that paints its own background wins on screen, and the chrome follows
-        // the screen.
+        // Taken from the chrome rather than the system: a dark theme under a
+        // light system appearance otherwise put a black title on a dark bar.
         window.appearance = NSAppearance(named: palette.isDark ? .darkAqua : .aqua)
         sidebar.apply(chrome: palette)
         copyModeStatus.apply(chrome: palette)
