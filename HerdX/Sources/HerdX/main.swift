@@ -316,6 +316,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
 
         installCaptureHookIfRequested()
         installInputProbeIfRequested()
+        checkForUpdate()
         // Its own slow timer, not the sixty-a-second one: this asks a server
         // several questions and nothing it looks at changes in under an hour.
         sweepTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
@@ -2435,6 +2436,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     private var terminalIsFrontmost: Bool {
         let key = NSApp.keyWindow
         return key == nil || key === window
+    }
+
+    /// Says so when a newer HerdX has been published, once a day at most.
+    ///
+    /// At launch and nowhere else. An app that notices mid-session has to
+    /// interrupt to say so, and there is no moment during a day's work when
+    /// being told about a download is welcome; the moment it is welcome is the
+    /// one where you have just started the thing.
+    ///
+    /// The day is spent before the answer arrives rather than after, so a
+    /// machine with no network does not try again on every launch — and a
+    /// release found on a flaky connection is still found tomorrow.
+    private func checkForUpdate() {
+        // Probes and captures make no network calls and raise no dialogs, which
+        // is what makes them safe to run in a loop. `HERDX_UPDATE_CHECK` is a
+        // developer saying otherwise, and is also the only way to see this
+        // happen on the day a release is already installed.
+        guard !AppDelegate.isHeadless || Updates.forced else { return }
+        guard let running = Updates.runningVersion else { return }
+        guard Updates.forced || Updates.isDue(lastChecked: Updates.lastChecked) else { return }
+        Updates.noteChecked()
+        Updates.fetchLatest { [weak self] release in
+            MainActor.assumeIsolated {
+                guard let self, let release,
+                    Updates.isNewer(release.version, than: running)
+                else { return }
+                self.offer(release, running: running)
+            }
+        }
+    }
+
+    /// One sentence and two buttons. There is no updater in this app, so the
+    /// most it can honestly do is open the page the download is on.
+    private func offer(_ release: Updates.Release, running: String) {
+        let alert = NSAlert()
+        alert.messageText = "HerdX \(release.version.hasPrefix("v") ? String(release.version.dropFirst()) : release.version) is available"
+        alert.informativeText =
+            "You are running \(running). Downloading it replaces the app; the herdr "
+            + "sessions it is showing are on the server and are not affected."
+        alert.addButton(withTitle: "Download")
+        alert.addButton(withTitle: "Later")
+        // A sheet, not a dialog in the middle of the screen: it belongs to this
+        // window, and a launch that puts a free-floating box over whatever else
+        // is on screen is the behaviour this notice is trying not to become.
+        alert.beginSheetModal(for: window) { response in
+            guard response == .alertFirstButtonReturn else { return }
+            NSWorkspace.shared.open(release.page)
+        }
     }
 
     /// Dev affordance: `HERDX_CAPTURE=/path.png` renders the window and exits.

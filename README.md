@@ -156,6 +156,9 @@ Settings ▸ Hibernate chooses the delay, or turns it off.
   set the window title, and ring a real bell.
 - Restart the herdr server and the window reconnects on its own, with the panes
   where you left them.
+- Once a day, at startup, HerdX asks GitHub whether a newer version has been
+  released and says so if there is one. It does not ask again until the next
+  day, however many times you restart it, and it never asks while you work.
 - Ligatures are deliberately not supported: every glyph is placed at its own
   cell so long runs stay in their columns, and a ligature spans cells by
   definition. It is a trade, not an oversight.
