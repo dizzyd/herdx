@@ -6,13 +6,15 @@ on, and the things that have already cost a day each to learn.
 
 ## Two rules that are not negotiable
 
-**Never touch the developer's real herdr session.** It is their live work —
-running agents, unsaved terminals, panes they are in the middle of. A stray
-`herdr server stop` once killed it and lost a tab.
+**Modify the developer's real herdr session if and only if the user explicitly
+requests that action.** It is their live work — running agents, unsaved
+terminals, panes they are in the middle of. A stray `herdr server stop` once
+killed it and lost a tab.
 
 - `HERDR_CONFIG_DIR` does **not** isolate the CLI. It was tried; the CLI still
   used the real socket. Do not rely on it.
-- Use a throwaway session instead:
+- Use a throwaway session for development and tests unless the user explicitly
+  requests an action on the real session:
   ```sh
   herdr --session hxtest server                       # starts only a server
   HERDR_CLIENT_SOCKET_PATH=~/.config/herdr/sessions/hxtest/herdr-client.sock …
@@ -21,8 +23,15 @@ running agents, unsaved terminals, panes they are in the middle of. A stray
 - `herdr --session <name>` is genuinely isolated: its own socket under
   `~/.config/herdr/sessions/<name>/`. Verify with
   `herdr --session hxtest status` before assuming.
-- Reading the real session is fine — attaching a client is harmless. Writing to
-  it is not: no `pane split`, no `server stop`, no sending input.
+- Reading the real session is fine — attaching a client is harmless.
+- Writing to the real session requires an explicit user request for the action
+  and target. For example, “send this review to the Claude instance for HerdX
+  and ask it to address the findings” authorizes locating that agent and sending
+  it the prompt through herdr. No additional confirmation is needed.
+- Permission is limited to the requested action and target. Sending an agent a
+  prompt does not authorize splitting or closing panes, interrupting other
+  agents, or stopping the server. A general request to develop, test, or debug
+  HerdX is not permission to modify the real session.
 - Shell state to be aware of: a terminal inside herdr has `HERDR_ENV=1`,
   `HERDR_SOCKET_PATH` and `HERDR_PANE_ID` set. `HERDR_SOCKET_PATH` will point a
   test run straight back at the real server — clear it with `env -u`.
