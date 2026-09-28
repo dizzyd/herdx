@@ -17,7 +17,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CONFIG="${1:-debug}"
 APP="$ROOT/build/HerdX.app"
-VERSION="${HERDX_VERSION:-1.2.0}"
+VERSION="${HERDX_VERSION:-1.3.0}"
 BUILD_NUMBER="${HERDX_BUILD:-$VERSION}"
 UNIVERSAL="${HERDX_UNIVERSAL:-0}"
 
