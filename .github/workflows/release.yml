@@ -22,7 +22,7 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # vendor/herdr is a submodule and the build does not work without it.
           submodules: recursive
@@ -100,7 +100,7 @@ jobs:
           rm -f "$RUNNER_TEMP/AuthKey.p8" "$RUNNER_TEMP/certificate.p12"
           security delete-keychain "$RUNNER_TEMP/build.keychain-db" || true
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: HerdX-${{ steps.version.outputs.value }}-dmg
           path: build/HerdX-*.dmg
