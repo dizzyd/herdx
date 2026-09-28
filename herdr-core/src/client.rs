@@ -122,7 +122,7 @@ impl EndpointConnection {
         socket: &Path,
         hello: &EndpointClientHello,
     ) -> io::Result<Self> {
-        Self::attach_interruptible(endpoint, socket, hello, &|_| true)
+        Self::attach_interruptible(endpoint, socket, hello, &|_| true, &|| false)
     }
 
     /// `attach`, handing `arm` the means to break a blocked read as soon as
@@ -135,15 +135,17 @@ impl EndpointConnection {
     ///
     /// `arm` returns false when whatever owns this connection has already been
     /// disposed of, in which case there is no point completing a handshake for
-    /// it.
+    /// it. `cancelled` says the same thing earlier, while there is no transport
+    /// yet.
     pub(crate) fn attach_interruptible(
         endpoint: &crate::endpoint::Endpoint,
         socket: &Path,
         hello: &EndpointClientHello,
         arm: &dyn Fn(crate::endpoint::Interrupt) -> bool,
+        cancelled: &dyn Fn() -> bool,
     ) -> io::Result<Self> {
         let (mut reader, mut writer, handle) =
-            crate::endpoint::Transport::connect(endpoint, socket)?;
+            crate::endpoint::Transport::connect(endpoint, socket, cancelled)?;
         if !arm(handle) {
             return Err(io::Error::other("endpoint was closed while connecting"));
         }

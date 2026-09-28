@@ -862,6 +862,7 @@ fn spawn_endpoint(
                 &socket,
                 &hello,
                 &|interrupt| thread_halt.arm(interrupt),
+                &|| thread_halt.stopped(),
             ) {
                 Ok(mut conn) => {
                     writer_for_loop.lock().unwrap().attach(conn.take_writer());

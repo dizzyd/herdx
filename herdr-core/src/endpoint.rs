@@ -466,9 +466,13 @@ pub(crate) enum WriteHalf {
 
 impl Transport {
     /// Opens a connection to an endpoint, split into read and write halves.
+    ///
+    /// `cancelled` is asked while anything slow happens before there is a
+    /// transport to interrupt.
     pub fn connect(
         endpoint: &Endpoint,
         socket: &std::path::Path,
+        cancelled: &dyn Fn() -> bool,
     ) -> io::Result<(ReadHalf, WriteHalf, Interrupt)> {
         match &endpoint.kind {
             EndpointKind::Local => {
@@ -477,7 +481,7 @@ impl Transport {
                 let interrupt = Interrupt::Local(stream.try_clone()?);
                 Ok((ReadHalf::Local(stream), WriteHalf::Local(writer), interrupt))
             }
-            EndpointKind::Ssh { target, session } => start_ssh(target, session),
+            EndpointKind::Ssh { target, session } => start_ssh(target, session, cancelled),
         }
     }
 }
@@ -508,7 +512,241 @@ fn shell_quoted(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-fn start_ssh(target: &str, session: &str) -> io::Result<(ReadHalf, WriteHalf, Interrupt)> {
+/// The ssh agent the user's own shell would hand to `ssh`.
+///
+/// An app opened from the Finder inherits launchd's `SSH_AUTH_SOCK`, and a
+/// shell profile can point that somewhere else — 1Password, Secretive,
+/// gpg-agent. When it does, keys available through the configured agent are
+/// not available to us, and a machine that accepts the same `ssh` from a
+/// terminal answers "Permission denied (publickey)".
+static SSH_AGENT: AgentCache = AgentCache::new(
+    ask_login_shell_for_ssh_agent,
+    std::time::Duration::from_secs(5 * 60),
+    std::time::Duration::from_secs(60),
+);
+
+/// One login shell's answer, shared by every machine.
+///
+/// A login shell is slow, so an answer is kept — but only while its socket
+/// still exists, since an agent that restarts elsewhere leaves the old path
+/// pointing at nothing, and refreshed in the background after a while for an
+/// agent that moved without the old one going away. A failure is retried
+/// rather than believed forever, but not on every reconnect.
+///
+/// The asking runs on its own thread. A connection waiting for it can be
+/// abandoned, which matters because disposal joins the connection's thread on
+/// the main thread.
+struct AgentCache {
+    lookup: fn() -> Option<std::ffi::OsString>,
+    refresh_after: std::time::Duration,
+    retry_after: std::time::Duration,
+    state: std::sync::Mutex<AgentState>,
+    answered: std::sync::Condvar,
+}
+
+struct AgentState {
+    found: Option<(std::ffi::OsString, std::time::Instant)>,
+    failed_at: Option<std::time::Instant>,
+    asking: bool,
+}
+
+impl AgentCache {
+    const fn new(
+        lookup: fn() -> Option<std::ffi::OsString>,
+        refresh_after: std::time::Duration,
+        retry_after: std::time::Duration,
+    ) -> Self {
+        Self {
+            lookup,
+            refresh_after,
+            retry_after,
+            state: std::sync::Mutex::new(AgentState {
+                found: None,
+                failed_at: None,
+                asking: false,
+            }),
+            answered: std::sync::Condvar::new(),
+        }
+    }
+
+    /// The agent to use, or None to leave `ssh` the environment we inherited.
+    fn get(&'static self, cancelled: &dyn Fn() -> bool) -> Option<std::ffi::OsString> {
+        let mut state = self.state.lock().unwrap();
+        loop {
+            let retry_due = state
+                .failed_at
+                .is_none_or(|at| at.elapsed() >= self.retry_after);
+            if let Some((agent, at)) = &state.found {
+                if Path::new(agent).exists() {
+                    let agent = agent.clone();
+                    if at.elapsed() >= self.refresh_after && retry_due && !state.asking {
+                        self.ask(&mut state);
+                    }
+                    return Some(agent);
+                }
+                state.found = None;
+            }
+            if !state.asking {
+                if !retry_due {
+                    return None;
+                }
+                self.ask(&mut state);
+            }
+            // Polled rather than woken: what cancels a connection is its own
+            // halt, which knows nothing of this condvar.
+            if cancelled() {
+                return None;
+            }
+            state = self
+                .answered
+                .wait_timeout(state, std::time::Duration::from_millis(50))
+                .unwrap()
+                .0;
+        }
+    }
+
+    fn ask(&'static self, state: &mut AgentState) {
+        state.asking = true;
+        let spawned = std::thread::Builder::new()
+            .name("herdx-ssh-agent".into())
+            .spawn(move || {
+                let found = (self.lookup)();
+                let mut state = self.state.lock().unwrap();
+                state.asking = false;
+                match found {
+                    Some(agent) => {
+                        state.found = Some((agent, std::time::Instant::now()));
+                        state.failed_at = None;
+                    }
+                    None => state.failed_at = Some(std::time::Instant::now()),
+                }
+                self.answered.notify_all();
+            });
+        if spawned.is_err() {
+            state.asking = false;
+            state.failed_at = Some(std::time::Instant::now());
+        }
+    }
+}
+
+const AGENT_MARK: &[u8] = b"__herdx_ssh_auth_sock__";
+
+fn ask_login_shell_for_ssh_agent() -> Option<std::ffi::OsString> {
+    let shell = std::env::var_os("SHELL")
+        .filter(|shell| !shell.is_empty())
+        .unwrap_or_else(|| "/bin/zsh".into());
+    let mark = std::str::from_utf8(AGENT_MARK).expect("ascii");
+    let mut command = Command::new(shell);
+    // Interactive as well as login: plenty of people set this in `.zshrc`.
+    // The markers step over whatever the profile prints on the way.
+    command
+        .arg("-l")
+        .arg("-i")
+        .arg("-c")
+        .arg(format!("printf '{mark}%s{mark}' \"$SSH_AUTH_SOCK\""));
+    framed_output(command, std::time::Duration::from_secs(5))
+}
+
+/// Runs `command` and returns what it printed between two `AGENT_MARK`s,
+/// giving up at `timeout`.
+///
+/// Read here, against the deadline, rather than on a thread of its own:
+/// something a profile starts in the background can inherit stdout and hold
+/// it open long after the shell has gone, and a blocked read cannot be
+/// abandoned — only its pipe can be closed, which returning does.
+///
+/// The shell runs in a process group of its own. On a timeout the whole group
+/// is killed, since a stalled profile is usually stalled in a child. On an
+/// answer only the shell is: anything the profile started and left running —
+/// an agent, often — is the user's, not ours to stop.
+fn framed_output(mut command: Command, timeout: std::time::Duration) -> Option<std::ffi::OsString> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::process::CommandExt;
+
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .ok()?;
+    let stdout = child.stdout.take()?;
+    let output = read_framed(stdout, std::time::Instant::now() + timeout);
+    if output.is_none() {
+        // Not yet reaped, so the id cannot have been reused.
+        unsafe { libc::killpg(child.id() as libc::pid_t, libc::SIGKILL) };
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    output
+        .filter(|agent| !agent.is_empty())
+        .map(|agent| std::ffi::OsStr::from_bytes(&agent).to_owned())
+}
+
+/// Bytes accumulated and decoded once, at the end: a chunk boundary can fall
+/// inside a character, and a socket path need not be UTF-8 at all.
+fn read_framed(
+    mut pipe: impl Read + std::os::fd::AsRawFd,
+    deadline: std::time::Instant,
+) -> Option<Vec<u8>> {
+    // Far more than any profile's greeting; a pipe that keeps talking past it
+    // is not going to say anything useful.
+    const LIMIT: usize = 64 * 1024;
+    let mut bytes = Vec::new();
+    let mut buffer = [0u8; 4096];
+    loop {
+        if let Some(value) = framed(&bytes) {
+            return Some(value.to_vec());
+        }
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() || bytes.len() > LIMIT {
+            return None;
+        }
+        let mut poll = libc::pollfd {
+            fd: pipe.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let wait = remaining.as_millis().clamp(1, i32::MAX as u128) as libc::c_int;
+        if unsafe { libc::poll(&mut poll, 1, wait) } < 0 {
+            if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return None;
+        }
+        if poll.revents == 0 {
+            continue;
+        }
+        match pipe.read(&mut buffer) {
+            Ok(0) => return None,
+            Ok(read) => bytes.extend_from_slice(&buffer[..read]),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(_) => return None,
+        }
+    }
+}
+
+/// What sits between the first two `AGENT_MARK`s.
+fn framed(bytes: &[u8]) -> Option<&[u8]> {
+    let find = |haystack: &[u8]| {
+        haystack
+            .windows(AGENT_MARK.len())
+            .position(|window| window == AGENT_MARK)
+    };
+    let start = find(bytes)? + AGENT_MARK.len();
+    let length = find(&bytes[start..])?;
+    Some(&bytes[start..start + length])
+}
+
+fn start_ssh(
+    target: &str,
+    session: &str,
+    cancelled: &dyn Fn() -> bool,
+) -> io::Result<(ReadHalf, WriteHalf, Interrupt)> {
+    let agent = SSH_AGENT.get(cancelled);
+    if cancelled() {
+        return Err(io::Error::other("endpoint was closed while connecting"));
+    }
     let mut command = Command::new("ssh");
     command
         // Fail rather than hang waiting for a password or a host-key prompt:
@@ -522,6 +760,9 @@ fn start_ssh(target: &str, session: &str) -> io::Result<(ReadHalf, WriteHalf, In
         .arg("ServerAliveInterval=30")
         .arg(target)
         .arg(remote_bridge_command(session));
+    if let Some(agent) = agent {
+        command.env("SSH_AUTH_SOCK", agent);
+    }
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -869,5 +1110,166 @@ mod tests {
 
         remove_machine_in(dir.path(), &id).unwrap();
         assert!(machines_in(dir.path()).unwrap().is_empty());
+    }
+
+    fn sh(script: &str) -> Command {
+        let mut command = Command::new("/bin/sh");
+        command.arg("-c").arg(script);
+        command
+    }
+
+    fn alive(pid: &str) -> bool {
+        let pid: libc::pid_t = pid.trim().parse().expect("pid");
+        unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    #[test]
+    fn an_agent_is_read_from_between_the_markers() {
+        let noisy = sh("printf 'welcome\\n__herdx_ssh_auth_sock__/tmp/agent.sock__herdx_ssh_auth_sock__bye'");
+        assert_eq!(
+            framed_output(noisy, std::time::Duration::from_secs(5)),
+            Some("/tmp/agent.sock".into())
+        );
+        let unset = sh("printf '__herdx_ssh_auth_sock____herdx_ssh_auth_sock__'");
+        assert_eq!(framed_output(unset, std::time::Duration::from_secs(5)), None);
+        let unframed = sh("printf '__herdx_ssh_auth_sock__/tmp/agent.sock'");
+        assert_eq!(framed_output(unframed, std::time::Duration::from_secs(5)), None);
+    }
+
+    #[test]
+    fn a_character_split_across_reads_survives() {
+        // The two bytes of é, written separately so they arrive in two reads.
+        let split = sh(
+            "printf '__herdx_ssh_auth_sock__/tmp/agent-\\303'; sleep 0.2; \
+             printf '\\251.sock__herdx_ssh_auth_sock__'",
+        );
+        assert_eq!(
+            framed_output(split, std::time::Duration::from_secs(5)),
+            Some("/tmp/agent-é.sock".into())
+        );
+    }
+
+    #[test]
+    fn a_stalled_profile_is_abandoned_with_its_children() {
+        let dir = TempDir::new("agent-stall");
+        let pidfile = dir.path().join("pid");
+        // The descendant inherits stdout, so the pipe stays open after the
+        // shell is killed; this is what used to leave a reader blocked.
+        let stalled = sh(&format!(
+            "sleep 30 & echo $! > '{}'; printf 'starting'; sleep 30",
+            pidfile.display()
+        ));
+        let started = std::time::Instant::now();
+        assert_eq!(framed_output(stalled, std::time::Duration::from_millis(300)), None);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        let pid = std::fs::read_to_string(&pidfile).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(!alive(&pid), "descendant {pid} outlived the timeout");
+    }
+
+    #[test]
+    fn what_a_profile_leaves_running_is_left_running() {
+        let dir = TempDir::new("agent-daemon");
+        let pidfile = dir.path().join("pid");
+        let answered = sh(&format!(
+            "sleep 30 </dev/null >/dev/null 2>&1 & echo $! > '{}'; \
+             printf '__herdx_ssh_auth_sock__/tmp/a__herdx_ssh_auth_sock__'",
+            pidfile.display()
+        ));
+        assert!(framed_output(answered, std::time::Duration::from_secs(5)).is_some());
+        let pid = std::fs::read_to_string(&pidfile).unwrap();
+        let survived = alive(&pid);
+        unsafe { libc::kill(pid.trim().parse().unwrap(), libc::SIGKILL) };
+        assert!(survived);
+    }
+
+    #[test]
+    fn a_profile_that_will_not_stop_talking_is_cut_off() {
+        let started = std::time::Instant::now();
+        assert_eq!(framed_output(sh("yes"), std::time::Duration::from_secs(5)), None);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    /// Each cache test gets its own static, so its own fake shell.
+    macro_rules! fake_agent_cache {
+        ($cache:ident, $answer:ident, $asked:ident, $delay:expr, $refresh:expr, $retry:expr) => {
+            static $answer: std::sync::Mutex<Option<std::ffi::OsString>> =
+                std::sync::Mutex::new(None);
+            static $asked: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            static $cache: AgentCache = AgentCache::new(
+                || {
+                    $asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    std::thread::sleep($delay);
+                    $answer.lock().unwrap().clone()
+                },
+                $refresh,
+                $retry,
+            );
+        };
+    }
+
+    #[test]
+    fn an_agent_that_went_away_is_looked_for_again() {
+        use std::time::Duration;
+        fake_agent_cache!(CACHE, ANSWER, ASKED, Duration::ZERO, Duration::from_secs(600), Duration::ZERO);
+        let dir = TempDir::new("agent-moved");
+        let old = dir.path().join("old.sock");
+        let new = dir.path().join("new.sock");
+        std::fs::write(&old, "").unwrap();
+        std::fs::write(&new, "").unwrap();
+
+        *ANSWER.lock().unwrap() = Some(old.clone().into());
+        assert_eq!(CACHE.get(&|| false), Some(old.clone().into()));
+        std::fs::remove_file(&old).unwrap();
+        *ANSWER.lock().unwrap() = Some(new.clone().into());
+        assert_eq!(CACHE.get(&|| false), Some(new.into()));
+    }
+
+    #[test]
+    fn an_old_answer_is_refreshed_without_waiting_for_it() {
+        use std::time::Duration;
+        fake_agent_cache!(CACHE, ANSWER, ASKED, Duration::ZERO, Duration::ZERO, Duration::ZERO);
+        let dir = TempDir::new("agent-refresh");
+        let old = dir.path().join("old.sock");
+        let new = dir.path().join("new.sock");
+        std::fs::write(&old, "").unwrap();
+        std::fs::write(&new, "").unwrap();
+
+        *ANSWER.lock().unwrap() = Some(old.clone().into());
+        assert_eq!(CACHE.get(&|| false), Some(old.clone().into()));
+        *ANSWER.lock().unwrap() = Some(new.clone().into());
+        // Still usable, so handed out while the refresh runs...
+        assert_eq!(CACHE.get(&|| false), Some(old.into()));
+        std::thread::sleep(Duration::from_millis(200));
+        // ...and replaced once it lands.
+        assert_eq!(CACHE.get(&|| false), Some(new.into()));
+    }
+
+    #[test]
+    fn a_failure_is_retried_but_not_at_once() {
+        use std::sync::atomic::Ordering;
+        use std::time::Duration;
+        fake_agent_cache!(CACHE, ANSWER, ASKED, Duration::ZERO, Duration::from_secs(600), Duration::from_millis(300));
+        let dir = TempDir::new("agent-retry");
+        let agent = dir.path().join("agent.sock");
+        std::fs::write(&agent, "").unwrap();
+
+        assert_eq!(CACHE.get(&|| false), None);
+        *ANSWER.lock().unwrap() = Some(agent.clone().into());
+        assert_eq!(CACHE.get(&|| false), None, "retried inside the cooldown");
+        assert_eq!(ASKED.load(Ordering::SeqCst), 1);
+        std::thread::sleep(Duration::from_millis(350));
+        assert_eq!(CACHE.get(&|| false), Some(agent.into()));
+        assert_eq!(ASKED.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_connection_can_stop_waiting_for_a_slow_shell() {
+        use std::time::Duration;
+        fake_agent_cache!(CACHE, ANSWER, ASKED, Duration::from_secs(3), Duration::from_secs(600), Duration::ZERO);
+        let started = std::time::Instant::now();
+        let cancel_at = started + Duration::from_millis(100);
+        assert_eq!(CACHE.get(&|| std::time::Instant::now() >= cancel_at), None);
+        assert!(started.elapsed() < Duration::from_millis(500));
     }
 }
