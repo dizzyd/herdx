@@ -2472,9 +2472,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     private func offer(_ release: Updates.Release, running: String) {
         let alert = NSAlert()
         alert.messageText = "HerdX \(release.version.hasPrefix("v") ? String(release.version.dropFirst()) : release.version) is available"
-        alert.informativeText =
-            "You are running \(running). Downloading it replaces the app; the herdr "
-            + "sessions it is showing are on the server and are not affected."
+        alert.informativeText = "You are running \(running)."
         alert.addButton(withTitle: "Download")
         alert.addButton(withTitle: "Later")
         // A sheet, not a dialog in the middle of the screen: it belongs to this
