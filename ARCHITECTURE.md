@@ -186,23 +186,23 @@ the one call that requires it, so it retries once against a fresher revision.
 
 Light mode is not the dark palette inverted — the same hues at dark-mode
 luminance are unreadable on white — so the two palettes are tuned separately.
-The terminal's palette is a setting of its own, separate from the window's
-appearance, and it is what gets published to the server as the host background.
+There is a theme for each appearance, built-in unless one is chosen: Light or
+Dark uses its own, and Follow System switches between the two. The one in use
+is what gets published to the server as the host background, and the window's
+chrome is built from it.
 
-That separation exists because herdr is multi-client. The server keeps a host
-theme per client and applies whichever client is *foreground*, chosen by a
-monotonic activity stamp. With this app and a herdr TUI attached to the same
-session, whichever of them you typed in last decides what colour the terminal
-is — so if they disagree, a pane whose program follows the background re-themes
-every time focus moves between them, and switches back as soon as you type.
+herdr is multi-client. The server keeps a host theme per client and applies
+whichever client is *foreground*, chosen by a monotonic activity stamp. With
+this app and a herdr TUI attached to the same session, whichever of them you
+typed in last decides what colour the terminal is — so if they disagree, a pane
+whose program follows the background re-themes every time focus moves between
+them, and switches back as soon as you type.
 
 Not publishing does not avoid this: the server then applies herdr's default for
-this client, which disagrees just as readily. The two clients have to agree, and
-herdr compares actual RGB — "dark" is not close enough to match another
-terminal's particular background, only the same colour is. So **Colours** takes
-an exact background and text colour, and the macOS colour panel's eyedropper
-will sample them straight off the other terminal's window. **Use Preset** goes
-back to following the Terminal setting.
+this client, which disagrees just as readily. herdr compares actual RGB, so the
+two clients have to hold the same theme, not merely both be dark. An earlier
+version took an exact background and text colour in Settings for this; it was
+removed as more machinery than the problem is worth.
 
 Both clients show the flip, not just this one: they render the same
 server-composed surface, so the host theme applies to whatever either of them is

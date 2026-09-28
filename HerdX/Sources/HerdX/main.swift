@@ -38,16 +38,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     /// The colour the panes are actually painted in, when it differs from the
     /// configured background.
     private var observedBackground: NSColor?
-    /// The colours another client attached to this session is using.
+    /// The theme under the highlight in the theme list, shown whatever the
+    /// appearance.
     ///
-    /// herdr keeps one host theme for the whole session and applies whichever
-    /// client was last active — so with a second client attached, the terminal
-    /// changes colour every time you switch apps. Nothing HerdX publishes can
-    /// stop that; the only way out is for both clients to hold the same theme.
-    ///
-    /// When the other client is the one herdr is taking its theme from, its
-    /// colours arrive baked into the cells, which is what this remembers.
-    private(set) var attachedTerminal: (background: NSColor, foreground: NSColor)?
+    /// Choosing the dark theme while the system is light would otherwise
+    /// preview nothing: the slot being changed is not the one on screen.
+    private var previewTheme: Theme?
     /// Identifies the newest transient notice, so an older one's timer does not
     /// clear it.
     private var noticeToken = 0
@@ -523,7 +519,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         // the chrome derived from it, so that the window reads as one surface
         // rather than two. The Mac light/dark appearance follows that chrome
         // and is set in applyChrome, where the chrome is known.
-        terminalTheme = preferences.terminalTheme(matching: systemIsDark)
+        terminalTheme = previewTheme ?? preferences.terminalTheme(matching: systemIsDark)
 
         gridView.theme = terminalTheme
         gridView.apply(
@@ -566,8 +562,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     /// picks the foreground client by activity. So with another client attached
     /// to the same session, whichever of you typed last decides what colour the
     /// terminal is, and a pane whose program follows the background re-themes
-    /// every time that changes. Publishing is what lets the two agree; the
-    /// Terminal setting is what makes them agree on the same thing.
+    /// every time that changes. Publishing is what lets the two agree; giving both
+    /// the same theme is what makes them agree on the same thing.
     ///
     /// Sent only when the colours actually differ from what the server was last
     /// told, since republishing an unchanged theme still reads as a change to
@@ -589,19 +585,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
 
     @objc private func showPreferences(_ sender: Any?) {
         if preferencesWindow == nil {
-            preferencesWindow = PreferencesWindowController { [weak self] updated in
-                MainActor.assumeIsolated {
-                    guard let self else { return }
-                    self.preferences = updated
-                    self.agentSounds.isEnabled = updated.agentSounds
-                    self.gridView.apply(
-                        font: updated.font, lineHeight: updated.lineHeight)
-                    self.applyTheme()
-                }
-            }
+            preferencesWindow = PreferencesWindowController(
+                onChange: { [weak self] updated in
+                    MainActor.assumeIsolated {
+                        guard let self else { return }
+                        self.preferences = updated
+                        self.agentSounds.isEnabled = updated.agentSounds
+                        self.gridView.apply(
+                            font: updated.font, lineHeight: updated.lineHeight)
+                        self.applyTheme()
+                    }
+                },
+                onChooseTheme: { [weak self] slot in
+                    MainActor.assumeIsolated { self?.showThemes(for: slot) }
+                })
         }
-        // Told each time it opens: what is attached can change while it is shut.
-        preferencesWindow?.attachedTerminal = attachedTerminal
         preferencesWindow?.refresh()
         preferencesWindow?.showWindow(nil)
         preferencesWindow?.window?.makeKeyAndOrderFront(nil)
@@ -1068,7 +1066,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
             themedEndpoints = online
         }
 
-        noteAttachedTerminal()
         watchMachines()
         offerInstallIfNeeded(session)
         sidebar.update(
@@ -1748,87 +1745,131 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         if let session { sidebar.update(endpoints: session.endpoints, active: session.activeEndpoint) }
     }
 
-    /// Picks a theme, showing each one as the highlight passes over it.
+    /// The theme list, for whichever theme is on screen now.
+    @objc private func showThemes(_ sender: Any?) {
+        showThemes(for: preferences.slot(matching: systemIsDark))
+    }
+
+    /// Picks a theme for one slot, showing each one as the highlight passes
+    /// over it.
     ///
     /// Applied on the way past rather than only on Return: a palette is a thing
     /// you judge by looking at it, and a list of names tells you nothing about
     /// which one you want.
-    @objc private func showThemes(_ sender: Any?) {
-        let installed = ThemeLibrary.installed()
-        guard !installed.isEmpty else {
-            offerToFetchThemes()
-            return
-        }
-        // Everything applying a theme writes, so cancelling can put back
-        // everything it changed rather than the two fields anyone thought of.
-        let before = preferences.themeSelection
-
+    private func showThemes(for slot: Preferences.Slot) {
         // Read up front so each row can say what it is. "kitty theme" on four
         // hundred rows says nothing, while light or dark is most of what
         // anyone is filtering for.
-        let described = installed.map { entry -> Picker.Item in
-            let theme = ThemeLibrary.theme(at: entry.url)
-            let detail =
-                theme.map { theme in
-                    (theme.background.isDarkish ? "dark" : "light") + "  ·  "
-                        + (Preferences.encode(theme.background) ?? "")
-                } ?? "unreadable"
-            return Picker.Item(title: entry.name, detail: detail) { [weak self] in
-                guard let self, let theme else { return }
-                // Applied here as well as on highlight: what is on screen is a
-                // preview, and a preview is not what was chosen.
-                self.apply(theme: theme, named: entry.name)
-            }
+        func describe(_ theme: Theme) -> String {
+            (theme.background.isDarkish ? "dark" : "light") + "  ·  "
+                + (Preferences.encode(theme.background) ?? "")
+        }
+        func row(
+            _ title: String, _ theme: Theme, choice: Preferences.ThemeChoice?
+        ) -> Picker.Item {
+            Picker.Item(
+                title: title, detail: describe(theme),
+                choose: { [weak self] in self?.commitTheme(choice, for: slot) },
+                highlight: { [weak self] in self?.showPreview(of: theme) })
         }
 
+        var items = [row("Built-in", Preferences.theme(nil, for: slot), choice: nil)]
+        let installed = ThemeLibrary.installed()
+        // A file that does not read is left out rather than listed: there is
+        // nothing to preview, and choosing it could not do anything.
+        for entry in installed {
+            guard let theme = ThemeLibrary.theme(at: entry.url) else { continue }
+            items.append(
+                row(
+                    entry.name, theme,
+                    choice: Preferences.ThemeChoice(
+                        name: entry.name, colors: theme.hexComponents)))
+        }
+        // In the list rather than in front of it: going back to the built-in
+        // palette or loading a file of your own should not wait on a download.
+        if installed.isEmpty {
+            items.append(
+                Picker.Item(title: "Download Themes…", detail: "kitty's collection") {
+                    [weak self] in
+                    self?.endThemePreview()
+                    self?.offerToFetchThemes(for: slot)
+                })
+        }
+        // Last rather than a button beside the list: it is one more way of
+        // arriving at a theme, and here is where themes are chosen.
+        items.append(
+            Picker.Item(title: "Load from File…", detail: "a kitty .conf") { [weak self] in
+                self?.loadTheme(for: slot)
+            })
+
         themePicker.show(
-            over: window, title: "Themes",
-            items: described,
+            over: window,
+            title: preferences.appearance == .system ? "\(slot.title) Theme" : "Theme",
+            items: items,
             // Floating rather than a sheet: the window behind a sheet is
             // blurred, and a blurred terminal is the one thing that cannot
             // show what a palette does.
             as: .floating,
-            onHighlight: { [weak self] item in
-                guard let self,
-                    let entry = installed.first(where: { $0.name == item.title }),
-                    let theme = ThemeLibrary.theme(at: entry.url)
-                else { return }
-                self.apply(theme: theme, named: entry.name)
-            },
-            onCancel: { [weak self] in
-                guard let self else { return }
-                self.preferences.themeSelection = before
-                self.commitTheme()
-            })
+            onCancel: { [weak self] in self?.endThemePreview() })
     }
 
-    /// Puts a theme on screen and into settings.
-    ///
-    /// Highlighting a row does this as much as choosing one does — a palette
-    /// can only be judged on the terminal it is colouring. What separates the
-    /// two is that closing the list without choosing puts back what `before`
-    /// held.
-    private func apply(theme: Theme, named name: String) {
-        preferences.themeSelection = Preferences.ThemeSelection(
-            name: name,
-            colors: theme.hexComponents,
-            // A loaded palette and the two overrides cannot both win, and the
-            // overrides would repaint two of the twenty colours being looked at.
-            background: nil,
-            foreground: nil)
-        commitTheme()
+    private func showPreview(of theme: Theme) {
+        previewTheme = theme
+        applyTheme()
     }
 
-    private func commitTheme() {
+    /// Back to what is configured. Nothing was written while previewing, so
+    /// there is nothing to put back.
+    private func endThemePreview() {
+        guard previewTheme != nil else { return }
+        previewTheme = nil
+        applyTheme()
+    }
+
+    /// Settles a slot, ending any preview.
+    private func commitTheme(_ choice: Preferences.ThemeChoice?, for slot: Preferences.Slot) {
+        previewTheme = nil
+        preferences[theme: slot] = choice
         Preferences.current = preferences
         applyTheme()
-        // Settings may be open beside the picker, and it reads the theme's name
-        // and colours out of the same settings.
+        // Settings may be open beside the picker, and it shows the theme names.
         preferencesWindow?.refresh()
     }
 
+    /// Loads a kitty theme file.
+    ///
+    /// For a theme that is not in the collection: kitty's themes are published
+    /// as files, and reading one is a great deal less work for everybody than
+    /// picking twenty colours out of a panel.
+    private func loadTheme(for slot: Preferences.Slot) {
+        // A file panel is no place to judge a palette from.
+        endThemePreview()
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.init(filenameExtension: "conf") ?? .plainText, .plainText]
+        panel.allowsOtherFileTypes = true
+        panel.message = "Choose a kitty theme (.conf)"
+        guard panel.runModal() == .OK, let url = panel.url,
+            let text = try? String(contentsOf: url, encoding: .utf8)
+        else { return }
+
+        guard let theme = Theme(kittyConfiguration: text) else {
+            let alert = NSAlert()
+            alert.messageText = "That file is not a colour theme"
+            alert.informativeText =
+                "A kitty theme sets background, foreground and color0 through "
+                + "color15. This one does not."
+            alert.runModal()
+            return
+        }
+        commitTheme(
+            Preferences.ThemeChoice(
+                name: url.deletingPathExtension().lastPathComponent,
+                colors: theme.hexComponents),
+            for: slot)
+    }
+
     /// Offers to fetch the collection, saying where it comes from.
-    private func offerToFetchThemes() {
+    private func offerToFetchThemes(for slot: Preferences.Slot) {
         let alert = NSAlert()
         alert.messageText = "Get colour themes?"
         alert.informativeText =
@@ -1846,7 +1887,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
                 switch result {
                 case .success(let count):
                     self.notice("\(count) themes ready")
-                    self.showThemes(nil)
+                    self.showThemes(for: slot)
                 case .failure(let error):
                     let failed = NSAlert()
                     failed.messageText = "The themes could not be downloaded"
@@ -1863,24 +1904,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
 
     @objc private func showInstallHerdr(_ sender: Any?) {
         LocalHerdr.offerInstall(over: window)
-    }
-
-    /// Remembers the colours when they are not the ones we asked for.
-    ///
-    /// A surface painted in colours we did not publish was composed against
-    /// another client's host theme, so those are its colours.
-    private func noteAttachedTerminal() {
-        // Every pane, not the dominant one: a host theme colours the whole
-        // session at once, while a program with its own palette colours only
-        // the pane it runs in.
-        guard let background = gridView.uniformBackground,
-            let foreground = gridView.dominantForeground
-        else { return }
-        let ours = Chrome(theme: terminalTheme, background: nil)
-        guard background.isNoticeablyDifferent(from: ours.content) else {
-            return
-        }
-        attachedTerminal = (background, foreground)
     }
 
     /// Picks up machines added or removed outside this window.

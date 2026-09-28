@@ -11,6 +11,10 @@ final class Picker: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         let title: String
         let detail: String
         let choose: () -> Void
+        /// What passing over this row shows, for a list whose entries are
+        /// worth seeing before they are chosen. Carried by the row, so nothing
+        /// has to work out from its title which row it was.
+        var highlight: (() -> Void)? = nil
     }
 
     /// How the list is put on screen.
@@ -245,6 +249,7 @@ final class Picker: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         }
         guard table.selectedRow != highlighted else { return }
         highlighted = table.selectedRow
+        shown[table.selectedRow].highlight?()
         onHighlight?(shown[table.selectedRow])
     }
 

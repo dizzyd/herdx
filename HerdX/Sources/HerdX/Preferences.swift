@@ -17,27 +17,41 @@ struct Preferences {
         }
     }
 
+    /// Where a theme is kept: one for light, one for dark.
+    ///
+    /// Storage, not what is on screen: Settings can change the dark theme
+    /// while the light one is showing.
+    enum Slot: Equatable {
+        case light, dark
+
+        var title: String {
+            switch self {
+            case .light: return "Light"
+            case .dark: return "Dark"
+            }
+        }
+    }
+
+    /// A palette chosen by name.
+    ///
+    /// A whole palette rather than two default colours: a kitty theme is
+    /// twenty colours, and keeping only two of them would throw away the part
+    /// that makes one theme look different from another.
+    struct ThemeChoice: Equatable {
+        var name: String
+        var colors: [String]
+    }
+
     var fontName: String
     var fontSize: CGFloat
     var appearance: Appearance
-    /// The palette the terminal draws with, and the one published to the
-    /// server as the host background.
+    /// The theme for each appearance, or nil for the built-in one.
     ///
-    /// Separate from the window's appearance because herdr applies the
-    /// *foreground* client's host theme to every pane. With another client
-    /// attached — a herdr TUI in a terminal — the two must agree or the pane
-    /// re-themes every time focus moves between them. Following the window is
-    /// right when this is the only client; matching the other terminal is right
-    /// when it is not.
-    var terminalAppearance: Appearance
-    /// Exact terminal colours, when the built-in palettes are not what the
-    /// session uses.
-    ///
-    /// herdr compares actual RGB when deciding whether a client's host theme
-    /// changed, so "dark" is not close enough to match another terminal's
-    /// particular background — it has to be the same colour.
-    var background: NSColor?
-    var foreground: NSColor?
+    /// Two rather than one so that following the system means something for
+    /// the terminal and not only for the window. Pinned to Light or Dark, only
+    /// that one is used; the other is kept for when it is not pinned.
+    var lightTheme: ThemeChoice?
+    var darkTheme: ThemeChoice?
     /// Space between a pane's border and its text, in points.
     var panePadding: CGFloat
     /// Size of the label on a pane's frame, in points.
@@ -64,39 +78,23 @@ struct Preferences {
     /// relaunched into. Everything not in here attaches the saved machines,
     /// which is what a machine in herdr's catalog is for.
     var localOnlySessions: [String]
-    /// A loaded palette and what to call it, when one has been loaded.
-    ///
-    /// A whole palette rather than the two default colours: a kitty theme is
-    /// twenty colours, and keeping only two of them would throw away the part
-    /// that makes one theme look different from another.
-    var themeName: String?
-    var themeColors: [String]?
 
-    /// Everything choosing a theme writes.
-    ///
-    /// Gathered into one value because these four have to move together.
-    /// Applying a theme sets a palette *and* clears the two colour overrides,
-    /// and putting that back used to restore only the palette — so opening the
-    /// theme list and pressing Escape lost colours set through the wells or
-    /// through "Match Attached".
-    struct ThemeSelection: Equatable {
-        var name: String?
-        var colors: [String]?
-        var background: NSColor?
-        var foreground: NSColor?
+    subscript(theme slot: Slot) -> ThemeChoice? {
+        get { slot == .light ? lightTheme : darkTheme }
+        set {
+            switch slot {
+            case .light: lightTheme = newValue
+            case .dark: darkTheme = newValue
+            }
+        }
     }
 
-    var themeSelection: ThemeSelection {
-        get {
-            ThemeSelection(
-                name: themeName, colors: themeColors,
-                background: background, foreground: foreground)
-        }
-        set {
-            themeName = newValue.name
-            themeColors = newValue.colors
-            background = newValue.background
-            foreground = newValue.foreground
+    /// The slot in use: the pinned one, or the system's.
+    func slot(matching systemIsDark: Bool) -> Slot {
+        switch appearance {
+        case .system: return systemIsDark ? .dark : .light
+        case .dark: return .dark
+        case .light: return .light
         }
     }
 
@@ -104,9 +102,10 @@ struct Preferences {
         static let fontName = "fontName"
         static let fontSize = "fontSize"
         static let appearance = "appearance"
-        static let terminalAppearance = "terminalAppearance"
-        static let background = "terminalBackground"
-        static let foreground = "terminalForeground"
+        static let lightThemeName = "lightThemeName"
+        static let lightThemeColors = "lightThemeColors"
+        static let darkThemeName = "darkThemeName"
+        static let darkThemeColors = "darkThemeColors"
         static let panePadding = "panePadding"
         static let paneLabelSize = "paneLabelSize"
         static let lineHeight = "lineHeight"
@@ -115,21 +114,19 @@ struct Preferences {
         static let sessionName = "sessionName"
         static let localOnlySessions = "localOnlySessions"
         static let agentSounds = "agentSounds"
-        static let themeName = "themeName"
-        static let themeColors = "themeColors"
-    }
-
-    /// Colours round-trip through `#rrggbb`, so they stay readable in defaults
-    /// and survive a colour-space change.
-    private static func decode(_ hex: String?) -> NSColor? {
-        guard let hex, hex.count == 7, hex.hasPrefix("#"),
-            let value = Int(hex.dropFirst(), radix: 16)
-        else { return nil }
-        return NSColor(
-            srgbRed: CGFloat((value >> 16) & 0xFF) / 255,
-            green: CGFloat((value >> 8) & 0xFF) / 255,
-            blue: CGFloat(value & 0xFF) / 255,
-            alpha: 1)
+        /// Before there was a theme per appearance: one loaded palette, used
+        /// whatever the appearance, with a separate terminal appearance and two
+        /// colour overrides beside it. Read once, to carry what they put on
+        /// screen over, and removed on the next save.
+        static let legacyThemeName = "themeName"
+        static let legacyThemeColors = "themeColors"
+        static let legacyTerminalAppearance = "terminalAppearance"
+        static let legacyBackground = "terminalBackground"
+        static let legacyForeground = "terminalForeground"
+        static let legacy = [
+            legacyThemeName, legacyThemeColors, legacyTerminalAppearance,
+            legacyBackground, legacyForeground,
+        ]
     }
 
     static func encode(_ color: NSColor?) -> String? {
@@ -142,46 +139,117 @@ struct Preferences {
     }
 
     static var current: Preferences {
-        get {
-            let defaults = UserDefaults.standard
-            return Preferences(
-                fontName: defaults.string(forKey: Key.fontName) ?? "",
-                fontSize: defaults.object(forKey: Key.fontSize) as? CGFloat ?? 13,
-                appearance: defaults.string(forKey: Key.appearance)
-                    .flatMap(Appearance.init(rawValue:)) ?? .system,
-                terminalAppearance: defaults.string(forKey: Key.terminalAppearance)
-                    .flatMap(Appearance.init(rawValue:)) ?? .system,
-                background: decode(defaults.string(forKey: Key.background)),
-                foreground: decode(defaults.string(forKey: Key.foreground)),
-                panePadding: defaults.object(forKey: Key.panePadding) as? CGFloat ?? 6,
-                paneLabelSize: defaults.object(forKey: Key.paneLabelSize) as? CGFloat ?? 11,
-                lineHeight: defaults.object(forKey: Key.lineHeight) as? CGFloat ?? 1,
-                sidebarArrangement: defaults.string(forKey: Key.sidebarArrangement),
-                sessionName: defaults.string(forKey: Key.sessionName),
-                hibernateAfterHours: defaults.object(forKey: Key.hibernateAfterHours) as? Int,
-                agentSounds: defaults.object(forKey: Key.agentSounds) as? Bool ?? true,
-                localOnlySessions: defaults.stringArray(forKey: Key.localOnlySessions) ?? [],
-                themeName: defaults.string(forKey: Key.themeName),
-                themeColors: defaults.stringArray(forKey: Key.themeColors))
+        get { load(from: .standard) }
+        set { newValue.save(to: .standard) }
+    }
+
+    static func load(from defaults: UserDefaults) -> Preferences {
+        func choice(_ name: String, _ colors: String) -> ThemeChoice? {
+            guard let name = defaults.string(forKey: name),
+                let colors = defaults.stringArray(forKey: colors)
+            else { return nil }
+            return ThemeChoice(name: name, colors: colors)
         }
-        set {
-            let defaults = UserDefaults.standard
-            defaults.set(newValue.fontName, forKey: Key.fontName)
-            defaults.set(newValue.fontSize, forKey: Key.fontSize)
-            defaults.set(newValue.appearance.rawValue, forKey: Key.appearance)
-            defaults.set(newValue.terminalAppearance.rawValue, forKey: Key.terminalAppearance)
-            defaults.set(encode(newValue.background), forKey: Key.background)
-            defaults.set(encode(newValue.foreground), forKey: Key.foreground)
-            defaults.set(newValue.panePadding, forKey: Key.panePadding)
-            defaults.set(newValue.paneLabelSize, forKey: Key.paneLabelSize)
-            defaults.set(newValue.lineHeight, forKey: Key.lineHeight)
-            defaults.set(newValue.sidebarArrangement, forKey: Key.sidebarArrangement)
-            defaults.set(newValue.sessionName, forKey: Key.sessionName)
-            defaults.set(newValue.hibernateAfterHours, forKey: Key.hibernateAfterHours)
-            defaults.set(newValue.agentSounds, forKey: Key.agentSounds)
-            defaults.set(newValue.localOnlySessions, forKey: Key.localOnlySessions)
-            defaults.set(newValue.themeName, forKey: Key.themeName)
-            defaults.set(newValue.themeColors, forKey: Key.themeColors)
+        let appearance =
+            defaults.string(forKey: Key.appearance).flatMap(Appearance.init(rawValue:))
+            ?? .system
+        var lightTheme = choice(Key.lightThemeName, Key.lightThemeColors)
+        var darkTheme = choice(Key.darkThemeName, Key.darkThemeColors)
+        // Upgrading should not change what is on screen, so each slot starts
+        // as whatever the old settings drew in that appearance.
+        if lightTheme == nil, darkTheme == nil,
+            Key.legacy.contains(where: { defaults.object(forKey: $0) != nil })
+        {
+            lightTheme = legacyTheme(from: defaults, appearance: appearance, for: .light)
+            darkTheme = legacyTheme(from: defaults, appearance: appearance, for: .dark)
+        }
+        return Preferences(
+            fontName: defaults.string(forKey: Key.fontName) ?? "",
+            fontSize: defaults.object(forKey: Key.fontSize) as? CGFloat ?? 13,
+            appearance: appearance,
+            lightTheme: lightTheme,
+            darkTheme: darkTheme,
+            panePadding: defaults.object(forKey: Key.panePadding) as? CGFloat ?? 6,
+            paneLabelSize: defaults.object(forKey: Key.paneLabelSize) as? CGFloat ?? 11,
+            lineHeight: defaults.object(forKey: Key.lineHeight) as? CGFloat ?? 1,
+            sidebarArrangement: defaults.string(forKey: Key.sidebarArrangement),
+            sessionName: defaults.string(forKey: Key.sessionName),
+            hibernateAfterHours: defaults.object(forKey: Key.hibernateAfterHours) as? Int,
+            agentSounds: defaults.object(forKey: Key.agentSounds) as? Bool ?? true,
+            localOnlySessions: defaults.stringArray(forKey: Key.localOnlySessions) ?? [])
+    }
+
+    /// What the settings from before there were two themes drew for one slot,
+    /// or nil when that was the built-in palette.
+    ///
+    /// The old rules, kept only here: a loaded palette won whatever the
+    /// appearance; without one, the terminal followed its own appearance
+    /// setting, or the window's; and a background or text colour overrode
+    /// either.
+    private static func legacyTheme(
+        from defaults: UserDefaults, appearance: Appearance, for slot: Slot
+    ) -> ThemeChoice? {
+        let background = defaults.string(forKey: Key.legacyBackground).flatMap(Theme.hex)
+        let foreground = defaults.string(forKey: Key.legacyForeground).flatMap(Theme.hex)
+        let name = defaults.string(forKey: Key.legacyThemeName)
+        var theme: Theme
+        if let colors = defaults.stringArray(forKey: Key.legacyThemeColors),
+            let loaded = Theme(hexComponents: colors)
+        {
+            theme = loaded
+            if let background { theme.background = background }
+            if let foreground { theme.foreground = foreground }
+        } else {
+            // Worked out as if following the system when the window is pinned
+            // to the other appearance: that slot was never on screen, and is
+            // what following the system will show later.
+            let pinnedToTheOther =
+                (appearance == .dark && slot == .light) || (appearance == .light && slot == .dark)
+            let window = pinnedToTheOther ? .system : appearance
+            let terminal =
+                defaults.string(forKey: Key.legacyTerminalAppearance)
+                .flatMap(Appearance.init(rawValue:)) ?? .system
+            let drawn = terminal == .system ? window : terminal
+            let dark = drawn == .system ? slot == .dark : drawn == .dark
+            theme = dark ? .dark : .light
+            if let background {
+                theme.background = background
+                theme.cursor = foreground ?? theme.cursor
+            }
+            if let foreground {
+                theme.foreground = foreground
+                theme.cursor = foreground
+            }
+        }
+        guard theme.hexComponents != Self.theme(nil, for: slot).hexComponents else {
+            return nil
+        }
+        let adjusted = background != nil || foreground != nil
+        return ThemeChoice(
+            name: name.map { adjusted ? "\($0) (adjusted)" : $0 } ?? "Custom",
+            colors: theme.hexComponents)
+    }
+
+    func save(to defaults: UserDefaults) {
+        defaults.set(fontName, forKey: Key.fontName)
+        defaults.set(fontSize, forKey: Key.fontSize)
+        defaults.set(appearance.rawValue, forKey: Key.appearance)
+        defaults.set(lightTheme?.name, forKey: Key.lightThemeName)
+        defaults.set(lightTheme?.colors, forKey: Key.lightThemeColors)
+        defaults.set(darkTheme?.name, forKey: Key.darkThemeName)
+        defaults.set(darkTheme?.colors, forKey: Key.darkThemeColors)
+        defaults.set(panePadding, forKey: Key.panePadding)
+        defaults.set(paneLabelSize, forKey: Key.paneLabelSize)
+        defaults.set(lineHeight, forKey: Key.lineHeight)
+        defaults.set(sidebarArrangement, forKey: Key.sidebarArrangement)
+        defaults.set(sessionName, forKey: Key.sessionName)
+        defaults.set(hibernateAfterHours, forKey: Key.hibernateAfterHours)
+        defaults.set(agentSounds, forKey: Key.agentSounds)
+        defaults.set(localOnlySessions, forKey: Key.localOnlySessions)
+        // Carried over by `load` already, so what they held is in the two
+        // slots now; left behind, a cleared slot would bring them back.
+        for key in Key.legacy {
+            defaults.removeObject(forKey: key)
         }
     }
 
@@ -198,45 +266,16 @@ struct Preferences {
         return NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
     }
 
-    func theme(matching systemIsDark: Bool) -> Theme {
-        resolve(appearance, systemIsDark: systemIsDark)
-    }
-
-    /// The palette panes are drawn with, which follows the window unless
-    /// pinned.
+    /// The palette panes are drawn with.
     func terminalTheme(matching systemIsDark: Bool) -> Theme {
-        // A loaded theme is a deliberate choice of twenty colours, so it is not
-        // something the system's light/dark should override.
-        if let themeColors, var loaded = Theme(hexComponents: themeColors) {
-            if let background { loaded.background = background }
-            if let foreground { loaded.foreground = foreground }
-            return loaded
-        }
-        var theme: Theme
-        switch terminalAppearance {
-        case .system: theme = self.theme(matching: systemIsDark)
-        default: theme = resolve(terminalAppearance, systemIsDark: systemIsDark)
-        }
-        // The palette still comes from the chosen appearance; only the default
-        // colours are overridden, which is what a terminal's "background" and
-        // "text" settings mean.
-        if let background {
-            theme.background = background
-            theme.cursor = foreground ?? theme.cursor
-        }
-        if let foreground {
-            theme.foreground = foreground
-            theme.cursor = foreground
-        }
-        return theme
+        let slot = slot(matching: systemIsDark)
+        return Self.theme(self[theme: slot], for: slot)
     }
 
-    private func resolve(_ appearance: Appearance, systemIsDark: Bool) -> Theme {
-        switch appearance {
-        case .system: return systemIsDark ? .dark : .light
-        case .dark: return .dark
-        case .light: return .light
-        }
+    /// A choice's palette, or the built-in one for that slot when there is no
+    /// choice or it no longer reads.
+    static func theme(_ choice: ThemeChoice?, for slot: Slot) -> Theme {
+        choice.flatMap { Theme(hexComponents: $0.colors) } ?? (slot == .dark ? .dark : .light)
     }
 
     /// Fixed-pitch font families, for the preferences picker.

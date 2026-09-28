@@ -132,6 +132,22 @@ final class PickerTests: XCTestCase {
         dismiss(picker)
     }
 
+    func testARowsOwnHighlightRunsWhenItIsHighlighted() {
+        let picker = Picker()
+        var shown: [String] = []
+        let rows = ["a", "b"].map { title in
+            Picker.Item(
+                title: title, detail: "", choose: {},
+                highlight: { shown.append(title) })
+        }
+
+        picker.show(over: parent, title: "Themes", items: rows, as: .floating)
+        picker.list.selectRowIndexes([1], byExtendingSelection: false)
+
+        XCTAssertEqual(shown, ["a", "b"], "a row's preview did not come from that row")
+        dismiss(picker)
+    }
+
     func testChoosingARunsThatRowsOwnAction() {
         let picker = Picker()
         var chosen: [String] = []

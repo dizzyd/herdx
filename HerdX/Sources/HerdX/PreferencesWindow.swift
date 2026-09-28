@@ -8,28 +8,26 @@ import AppKit
 @MainActor
 final class PreferencesWindowController: NSWindowController {
     private let onChange: (Preferences) -> Void
+    /// Opens the theme list for one slot. The app's, since the list previews
+    /// on the terminal window and not on this one.
+    private let onChooseTheme: (Preferences.Slot) -> Void
 
     private let fontLabel = NSTextField(labelWithString: "")
     private let fontNote = NSTextField(labelWithString: "")
     private let appearancePopUp = NSPopUpButton()
-    private let terminalPopUp = NSPopUpButton()
+    private let lightThemeLabel = NSTextField(labelWithString: "")
+    private let lightThemeName = NSTextField(labelWithString: "")
+    private let darkThemeLabel = NSTextField(labelWithString: "")
+    private let darkThemeName = NSTextField(labelWithString: "")
     private let paddingField = NSTextField()
     private let paddingStepper = NSStepper()
     private let labelField = NSTextField()
     private let labelStepper = NSStepper()
     private let lineField = NSTextField()
     private let lineStepper = NSStepper()
-    private let themeLabel = NSTextField(labelWithString: "")
     private let soundsCheck = NSButton()
     private let hibernatePopUp = NSPopUpButton()
     private let hibernateNote = NSTextField(labelWithString: "")
-    private let matchButton = NSButton()
-    private let matchNote = NSTextField(labelWithString: "")
-    /// Colours another client attached to the same session is using, when there
-    /// is one. Supplied by the app, which is what watches the surface.
-    var attachedTerminal: (background: NSColor, foreground: NSColor)?
-    private let backgroundWell = NSColorWell()
-    private let foregroundWell = NSColorWell()
 
     /// Read and written straight through, rather than kept as a copy.
     ///
@@ -44,9 +42,16 @@ final class PreferencesWindowController: NSWindowController {
     }
     /// Hidden unless there is something to say, so it leaves no gap.
     private var noteRow: NSGridRow?
+    /// One of these is hidden when the appearance is pinned.
+    private var lightThemeRow: NSGridRow?
+    private var darkThemeRow: NSGridRow?
 
-    init(onChange: @escaping (Preferences) -> Void) {
+    init(
+        onChange: @escaping (Preferences) -> Void,
+        onChooseTheme: @escaping (Preferences.Slot) -> Void
+    ) {
         self.onChange = onChange
+        self.onChooseTheme = onChooseTheme
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 470, height: 356),
@@ -62,12 +67,20 @@ final class PreferencesWindowController: NSWindowController {
         let content = buildContent()
         window.contentView = content
         refresh()
-        // Sized to what it holds rather than to a number kept in step by hand:
-        // every row added so far has needed that number changing, and the last
-        // one was noticed only because a control fell off the bottom.
-        content.layoutSubtreeIfNeeded()
-        window.setContentSize(content.fittingSize)
         window.center()
+    }
+
+    /// Sized to what it holds rather than to a number kept in step by hand:
+    /// every row added so far has needed that number changing, and the last one
+    /// was noticed only because a control fell off the bottom. Again whenever
+    /// a row is shown or hidden, keeping the top edge where it was, which is
+    /// where the eye is.
+    private func fitToContent() {
+        guard let window, let content = window.contentView else { return }
+        content.layoutSubtreeIfNeeded()
+        let top = window.frame.maxY
+        window.setContentSize(content.fittingSize)
+        window.setFrameTopLeftPoint(NSPoint(x: window.frame.minX, y: top))
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -79,11 +92,11 @@ final class PreferencesWindowController: NSWindowController {
         change.bezelStyle = .rounded
 
         fontLabel.font = .systemFont(ofSize: 12)
-        fontNote.font = .systemFont(ofSize: 10)
-        fontNote.textColor = .secondaryLabelColor
+        note(fontNote)
 
         let font = NSStackView(views: [fontLabel, change])
         font.orientation = .horizontal
+        font.alignment = .firstBaseline
         font.spacing = 8
 
         for option in Preferences.Appearance.allCases {
@@ -92,19 +105,6 @@ final class PreferencesWindowController: NSWindowController {
         }
         appearancePopUp.target = self
         appearancePopUp.action = #selector(changed)
-
-        // Separate from the window's appearance: herdr applies the foreground
-        // client's host theme to every pane, so when another client is attached
-        // to the same session the two have to agree, or the pane re-themes each
-        // time focus moves between them.
-        terminalPopUp.addItem(withTitle: "Match Window")
-        terminalPopUp.lastItem?.representedObject = Preferences.Appearance.system.rawValue
-        for option in [Preferences.Appearance.dark, .light] {
-            terminalPopUp.addItem(withTitle: option.title)
-            terminalPopUp.lastItem?.representedObject = option.rawValue
-        }
-        terminalPopUp.target = self
-        terminalPopUp.action = #selector(changed)
 
         paddingField.alignment = .right
         paddingField.target = self
@@ -119,6 +119,7 @@ final class PreferencesWindowController: NSWindowController {
 
         let padding = NSStackView(views: [paddingField, paddingStepper, caption("points")])
         padding.orientation = .horizontal
+        padding.alignment = .firstBaseline
         padding.spacing = 4
 
         labelField.alignment = .right
@@ -134,6 +135,7 @@ final class PreferencesWindowController: NSWindowController {
 
         let labelSize = NSStackView(views: [labelField, labelStepper, caption("points")])
         labelSize.orientation = .horizontal
+        labelSize.alignment = .firstBaseline
         labelSize.spacing = 4
 
         lineField.alignment = .right
@@ -150,50 +152,11 @@ final class PreferencesWindowController: NSWindowController {
 
         let lineHeight = NSStackView(views: [lineField, lineStepper, caption("%")])
         lineHeight.orientation = .horizontal
+        lineHeight.alignment = .firstBaseline
         lineHeight.spacing = 4
 
-        for well in [backgroundWell, foregroundWell] {
-            well.target = self
-            well.action = #selector(colourChanged)
-            well.widthAnchor.constraint(equalToConstant: 44).isActive = true
-        }
-        let preset = NSButton(title: "Use Preset", target: self, action: #selector(usePreset))
-        preset.bezelStyle = .rounded
-
-        themeLabel.font = .systemFont(ofSize: 13)
-        themeLabel.lineBreakMode = .byTruncatingTail
-        let loadTheme = NSButton(
-            title: "Load…", target: self, action: #selector(loadTheme))
-        loadTheme.bezelStyle = .rounded
-        let clearTheme = NSButton(
-            title: "Clear", target: self, action: #selector(clearTheme))
-        clearTheme.bezelStyle = .rounded
-
-        let themeRow = NSStackView(views: [themeLabel, loadTheme, clearTheme])
-        themeRow.orientation = .horizontal
-        themeRow.spacing = 6
-
-        matchButton.title = "Match Attached Terminal"
-        matchButton.bezelStyle = .rounded
-        matchButton.target = self
-        matchButton.action = #selector(matchAttached)
-
-        let colours = NSStackView(views: [
-            backgroundWell, caption("background"), foregroundWell, caption("text"), preset,
-        ])
-        colours.orientation = .horizontal
-        colours.spacing = 6
-
-        matchNote.font = .systemFont(ofSize: 11)
-        matchNote.textColor = .secondaryLabelColor
-        matchNote.lineBreakMode = .byWordWrapping
-        matchNote.maximumNumberOfLines = 3
-        matchNote.preferredMaxLayoutWidth = 300
-
-        let match = NSStackView(views: [matchButton, matchNote])
-        match.orientation = .vertical
-        match.alignment = .leading
-        match.spacing = 4
+        let lightTheme = themeRow(lightThemeName, choose: #selector(chooseLightTheme))
+        let darkTheme = themeRow(darkThemeName, choose: #selector(chooseDarkTheme))
 
         // herdr's own two sounds, played on the same state changes its client
         // plays them on. The switch is HerdX's: herdr's `[ui.sound]` config is
@@ -211,39 +174,74 @@ final class PreferencesWindowController: NSWindowController {
         hibernatePopUp.target = self
         hibernatePopUp.action = #selector(hibernateChanged)
 
-        hibernateNote.font = .systemFont(ofSize: 11)
-        hibernateNote.textColor = .secondaryLabelColor
+        note(hibernateNote)
         hibernateNote.stringValue =
             "Ends the processes of a local workspace left idle this long, keeping what its "
             + "agents were talking about. It stays in the sidebar; click it to bring it back."
-        hibernateNote.lineBreakMode = .byWordWrapping
-        hibernateNote.preferredMaxLayoutWidth = 380
+
+        // Stacked with its note rather than given a grid row of its own: a
+        // pop-up's frame runs well below the part you can see, so a row under
+        // it leaves the note stranded.
+        let hibernate = NSStackView(views: [hibernatePopUp, hibernateNote])
+        hibernate.orientation = .vertical
+        hibernate.alignment = .leading
+        hibernate.spacing = 4
 
         soundsCheck.setButtonType(.switch)
         soundsCheck.title = "Play a sound when an agent finishes or needs you"
         soundsCheck.target = self
         soundsCheck.action = #selector(soundsChanged)
 
-        let grid = NSGridView(views: [
-            [label("Font:"), font],
-            [NSGridCell.emptyContentView, fontNote],
-            [label("Appearance:"), appearancePopUp],
-            [label("Terminal:"), terminalPopUp],
-            [label("Theme:"), themeRow],
-            [label("Colours:"), colours],
-            [NSGridCell.emptyContentView, match],
-            [label("Pane padding:"), padding],
-            [label("Pane label:"), labelSize],
-            [label("Line height:"), lineHeight],
-            [label("Sounds:"), soundsCheck],
-            [label("Hibernate:"), hibernatePopUp],
-            [NSGridCell.emptyContentView, hibernateNote],
-        ])
-        grid.rowSpacing = 10
-        grid.columnSpacing = 10
+        // One grid for every section rather than a grid each, so labels and
+        // controls line up down the whole window instead of per section.
+        let sections: [(title: String, rows: [[NSView]])] = [
+            ("Text", [
+                [label("Font:"), font],
+                [NSGridCell.emptyContentView, fontNote],
+                [label("Line height:"), lineHeight],
+            ]),
+            ("Appearance", [
+                [label("Mode:"), appearancePopUp],
+                [lightThemeLabel, lightTheme],
+                [darkThemeLabel, darkTheme],
+            ]),
+            ("Panes", [
+                [label("Padding:"), padding],
+                [label("Label size:"), labelSize],
+            ]),
+            ("Agents", [
+                [label("Sounds:"), soundsCheck],
+                [label("Hibernate:"), hibernate],
+            ]),
+        ]
+        let grid = NSGridView(numberOfColumns: 2, rows: 0)
+        grid.rowSpacing = 8
+        grid.columnSpacing = 8
+        // On the text, not the frames: a label is shorter than the control
+        // beside it, and top-aligned it sits visibly above that control's text.
+        grid.rowAlignment = .firstBaseline
         grid.column(at: 0).xPlacement = .trailing
         grid.translatesAutoresizingMaskIntoConstraints = false
-        noteRow = grid.row(at: 1)
+        for (index, section) in sections.enumerated() {
+            if index > 0 {
+                let line = NSBox()
+                line.boxType = .separator
+                let row = spanning(line, in: grid)
+                row.topPadding = 10
+                row.bottomPadding = 4
+                row.cell(at: 0).xPlacement = .fill
+            }
+            spanning(heading(section.title), in: grid).bottomPadding = 2
+            for row in section.rows {
+                grid.addRow(with: row)
+            }
+        }
+        noteRow = grid.cell(for: fontNote)?.row
+        lightThemeRow = grid.cell(for: lightTheme)?.row
+        darkThemeRow = grid.cell(for: darkTheme)?.row
+        // A note belongs to the control above it, so it sits closer to that
+        // than to the next row.
+        noteRow?.topPadding = -4
 
         let content = NSView()
         content.addSubview(grid)
@@ -264,11 +262,54 @@ final class PreferencesWindowController: NSWindowController {
         NSTextField(labelWithString: text)
     }
 
+    private func heading(_ text: String) -> NSTextField {
+        let field = NSTextField(labelWithString: text)
+        field.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
+        return field
+    }
+
+    /// A row that runs the width of the grid, from the leading edge.
+    @discardableResult
+    private func spanning(_ view: NSView, in grid: NSGridView) -> NSGridRow {
+        let row = grid.addRow(with: [view, NSGridCell.emptyContentView])
+        let index = grid.index(of: row)
+        grid.mergeCells(
+            inHorizontalRange: NSRange(location: 0, length: 2),
+            verticalRange: NSRange(location: index, length: 1))
+        row.cell(at: 0).xPlacement = .leading
+        return row
+    }
+
+    /// A theme's name and the button that changes it.
+    private func themeRow(_ name: NSTextField, choose: Selector) -> NSView {
+        name.lineBreakMode = .byTruncatingTail
+        // Capped, and allowed to give way: the window is sized to what it
+        // holds, so an imported file's long name would otherwise widen it.
+        name.widthAnchor.constraint(lessThanOrEqualToConstant: 200).isActive = true
+        name.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let button = NSButton(title: "Choose…", target: self, action: choose)
+        button.bezelStyle = .rounded
+        let row = NSStackView(views: [name, button])
+        row.orientation = .horizontal
+        row.alignment = .firstBaseline
+        row.spacing = 8
+        return row
+    }
+
     private func caption(_ text: String) -> NSTextField {
         let field = NSTextField(labelWithString: text)
-        field.font = .systemFont(ofSize: 10)
+        field.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         field.textColor = .secondaryLabelColor
         return field
+    }
+
+    /// Explanatory text under a control, all wrapped to one width so the notes
+    /// make one column rather than three ragged ones.
+    private func note(_ field: NSTextField) {
+        field.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        field.textColor = .secondaryLabelColor
+        field.lineBreakMode = .byWordWrapping
+        field.preferredMaxLayoutWidth = 340
     }
 
     /// Reflects the stored preferences in the controls.
@@ -292,39 +333,29 @@ final class PreferencesWindowController: NSWindowController {
         noteRow?.isHidden = fontNote.stringValue.isEmpty
 
         appearancePopUp.selectItem(withTitle: preferences.appearance.title)
-        terminalPopUp.selectItem(
-            withTitle: preferences.terminalAppearance == .system
-                ? "Match Window" : preferences.terminalAppearance.title)
-
-        let dark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        let resolved = preferences.terminalTheme(matching: dark)
-        backgroundWell.color = preferences.background ?? resolved.background
-        foregroundWell.color = preferences.foreground ?? resolved.foreground
+        // Following the system uses both, so both are shown and named; pinned,
+        // only one is ever used, and "Dark theme" beside "Dark" says it twice.
+        let following = preferences.appearance == .system
+        lightThemeRow?.isHidden = preferences.appearance == .dark
+        darkThemeRow?.isHidden = preferences.appearance == .light
+        lightThemeLabel.stringValue = following ? "Light theme:" : "Theme:"
+        darkThemeLabel.stringValue = following ? "Dark theme:" : "Theme:"
+        lightThemeName.stringValue = preferences.lightTheme?.name ?? "Built-in"
+        darkThemeName.stringValue = preferences.darkTheme?.name ?? "Built-in"
+        // The whole name, for when the row has cut it short.
+        lightThemeName.toolTip = lightThemeName.stringValue
+        darkThemeName.toolTip = darkThemeName.stringValue
 
         paddingField.stringValue = String(format: "%.0f", preferences.panePadding)
         paddingStepper.doubleValue = Double(preferences.panePadding)
         labelField.stringValue = String(format: "%.0f", preferences.paneLabelSize)
         labelStepper.doubleValue = Double(preferences.paneLabelSize)
-        themeLabel.stringValue = preferences.themeName ?? "Built-in"
-        if let attached = attachedTerminal {
-            matchButton.isEnabled = true
-            matchNote.stringValue =
-                "Another terminal is attached to this session. herdr gives the whole "
-                + "session one theme and applies whichever client you used last, so the "
-                + "colours change as you switch. Matching it stops that."
-            backgroundWell.toolTip = Preferences.encode(attached.background)
-        } else {
-            matchButton.isEnabled = false
-            matchNote.stringValue =
-                "These colours are published to the herdr session, so they apply to "
-                + "every client attached to it — including a herdr terminal showing the "
-                + "same session."
-        }
 
         soundsCheck.state = preferences.agentSounds ? .on : .off
         hibernatePopUp.selectItem(withTag: preferences.hibernateAfterHours ?? 0)
         lineField.stringValue = String(format: "%.0f", preferences.lineHeight * 100)
         lineStepper.doubleValue = Double(preferences.lineHeight * 100)
+        fitToContent()
     }
 
     // MARK: - Actions
@@ -392,71 +423,17 @@ final class PreferencesWindowController: NSWindowController {
         apply()
     }
 
-    @objc private func colourChanged() {
-        preferences.background = backgroundWell.color
-        preferences.foreground = foregroundWell.color
-        apply()
+    @objc private func chooseLightTheme() {
+        onChooseTheme(.light)
     }
 
-    /// Loads a kitty theme file.
-    ///
-    /// A file rather than a list: kitty's themes are published as files, in
-    /// their hundreds, and reading one is a great deal less work for everybody
-    /// than picking twenty colours out of a panel.
-    @objc private func loadTheme() {
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.init(filenameExtension: "conf") ?? .plainText, .plainText]
-        panel.allowsOtherFileTypes = true
-        panel.message = "Choose a kitty theme (.conf)"
-        guard panel.runModal() == .OK, let url = panel.url,
-            let text = try? String(contentsOf: url, encoding: .utf8)
-        else { return }
-
-        guard let theme = Theme(kittyConfiguration: text) else {
-            let alert = NSAlert()
-            alert.messageText = "That file is not a colour theme"
-            alert.informativeText =
-                "A kitty theme sets background, foreground and color0 through "
-                + "color15. This one does not."
-            alert.runModal()
-            return
-        }
-        preferences.themeName = url.deletingPathExtension().lastPathComponent
-        preferences.themeColors = theme.hexComponents
-        // The wells override the theme, so a leftover pair would silently
-        // repaint two of the twenty colours just loaded.
-        preferences.background = nil
-        preferences.foreground = nil
-        apply()
-    }
-
-    @objc private func clearTheme() {
-        preferences.themeName = nil
-        preferences.themeColors = nil
-        apply()
-    }
-
-    /// Adopts the other client's colours, which is the only thing that stops
-    /// the terminal changing colour as you switch between them.
-    @objc private func matchAttached() {
-        guard let attached = attachedTerminal else { return }
-        preferences.background = attached.background
-        preferences.foreground = attached.foreground
-        apply()
-    }
-
-    @objc private func usePreset() {
-        preferences.background = nil
-        preferences.foreground = nil
-        apply()
+    @objc private func chooseDarkTheme() {
+        onChooseTheme(.dark)
     }
 
     @objc private func changed() {
         preferences.appearance =
             (appearancePopUp.selectedItem?.representedObject as? String)
-            .flatMap(Preferences.Appearance.init(rawValue:)) ?? .system
-        preferences.terminalAppearance =
-            (terminalPopUp.selectedItem?.representedObject as? String)
             .flatMap(Preferences.Appearance.init(rawValue:)) ?? .system
         apply()
     }

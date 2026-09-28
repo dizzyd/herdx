@@ -126,18 +126,19 @@ hold up the others.
 
 ### Colours
 
-**Themes…** (⌥⌘T) offers kitty's theme collection — a few hundred palettes,
-downloaded on request — and previews each one on the real terminal as you move
-through the list, because a list of names tells you nothing about which you want.
+Settings ▸ Appearance is Light, Dark or Follow System. Pinned, there is one
+theme to choose; following the system, there is one for light and one for dark,
+and the terminal changes with the system.
 
-The terminal's palette is separate from the window's light or dark appearance,
-and Settings can pin either or follow the system.
+**Themes…** (⌥⌘T), or **Choose…** beside a theme in Settings, offers kitty's
+theme collection — a few hundred palettes, downloaded on request — and previews
+each one on the real terminal as you move through the list, because a list of
+names tells you nothing about which you want. A `.conf` file of your own loads
+from the end of the list.
 
 One thing worth knowing if you also use the herdr TUI: herdr keeps **one theme
 per session** and applies whichever client you used last, so two clients with
-different colours will fight over it. Settings ▸ Colours takes an exact
-background and text colour — the macOS colour panel's eyedropper will sample
-them straight off your other terminal — which is what stops it.
+different colours will fight over it. Give both the same theme.
 
 ### While you are away
 
@@ -165,9 +166,9 @@ Settings ▸ Hibernate chooses the delay, or turns it off.
 
 ### Settings
 
-⌘, covers the font and line height, light or dark for the window and the
-terminal independently, the palette, the space around panes, the size of pane
-labels, agent sounds and hibernation.
+⌘, covers the font and line height, light, dark or following the system, the
+theme for each, the space around panes, the size of pane labels, agent sounds
+and hibernation.
 
 ## Building it yourself
 
