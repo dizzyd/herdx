@@ -1,6 +1,6 @@
 [package]
 name = "herdr-protocol"
-version = "1.3.2"
+version = "1.3.3"
 edition.workspace = true
 license.workspace = true
 description = "herdr's wire protocol, vendored from the pinned submodule"

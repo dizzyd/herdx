@@ -1,6 +1,6 @@
 [package]
 name = "herdr-core"
-version = "1.3.2"
+version = "1.3.3"
 edition.workspace = true
 license.workspace = true
 description = "Endpoint client and C ABI for HerdX, the native macOS herdr client"
