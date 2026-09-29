@@ -88,6 +88,31 @@ To exercise the pipeline without spending a version number, run the workflow
 manually from the Actions tab: it builds and notarizes exactly the same way but
 uploads the `.dmg` as a workflow artifact instead of publishing a release.
 
+### Why pushing to `github` is not a shortcut
+
+The mirror is a Forgejo push mirror, and a push mirror **prunes**: anything
+GitHub has that git.home does not is deleted on the next sync. A tag pushed to
+`github` directly does not merely leave the two out of step — it is erased
+hours later, and when a published release's tag disappears GitHub quietly turns
+that release into a draft. `/releases/latest` skips drafts, and that is both
+the Releases page header and what `Updates.swift` asks.
+
+1.3.1 and 1.3.2 were lost exactly that way. Both were built, notarized and
+published; eight hours later a scheduled sync rewound `main` to 1.3.0 and
+deleted both tags. Nothing announced it. The Releases page just said 1.3.0 was
+the latest, and every copy of HerdX agreed.
+
+So `github` has no push URL in this clone, and is worth not having in any other
+you release from:
+
+```sh
+git remote set-url --push github no_push://…
+```
+
+Should it happen anyway, it is recoverable for as long as GitHub keeps the
+unreachable objects: `gh api repos/<owner>/<repo>/events` still has the SHAs
+each push moved `main` between, and `git fetch github <sha>` will take them.
+
 ## Releasing from your own machine
 
 Worth doing once, so that the first time you see a notarization error it is not
