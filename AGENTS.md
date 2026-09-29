@@ -93,6 +93,7 @@ clones a throwaway macOS guest for it.
 ./scripts/vm.sh boot        # headless; no window on anybody's display
 ./scripts/vm.sh install     # bundle here, copy the app in
 ./scripts/vm.sh capture out.png HERDX_CAPTURE_DELAY=5
+./scripts/vm.sh lockcheck   # a locked screen really does silence the sounds
 ./scripts/vm.sh snapshot    # keep this state
 ./scripts/vm.sh restore     # and this is how "fresh" comes back
 ```
@@ -100,6 +101,17 @@ clones a throwaway macOS guest for it.
 Two bugs lived in that state undisturbed: the first-run dialog hung off
 `connect()` failing, which never happens, and the sidebar's first line on a new
 Mac read "No such file or directory". Neither is visible from here.
+
+The guest is also the only screen anyone is allowed to lock. `lockcheck` locks
+it, reads `HERDX_PROBE_LOCK`'s transcript back and asserts on what the app made
+of it — a unit test can say what `isAudible` does with a given reading, but not
+that a real lock produces that reading. It needs a snapshot, because it leaves
+the guest locked and nothing can unlock a headless VM: there is no screen to
+type a password at, and rebuilding the login session stops working once the run
+is over. So it restores before it measures, rather than being a check that
+works once. Turning the lock policy off *before* unlocking is the thing to keep
+— a guest left on `immediate` re-locks the moment its login session comes back,
+and then it is snapshot or nothing.
 
 Capture *in the guest* with `HERDX_CAPTURE`, which needs no window server
 permission. Filming the VM's window from the host needs the guest in front on a

@@ -15,6 +15,7 @@
 #   ./scripts/vm.sh install     bundle on this Mac and copy the app in
 #   ./scripts/vm.sh capture <out.png> [VAR=VAL …]   photograph a run, bring it back
 #   ./scripts/vm.sh exec <cmd…> run something in the guest
+#   ./scripts/vm.sh lockcheck  prove a locked screen silences the agent sounds
 #   ./scripts/vm.sh snapshot    keep this state
 #   ./scripts/vm.sh restore     go back to it — this is how you get "fresh" back
 #   ./scripts/vm.sh stop        shut it down
@@ -185,6 +186,135 @@ restore)
   tart delete "$VM_NAME" 2>/dev/null || true
   tart rename "$STAGING" "$VM_NAME"
   echo "restored $VM_NAME from $SNAP — ./scripts/vm.sh boot"
+  ;;
+
+lockcheck)
+  # Does a locked screen really silence the agent sounds?
+  #
+  # The unit tests answer what `isAudible` does with a given reading. What they
+  # cannot answer is whether a real lock produces that reading, because the one
+  # moment nothing can be read off a screen is while it is locked — and locking
+  # the developer's screen to find out is not on. Locking this guest's costs
+  # nobody anything.
+  #
+  # Reads the probe's own transcript rather than trusting the sequence of
+  # commands that produced it: `open -a ScreenSaverEngine` returning 0 says the
+  # engine started, not that the session locked.
+  #
+  # The lock policy is turned on to lock and off again to unlock, and that
+  # order is the whole trick. A guest left on `immediate` locks again the
+  # instant its login session is rebuilt, so unlocking never takes — and since
+  # a headless VM has no display to unlock by hand, one run that forgets leaves
+  # a guest that reads locked for good and a `restore` to get out of it.
+  need sshpass sshpass
+  RUN=30 LOCK_AT=7 UNLOCK_AT=18
+
+  # An idle screen saver would lock the session on its own schedule, and then
+  # this measures nothing: the only lock in the transcript has to be ours.
+  ssh_vm "sudo launchctl asuser $GUI_UID sudo -u $USER_NAME \
+            defaults -currentHost write com.apple.screensaver idleTime -int 0
+          sudo sysadminctl -screenLock off -password $PASS >/dev/null 2>&1 || true
+          sudo pkill ScreenSaverEngine 2>/dev/null || true"
+
+  # Ask whether the session is unlocked rather than sleeping and hoping. A
+  # guest that starts locked would fail the first window for a reason that has
+  # nothing to do with the app, which is worse than no test at all.
+  read_lock() {
+    ssh_vm "rm -f /tmp/lockstate.log
+      nohup sudo launchctl asuser $GUI_UID sudo -u $USER_NAME \
+        env HERDX_HEADLESS=1 HERDX_PROBE_LOCK=1 \
+        /Applications/HerdX.app/Contents/MacOS/HerdX > /tmp/lockstate.log 2>&1 &
+      sleep 4
+      sudo pkill -f 'MacOS/HerdX' 2>/dev/null || true
+      grep -o 'locked=[a-z]*' /tmp/lockstate.log | head -1" 2>/dev/null || true
+  }
+
+  # A locked guest is put back rather than argued with. Nothing can unlock a
+  # headless VM — there is no screen to type a password at — and rebuilding the
+  # login session, which works while the screen saver is up, does not once the
+  # run is over. So a guest that starts locked goes back to the snapshot, which
+  # is what the snapshot is for and what makes this repeatable rather than a
+  # thing that works once.
+  state="$(read_lock)"
+  if [ "$state" != "locked=false" ]; then
+    echo "lockcheck: guest reads ${state:-nothing} — restoring, this takes a few minutes"
+    tart get "$SNAP" >/dev/null 2>&1 || {
+      echo "lockcheck: no snapshot $SNAP to go back to — ./scripts/vm.sh snapshot" >&2
+      exit 1
+    }
+    "$0" restore
+    "$0" boot
+    "$0" install
+    ssh_vm "sudo launchctl asuser $GUI_UID sudo -u $USER_NAME \
+              defaults -currentHost write com.apple.screensaver idleTime -int 0
+            sudo sysadminctl -screenLock off -password $PASS >/dev/null 2>&1 || true"
+    state="$(read_lock)"
+  fi
+  if [ "$state" != "locked=false" ]; then
+    echo "lockcheck: the guest will not come back unlocked (last read: ${state:-nothing})" >&2
+    exit 1
+  fi
+
+  ssh_vm "sudo pkill -f 'MacOS/HerdX' 2>/dev/null; rm -f /tmp/lock.log
+    nohup sudo launchctl asuser $GUI_UID sudo -u $USER_NAME \
+      env HERDX_HEADLESS=1 HERDX_PROBE_LOCK=$RUN \
+      /Applications/HerdX.app/Contents/MacOS/HerdX > /tmp/lock.log 2>&1 &
+    sleep $LOCK_AT
+    sudo sysadminctl -screenLock immediate -password $PASS >/dev/null 2>&1
+    sudo launchctl asuser $GUI_UID sudo -u $USER_NAME open -a ScreenSaverEngine
+    sleep $((UNLOCK_AT - LOCK_AT))
+    # Off first: a session rebuilt while this is still immediate comes back
+    # locked, and then nothing can unlock it.
+    sudo sysadminctl -screenLock off -password $PASS >/dev/null 2>&1
+    sudo pkill ScreenSaverEngine 2>/dev/null || true
+    sudo killall loginwindow 2>/dev/null || true
+    sleep $((RUN - UNLOCK_AT + 8))
+    sudo pkill -f 'MacOS/HerdX' 2>/dev/null || true" || true
+  # Rebuilding the login session drops ssh for a moment.
+  for _ in $(seq 12); do ssh_vm "true" 2>/dev/null && break; sleep 5; done
+
+  LOG="${2:-$ROOT/build/lockcheck.log}"
+  mkdir -p "$(dirname "$LOG")"
+  scp_from "/tmp/lock.log" "$LOG"
+
+  # One `t audible` pair per line. Ticks go missing while the login session is
+  # being rebuilt, so every window below asks what the samples in it say, not
+  # that a sample arrived for each second.
+  SAMPLES="$(awk '/^probe: t=/ { t = $2; sub(/^t=/, "", t); sub(/s$/, "", t)
+                                 split($4, a, "="); print t, a[2] }' "$LOG")"
+  [ -n "$SAMPLES" ] || { echo "lockcheck: the probe said nothing — see $LOG" >&2; exit 1; }
+
+  # window <lo> <hi> <expected> <what it means>
+  window() {
+    local lo=$1 hi=$2 want=$3 what=$4 seen=0 wrong=0 t a
+    while read -r t a; do
+      [ "$t" -ge "$lo" ] && [ "$t" -le "$hi" ] || continue
+      seen=$((seen + 1))
+      [ "$a" = "$want" ] || wrong=$((wrong + 1))
+    done <<<"$SAMPLES"
+    if [ "$seen" -eq 0 ]; then
+      echo "lockcheck: nothing sampled between ${lo}s and ${hi}s ($what)" >&2
+      return 1
+    fi
+    if [ "$wrong" -ne 0 ]; then
+      echo "lockcheck: $wrong of $seen samples in ${lo}-${hi}s are not audible=$want ($what)" >&2
+      return 1
+    fi
+    echo "  ${lo}-${hi}s audible=$want over $seen samples — $what"
+  }
+
+  FAILED=0
+  echo "lockcheck:"
+  window 1 $((LOCK_AT - 1)) true "sounds play with somebody there" || FAILED=1
+  # Three seconds for the lock to take, and stopping before the unlock lands.
+  window $((LOCK_AT + 3)) $((UNLOCK_AT - 1)) false "a locked screen is silent" || FAILED=1
+  window $((UNLOCK_AT + 5)) $RUN true "and they come back when it is not" || FAILED=1
+
+  if [ "$FAILED" -ne 0 ]; then
+    echo "lockcheck: FAILED — transcript in $LOG" >&2
+    exit 1
+  fi
+  echo "lockcheck: OK ($LOG)"
   ;;
 
 stop)
