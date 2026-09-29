@@ -18,6 +18,20 @@ final class AgentSounds {
     /// back on does not then fire for every agent that changed while it was off.
     var isEnabled = true
 
+    /// Whether the screen is locked, asked afresh each time a sound is due.
+    ///
+    /// Overridden in tests, which have no screen to lock.
+    var screenIsLocked: () -> Bool = AgentSounds.screenIsLocked
+
+    /// Whether a cue would actually be worth making: sounds on, and somebody
+    /// there to hear them.
+    ///
+    /// A locked screen means the person is not at the machine, and an agent
+    /// finishing to an empty room is just noise in the room. Like `isEnabled`
+    /// this only silences — tracking carries on, so unlocking does not then
+    /// play back everything that happened while you were away.
+    var isAudible: Bool { isEnabled && !screenIsLocked() }
+
     private enum Cue: String {
         case done, request
     }
@@ -69,7 +83,7 @@ final class AgentSounds {
     }
 
     private func play(_ cue: Cue) {
-        guard isEnabled else { return }
+        guard isAudible else { return }
         if players[cue] == nil {
             // herdr's own audio, shipped in the bundle, so the two clients make
             // the same noise for the same thing. Absent — an unbundled `swift
@@ -85,5 +99,23 @@ final class AgentSounds {
         // one notification, not a chord.
         players[cue]?.stop()
         players[cue]?.play()
+    }
+
+    /// macOS's own answer, rather than watching for `com.apple.screenIsLocked`.
+    ///
+    /// A notification is a thing you can miss — the screen locked before the
+    /// app launched, or a distributed notification dropped — and a missed one
+    /// leaves the wrong belief for as long as the screen stays that way. This
+    /// is asked only when a sound is already due, so the cost does not matter.
+    nonisolated static func screenIsLocked() -> Bool {
+        isLocked(session: CGSessionCopyCurrentDictionary() as? [String: Any])
+    }
+
+    /// Unlocked, the key is not there at all — so absent means unlocked, and
+    /// so does a session dictionary that could not be read. Locked, it arrives
+    /// as a `CFBoolean` alongside the session's other flags, which is why this
+    /// goes through `NSNumber` rather than asking for a `Bool` or an `Int`.
+    nonisolated static func isLocked(session: [String: Any]?) -> Bool {
+        (session?["CGSSessionScreenIsLocked"] as? NSNumber)?.boolValue ?? false
     }
 }
