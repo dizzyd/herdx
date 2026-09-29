@@ -2515,9 +2515,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         else { return }
         print("probe: watching the lock for \(Int(seconds))s")
         let started = Date()
-        let tick = Timer(timeInterval: 1, repeats: true) { timer in
+        let tick = Timer(timeInterval: 1, repeats: true) { [weak self] timer in
             let elapsed = Date().timeIntervalSince(started)
-            print("probe: t=\(Int(elapsed))s locked=\(AgentSounds.screenIsLocked())")
+            // The gate the sounds actually pass through, not just the reading
+            // underneath it — `audible=false` is the answer being checked.
+            let audible = MainActor.assumeIsolated { self?.agentSounds.isAudible }
+            print(
+                "probe: t=\(Int(elapsed))s locked=\(AgentSounds.screenIsLocked())"
+                    + " audible=\(audible.map(String.init(describing:)) ?? "gone")")
             fflush(stdout)
             if elapsed >= seconds {
                 timer.invalidate()
