@@ -303,6 +303,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
 
         installCaptureHookIfRequested()
         installInputProbeIfRequested()
+        installLockProbeIfRequested()
         checkForUpdate()
         // Its own slow timer, not the sixty-a-second one: this asks a server
         // several questions and nothing it looks at changes in under an hour.
@@ -2498,6 +2499,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     /// `screencapture -R`, which picks the wrong display on multi-monitor setups.
     private var capturePath: String? {
         ProcessInfo.processInfo.environment["HERDX_CAPTURE"]
+    }
+
+    /// Dev affordance: `HERDX_PROBE_LOCK=<seconds>` reports, once a second,
+    /// whether HerdX thinks the screen is locked.
+    ///
+    /// The only way to see the locked answer is to be looking at a locked
+    /// screen, which is the one moment nothing can be read off this one. So it
+    /// prints to stdout for that long and leaves the transcript behind: start
+    /// it, lock the screen, unlock it, and read what it made of the interval.
+    private func installLockProbeIfRequested() {
+        guard
+            let seconds = ProcessInfo.processInfo.environment["HERDX_PROBE_LOCK"]
+                .flatMap(Double.init), seconds > 0
+        else { return }
+        print("probe: watching the lock for \(Int(seconds))s")
+        let started = Date()
+        let tick = Timer(timeInterval: 1, repeats: true) { timer in
+            let elapsed = Date().timeIntervalSince(started)
+            print("probe: t=\(Int(elapsed))s locked=\(AgentSounds.screenIsLocked())")
+            fflush(stdout)
+            if elapsed >= seconds {
+                timer.invalidate()
+                print("probe: done")
+                fflush(stdout)
+            }
+        }
+        // Common modes, or the timer stops dead for as long as a menu is open.
+        RunLoop.main.add(tick, forMode: .common)
     }
 
     /// Dev affordance: `HERDX_PROBE_INPUT=<text>` reports the input state and
