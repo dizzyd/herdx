@@ -113,6 +113,11 @@ Should it happen anyway, it is recoverable for as long as GitHub keeps the
 unreachable objects: `gh api repos/<owner>/<repo>/events` still has the SHAs
 each push moved `main` between, and `git fetch github <sha>` will take them.
 
+Re-cutting more than one version at a time, mind the order: `gh release create`
+makes each new release the latest one, so whichever job finishes last wins the
+flag regardless of its version number. 1.3.1 built faster than 1.3.2 and took
+it. `gh release edit v1.3.2 --latest` puts it back.
+
 ## Releasing from your own machine
 
 Worth doing once, so that the first time you see a notarization error it is not
