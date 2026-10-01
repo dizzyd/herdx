@@ -34,6 +34,13 @@ final class MouseGestureTests: XCTestCase {
             windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
     }
 
+    private func keystroke(_ characters: String) -> NSEvent {
+        NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: 0, context: nil, characters: characters,
+            charactersIgnoringModifiers: characters, isARepeat: false, keyCode: 0)!
+    }
+
     /// The middle of a cell, as an event carries it.
     ///
     /// An event's location is in window coordinates, and the grid is flipped,
@@ -69,6 +76,59 @@ final class MouseGestureTests: XCTestCase {
             [UInt16(HX_MOUSE_DOWN), UInt16(HX_MOUSE_DRAG), UInt16(HX_MOUSE_UP)],
             "the program saw a button go down and never come up")
         XCTAssertTrue(reported.allSatisfy { $0.1 == "w1:p2" })
+    }
+
+    /// Select-all over a program that owns the mouse used to be permanent: its
+    /// clicks go to the program, and nothing else cleared the highlight.
+    func testAClickTheProgramReceivesDropsTheSelection() {
+        let only = pane("w1:p1", x: 0, width: 20, reporting: true)
+        let view = self.view([only])
+
+        view.selectAll(nil)
+        XCTAssertNotNil(view.selection, "the fixture needs a selection")
+
+        var reported: [(UInt16, String)] = []
+        view.mouseReportForTesting = { reported.append(($0, $1)) }
+
+        view.mouseDown(with: event(.leftMouseDown, at: at(column: 4, in: view)))
+        view.mouseUp(with: event(.leftMouseUp, at: at(column: 4, in: view)))
+
+        XCTAssertNil(view.selection)
+        XCTAssertEqual(
+            reported.map(\.0), [UInt16(HX_MOUSE_DOWN), UInt16(HX_MOUSE_UP)],
+            "dismissing the selection must not cost the program its click")
+        XCTAssertTrue(reported.allSatisfy { $0.1 == "w1:p1" })
+    }
+
+    /// Clearing only copy mode's highlight left its anchor live: `y` copied
+    /// cells nobody could see, and the next motion painted them back.
+    func testAClickTheProgramReceivesLeavesCopyMode() throws {
+        let view = self.view([pane("w1:p1", x: 0, width: 20, reporting: true)])
+        var replies: [(String) -> Void] = []
+        view.onCopyModeRequest = { _, _, completion in replies.append(completion) }
+        var reads = 0
+        view.onReadSelection = { _ in reads += 1 }
+
+        view.enterCopyMode()
+        _ = view.handleCopyModeKey(keystroke("v"))
+        _ = view.handleCopyModeKey(keystroke("w"))
+        XCTAssertNotNil(view.copyMode?.anchor, "the fixture needs a copy-mode selection")
+        XCTAssertEqual(replies.count, 1, "the fixture needs a motion in flight")
+
+        view.mouseDown(with: event(.leftMouseDown, at: at(column: 4, in: view)))
+        view.mouseUp(with: event(.leftMouseUp, at: at(column: 4, in: view)))
+
+        XCTAssertNil(view.copyMode)
+        XCTAssertNil(view.selection)
+
+        let reply = try XCTUnwrap(replies.first)
+        reply(#"{"result":{"cursor":{"row":0,"col":4}}}"#)
+        XCTAssertNil(view.selection, "a late motion reply painted the highlight back")
+        XCTAssertNil(view.copyMode)
+
+        _ = view.handleCopyModeKey(keystroke("y"))
+        view.copy(nil)
+        XCTAssertEqual(reads, 0, "something was copied after the selection was dismissed")
     }
 
     /// A drag that wanders into the neighbour still belongs to the pane it

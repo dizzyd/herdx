@@ -19,6 +19,7 @@ extension TerminalGridView: @preconcurrency NSTextInputClient {
         markedText = nil
         needsDisplay = true
         guard !text.isEmpty, let session, let pane = focusedPane else { return }
+        dismissSelectionAndCopyMode()
         session.send(text: text, to: pane)
     }
 

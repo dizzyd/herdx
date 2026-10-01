@@ -1055,8 +1055,30 @@ final class TerminalGridView: NSView {
             interpretKeyEvents([event])
             return
         }
+        dismissSelectionAndCopyMode()
         session.send(
             key: mapped.kind, codepoint: mapped.codepoint, modifiers: mapped.modifiers, to: pane)
+    }
+
+    /// Dismisses the local selection, and copy mode with it, before input is
+    /// forwarded to a program.
+    ///
+    /// A plain click in a pane that is not reporting the mouse used to be the
+    /// only way out, so a select-all over an editor or an agent — whose clicks
+    /// belong to the program — stayed grey for good. Keys, committed text,
+    /// paste and a left press the program receives all dismiss it. Right and
+    /// middle presses and the scroll wheel do not: scrolling through history
+    /// to extend or check a selection is the ordinary thing to do. This is a
+    /// local decision, made before the send, whether or not delivery succeeds.
+    ///
+    /// Copy mode is left rather than only having its highlight cleared: its
+    /// anchor would otherwise still be yanked by `y`, and the next motion or a
+    /// late reply would paint the highlight straight back.
+    func dismissSelectionAndCopyMode() {
+        if copyMode != nil { return exitCopyMode() }
+        guard selection != nil else { return }
+        selection = nil
+        needsDisplay = true
     }
 
     override func becomeFirstResponder() -> Bool {
@@ -1175,6 +1197,7 @@ extension TerminalGridView {
             return
         }
         gesture = .reporting
+        dismissSelectionAndCopyMode()
         send(event, kind: UInt16(HX_MOUSE_DOWN), button: UInt8(HX_BUTTON_LEFT))
     }
 
@@ -1305,6 +1328,7 @@ extension TerminalGridView {
         guard let session, let pane = focusedPane,
             let text = NSPasteboard.general.string(forType: .string), !text.isEmpty
         else { return }
+        dismissSelectionAndCopyMode()
         session.send(paste: text, to: pane)
     }
 
