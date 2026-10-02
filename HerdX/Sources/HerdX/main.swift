@@ -958,7 +958,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
                 print(
                     "probe: \(when) \(endpoint.label) remote=\(endpoint.isRemote)"
                         + " status=\(endpoint.status)"
-                        + " attachments=\(endpoint.attachments)")
+                        + " attachments=\(endpoint.attachments)"
+                        + (endpoint.error.map { " error=\($0)" } ?? ""))
             }
             fflush(stdout)
         }
@@ -966,12 +967,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
             MainActor.assumeIsolated {
                 guard let self else { return }
                 report("before")
+                // Counted here as well as reported by the core, because the
+                // two answer different questions and only one of them is
+                // always available. This says the observer fired and which
+                // endpoints the policy picked; the attachment numbers either
+                // side say whether the reconnect then landed, which a machine
+                // that cannot be reached at all will never show.
+                let asked = self.session?.reattachRemotes() ?? 0
                 NSWorkspace.shared.notificationCenter.post(
                     name: NSWorkspace.didWakeNotification, object: nil)
-                // Not the observer's own count: that would only say the
-                // notification was delivered. The attachment numbers either
-                // side of this line are the answer, and they are the core's.
-                print("probe: posted didWake")
+                print("probe: posted didWake; the policy picks \(asked) endpoints")
                 fflush(stdout)
                 for seconds in [1.0, 3.0, 6.0] {
                     DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
@@ -991,18 +996,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
 
     /// Reattaches the remote machines the moment the Mac wakes.
     ///
-    /// Sleep leaves every remote connection pointing at a path that stopped
-    /// existing while the lid was shut, and neither end has anything to say
-    /// about it: the far side has no reason to speak, and this side is parked
-    /// in a read that will not return. ssh does work it out from missed
-    /// keepalives, but that measures at two minutes, and two minutes of dead
-    /// panes after every wake is what "it never reconnects" looks like from
-    /// the keyboard.
-    ///
-    /// Waking is the one moment when the staleness is known rather than
-    /// guessed, so this is where to act on it. The reconnect itself is the
-    /// core's, and local endpoints are left alone — a unix socket survives
-    /// sleep untouched.
+    /// Waking is the one moment when a connection's staleness is known rather
+    /// than waited for, and this is the only place that hears about it — hence
+    /// an observer here and not a timer anywhere. Everything else belongs to
+    /// the core: `hx_reattach_remotes` decides which endpoints it applies to,
+    /// and `ARCHITECTURE.md` says why the alternative is no good.
     private func installWakeObserver() {
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main

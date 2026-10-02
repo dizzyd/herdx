@@ -155,11 +155,33 @@ reason to speak, and this end is parked in a read that never returns. ssh does
 work it out from missed keepalives, but that measures at `(ServerAliveCountMax
 + 1) × ServerAliveInterval` — 40s as configured, and 120s before it was — and
 even the shorter one reads as "it never reconnects" from the keyboard. So the
-app observes
-`NSWorkspace.didWakeNotification` and nudges each remote endpoint: the live
-connection is broken, the backoff starts over, and the loop that was already
-there does the rest. Local endpoints are left alone — a unix socket lives in
-this machine's kernel and comes back from sleep exactly as it went in.
+app observes `NSWorkspace.didWakeNotification` and nudges each remote
+endpoint: the live connection is broken, the backoff starts over, and the loop
+that was already there does the rest. Local endpoints are left alone — a unix
+socket lives in this machine's kernel and comes back from sleep exactly as it
+went in.
+
+A wake arrives on whatever thread AppKit feels like, at whatever point each
+endpoint's connect loop has reached, so the hard part is not breaking the
+connection but making sure the request cannot be dropped. `Halt` carries a
+*reconnect generation* for that, advanced by every nudge and consumed by
+nobody. Each attempt reads it before it starts anything slow, and that number
+is what makes the attempt recognisable afterwards:
+
+- **Arming.** A transport is built before it is armed, and a nudge in between
+  finds nothing to interrupt. So `arm` refuses a transport whose attempt began
+  at an older generation, and the attach is abandoned rather than parked in a
+  read on a path already known to be dead.
+- **Waiting.** A nudge during a failing attempt has no waiter to notify. So the
+  generation is part of the condvar predicate rather than something checked
+  after the wait, and a wake already in hand returns from `rest` without
+  waiting at all.
+
+Both of those were flag-shaped first, and a flag has to be consumed by someone
+who may be looking the other way: the first lost the wake outright, and the
+second slept through it for the full backoff ceiling. A number nothing
+consumes has no such moment. `halt_tests` in `ffi.rs` holds one test per
+window; the loop as a whole is covered in `tests/session_wake.rs`.
 
 The keepalives still matter, for the drops nothing announces: a Wi-Fi roam, a
 VPN flap, a machine rebooting. Those arrive with no notification to hang a
