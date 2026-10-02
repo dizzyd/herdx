@@ -493,6 +493,11 @@ pub const HX_ENDPOINT_CONNECTING: u8 = 0;
 pub const HX_ENDPOINT_ONLINE: u8 = 1;
 pub const HX_ENDPOINT_OFFLINE: u8 = 2;
 
+/// How long to wait before a second attempt, and the ceiling the wait climbs
+/// to. Named because the tests assert against both ends of that range.
+const FIRST_BACKOFF: std::time::Duration = std::time::Duration::from_millis(250);
+const LONGEST_BACKOFF: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// A one-way stop signal for an endpoint's threads.
 ///
 /// A flag alone would not do. The reconnect loop spends most of a failed
@@ -513,17 +518,49 @@ struct Halt {
 struct HaltState {
     stopped: bool,
     interrupt: Option<crate::endpoint::Interrupt>,
-    /// Set by `nudge`, so the loop knows its wait was cut short by a caller
-    /// who knows better rather than by the clock running out.
-    nudged: bool,
+    /// Advanced by every `nudge`.
+    ///
+    /// A generation rather than a flag because a flag has to be consumed, and
+    /// whoever consumes it can be looking the other way when it is set. Two
+    /// windows did exactly that: a nudge between a transport being built and
+    /// being armed found nothing to interrupt and was dropped, and a nudge
+    /// arriving while an attempt was still failing had no waiter to notify and
+    /// was then slept straight through. Nothing reads this destructively, so
+    /// there is no moment at which a wake can be missed — an attempt simply
+    /// carries the generation it began at, and is stale whenever that no
+    /// longer matches.
+    generation: u64,
+}
+
+/// Why a wait between attempts ended.
+#[derive(PartialEq, Eq, Debug)]
+enum Rested {
+    /// The wait ran its course; the machine is still not answering.
+    Elapsed,
+    /// A nudge arrived, or had already arrived. Try again now.
+    Woken,
+    /// The endpoint is being disposed of; the loop ends.
+    Stopped,
 }
 
 impl Halt {
-    /// Takes the means to break the connection now being made, or refuses it
-    /// because this endpoint is already being disposed of.
-    fn arm(&self, interrupt: crate::endpoint::Interrupt) -> bool {
+    /// The generation an attempt is about to begin at.
+    fn generation(&self) -> u64 {
+        self.state.lock().unwrap().generation
+    }
+
+    /// Takes the means to break the connection now being made, or refuses it.
+    ///
+    /// Refused when the endpoint is being disposed of, and — the reason
+    /// `began` is here — when a nudge has landed since this attempt started.
+    /// That transport was built over the path the nudge condemned, so arming
+    /// it would park the loop in a read on a connection already known to be
+    /// dead, with nothing left pending to break it out. Refusing makes
+    /// `attach_interruptible` abandon the attempt, which is what lets the next
+    /// one start from the woken generation.
+    fn arm(&self, began: u64, interrupt: crate::endpoint::Interrupt) -> bool {
         let mut state = self.state.lock().unwrap();
-        if state.stopped {
+        if state.stopped || state.generation != began {
             return false;
         }
         state.interrupt = Some(interrupt);
@@ -547,22 +584,22 @@ impl Halt {
         }
     }
 
-    /// Breaks the live connection and starts the next attempt now.
+    /// Condemns whatever connection this endpoint has and starts again now.
     ///
-    /// Unlike `stop`, the endpoint survives: this is how a client that *knows*
-    /// its connection is stale — the machine has just woken, and every socket
-    /// it had is attached to a path that no longer exists — gets a reconnect
-    /// without waiting for ssh to notice. ssh notices by missing keepalives,
-    /// which measures at two minutes of dead panes after every wake, and
-    /// nothing short of this can shorten it: the far side is not going to
-    /// speak, so the blocked read never returns on its own.
+    /// Unlike `stop`, the endpoint survives. Advancing the generation is what
+    /// makes this durable: it is not waiting for anyone to be listening, so an
+    /// attempt in flight is refused when it tries to arm, and a loop about to
+    /// wait finds the wake already there. Breaking the live connection is the
+    /// other half, and only possible when there is one to break.
+    ///
+    /// See `hx_reattach_remotes` for when this is the right thing to do.
     fn nudge(&self) {
         let interrupt = {
             let mut state = self.state.lock().unwrap();
             if state.stopped {
                 return;
             }
-            state.nudged = true;
+            state.generation += 1;
             state.interrupt.take()
         };
         self.woken.notify_all();
@@ -571,23 +608,37 @@ impl Halt {
         }
     }
 
-    /// Whether a nudge has arrived since this was last asked.
-    fn take_nudge(&self) -> bool {
-        std::mem::take(&mut self.state.lock().unwrap().nudged)
-    }
-
     fn stopped(&self) -> bool {
         self.state.lock().unwrap().stopped
     }
 
-    /// Sleeps for `duration`, returning early — and false — once stopped.
-    fn rest(&self, duration: std::time::Duration) -> bool {
+    /// Waits up to `duration` before the next attempt, or no time at all if
+    /// this endpoint has already been stopped or woken.
+    ///
+    /// `began` is the generation the attempt that just ended started at, so a
+    /// nudge that landed any time during it counts — including before there
+    /// was a waiter here to notify. Checking that in the predicate rather than
+    /// after the wait is the whole point: a wake used to be able to arrive
+    /// while an attempt was still failing and then be slept straight through,
+    /// for the whole of `LONGEST_BACKOFF`.
+    fn rest(&self, duration: std::time::Duration, began: u64) -> Rested {
         let state = self.state.lock().unwrap();
+        // Evaluates the predicate before waiting at all, and re-evaluates it
+        // against the original deadline, so neither a wake already in hand nor
+        // a spurious wakeup is mishandled.
+        let (state, _) = self
+            .woken
+            .wait_timeout_while(state, duration, |state| {
+                !state.stopped && state.generation == began
+            })
+            .unwrap();
         if state.stopped {
-            return false;
+            Rested::Stopped
+        } else if state.generation == began {
+            Rested::Elapsed
+        } else {
+            Rested::Woken
         }
-        let (state, _) = self.woken.wait_timeout(state, duration).unwrap();
-        !state.stopped
     }
 }
 
@@ -893,16 +944,21 @@ fn spawn_endpoint(
     let thread_halt = Arc::clone(&halt);
     let writer_for_loop = Arc::clone(&outbound);
     let connect_thread = std::thread::spawn(move || {
-        let mut backoff = std::time::Duration::from_millis(250);
+        let mut backoff = FIRST_BACKOFF;
 
         while !thread_halt.stopped() {
+            // Read before anything slow starts, so everything this attempt
+            // does can be recognised afterwards as belonging to it. A nudge
+            // from here on makes the attempt stale, whether it has reached
+            // the point of arming a transport or not.
+            let began = thread_halt.generation();
             let hello = attach_hello(&thread_shared);
 
             match crate::client::EndpointConnection::attach_interruptible(
                 &thread_endpoint,
                 &socket,
                 &hello,
-                &|interrupt| thread_halt.arm(interrupt),
+                &|interrupt| thread_halt.arm(began, interrupt),
                 &|| thread_halt.stopped(),
             ) {
                 Ok(mut conn) => {
@@ -913,7 +969,7 @@ fn spawn_endpoint(
                     thread_attachments.fetch_add(1, Ordering::Release);
                     *thread_shared.error.lock().unwrap() = None;
                     thread_shared.needs_install.store(false, Ordering::Release);
-                    backoff = std::time::Duration::from_millis(250);
+                    backoff = FIRST_BACKOFF;
 
                     // Catches a switch that landed while the handshake was in
                     // flight, and so is not described by the hello.
@@ -932,16 +988,23 @@ fn spawn_endpoint(
                     // No label: whatever shows this already knows which
                     // machine it is asking about.
                     let message = err.to_string();
-                    // Only ever set here, never cleared: the first attempt can
-                    // fail before ssh's stderr has been read, giving a bare
-                    // "unexpected end of stream", and a machine that has told
-                    // us herdr is missing has not gained it by failing more
-                    // vaguely the next time. Connecting clears it.
-                    if herdr_is_missing(&thread_endpoint, &message) {
-                        thread_shared.needs_install.store(true, Ordering::Release);
+                    // A nudge abandons an attempt on purpose, and the message
+                    // it leaves is ours — "endpoint was closed while
+                    // connecting". The machine never spoke, so it must not be
+                    // the one the sidebar blames for a wake we caused.
+                    if thread_halt.generation() == began {
+                        // Only ever set here, never cleared: the first attempt
+                        // can fail before ssh's stderr has been read, giving a
+                        // bare "unexpected end of stream", and a machine that
+                        // has told us herdr is missing has not gained it by
+                        // failing more vaguely the next time. Connecting
+                        // clears it.
+                        if herdr_is_missing(&thread_endpoint, &message) {
+                            thread_shared.needs_install.store(true, Ordering::Release);
+                        }
+                        *thread_shared.error.lock().unwrap() =
+                            Some(explain_attach_failure(&thread_endpoint, &message));
                     }
-                    *thread_shared.error.lock().unwrap() =
-                        Some(explain_attach_failure(&thread_endpoint, &message));
                     thread_status.store(HX_ENDPOINT_OFFLINE, Ordering::Release);
                     thread_halt.disarm();
                 }
@@ -950,17 +1013,13 @@ fn spawn_endpoint(
             // Each endpoint reconnects on its own. A machine that is asleep
             // must not stop the others from working, which is what a
             // session-wide retry would do.
-            if !thread_halt.rest(backoff) {
-                break;
+            match thread_halt.rest(backoff, began) {
+                Rested::Stopped => break,
+                // The last attempt ended because we condemned it, not because
+                // the machine refused us, so the climb starts over.
+                Rested::Woken => backoff = FIRST_BACKOFF,
+                Rested::Elapsed => backoff = (backoff * 2).min(LONGEST_BACKOFF),
             }
-            // A nudge means the last failure was the stale connection we were
-            // told to drop, not a machine that is refusing us, so the climb
-            // starts over rather than carrying on from where it was.
-            backoff = if thread_halt.take_nudge() {
-                std::time::Duration::from_millis(250)
-            } else {
-                (backoff * 2).min(std::time::Duration::from_secs(10))
-            };
             thread_status.store(HX_ENDPOINT_CONNECTING, Ordering::Release);
         }
 
@@ -1297,14 +1356,13 @@ pub unsafe extern "C" fn hx_reattach(session: *const HxSession, index: usize) ->
         .is_some()
 }
 
-/// Drops every remote connection and reattaches, without waiting for ssh.
+/// Drops every remote connection and reattaches, for a caller that knows the
+/// connections are stale — a wake from sleep being the one that does.
 ///
-/// For a wake from sleep. The connections a sleeping Mac had are attached to a
-/// path that stopped existing while it slept, and nothing on either side says
-/// so: the far end has no reason to speak and the near end is parked in a read
-/// that will not return. ssh gets there eventually, through missed keepalives
-/// — measured at two minutes — and two minutes of dead panes after every wake
-/// is indistinguishable from never reconnecting at all.
+/// Nothing on the wire says a path has died, so without being told, the only
+/// thing that notices is the transport's own keepalive timeout; `start_ssh`
+/// carries how long that is, and `ARCHITECTURE.md` why waiting for it is not
+/// good enough.
 ///
 /// Local endpoints are left alone. A unix socket lives entirely in this
 /// machine's kernel, so it comes back from sleep exactly as it went in, and
@@ -2003,6 +2061,185 @@ pub unsafe extern "C" fn hx_resize(
         .is_ok()
 }
 
+
+#[cfg(test)]
+mod halt_tests {
+    use super::*;
+
+    /// A transport whose only job is to be armed, and to say whether anything
+    /// ever broke it.
+    ///
+    /// `Interrupt::Local` wants a real socket pair — the point of it is that
+    /// shutting one half down returns the other half's blocked read — so these
+    /// use one rather than a stub. Whether the peer saw the shutdown is the
+    /// honest reading of "was this connection broken".
+    fn socket_pair() -> (std::os::unix::net::UnixStream, std::os::unix::net::UnixStream) {
+        let (near, far) = std::os::unix::net::UnixStream::pair().expect("socket pair");
+        // Set now rather than when it is read, because waking an interrupt
+        // drops it, and macOS refuses `setsockopt` on a socket whose peer has
+        // closed — the very state these tests are trying to observe.
+        far.set_read_timeout(Some(std::time::Duration::from_millis(250)))
+            .expect("read timeout");
+        (near, far)
+    }
+
+    /// Whether the connection was broken, read from the far end rather than
+    /// from our own record of having asked.
+    fn was_broken(peer: &std::os::unix::net::UnixStream) -> bool {
+        use std::io::Read;
+        // A shutdown or closed half reads as end-of-stream; a live one has
+        // nothing to say and times out instead.
+        let mut byte = [0u8; 1];
+        matches!((&mut { peer }).read(&mut byte), Ok(0))
+    }
+
+    /// The window that let a wake go missing: a nudge lands after the
+    /// transport exists but before the loop has armed it.
+    ///
+    /// Nothing is there to interrupt, so the nudge used to be dropped on the
+    /// floor and `arm` would then accept the condemned transport — leaving the
+    /// loop parked in a read on a path already known to be dead, with nothing
+    /// pending to break it out. Recovery fell back to ssh's keepalive timeout,
+    /// which is the wait the nudge exists to skip.
+    #[test]
+    fn a_transport_built_before_a_nudge_is_refused_after_it() {
+        let halt = Halt::default();
+        let began = halt.generation();
+        let (near, far) = socket_pair();
+
+        halt.nudge();
+
+        assert!(
+            !halt.arm(began, crate::endpoint::Interrupt::Local(near)),
+            "armed a transport the nudge had already condemned"
+        );
+        // Refusing is only useful because it is what makes the attempt give
+        // up; an attempt that proceeded unarmed would be the same bug.
+        assert_eq!(
+            halt.rest(LONGEST_BACKOFF, began),
+            Rested::Woken,
+            "the refused attempt did not lead to a fresh one"
+        );
+        drop(far);
+    }
+
+    /// The same window, one step later: a nudge after the transport is armed
+    /// has something to break, and must break it.
+    #[test]
+    fn a_nudge_breaks_a_transport_that_was_armed_in_time() {
+        let halt = Halt::default();
+        let began = halt.generation();
+        let (near, far) = socket_pair();
+
+        assert!(halt.arm(began, crate::endpoint::Interrupt::Local(near)));
+        halt.nudge();
+
+        assert!(
+            was_broken(&far),
+            "the live connection survived the nudge, so the read would not return"
+        );
+    }
+
+    /// A wake that arrives while an attempt is still failing has no waiter to
+    /// notify, and used to be slept through for the full backoff.
+    #[test]
+    fn a_wake_already_in_hand_is_not_slept_through() {
+        let halt = Halt::default();
+        let began = halt.generation();
+
+        halt.nudge();
+
+        let started = std::time::Instant::now();
+        let rested = halt.rest(LONGEST_BACKOFF, began);
+        let took = started.elapsed();
+
+        assert_eq!(rested, Rested::Woken);
+        assert!(
+            took < std::time::Duration::from_millis(100),
+            "waited {took:?} with a wake already in hand; the ceiling is \
+             {LONGEST_BACKOFF:?} and that is what used to be paid"
+        );
+    }
+
+    /// And one that arrives during the wait still cuts it short.
+    #[test]
+    fn a_wake_during_the_wait_cuts_it_short() {
+        let halt = std::sync::Arc::new(Halt::default());
+        let began = halt.generation();
+
+        let waker = std::sync::Arc::clone(&halt);
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            waker.nudge();
+        });
+
+        let started = std::time::Instant::now();
+        assert_eq!(halt.rest(LONGEST_BACKOFF, began), Rested::Woken);
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    /// Without a nudge the wait is the wait, or the climb would never happen.
+    #[test]
+    fn an_undisturbed_wait_runs_its_course() {
+        let halt = Halt::default();
+        let began = halt.generation();
+
+        let started = std::time::Instant::now();
+        let rested = halt.rest(std::time::Duration::from_millis(200), began);
+        let took = started.elapsed();
+
+        assert_eq!(rested, Rested::Elapsed);
+        assert!(
+            took >= std::time::Duration::from_millis(150),
+            "returned after {took:?}; a wait nothing interrupted came back early"
+        );
+    }
+
+    /// Disposal outranks a wake, whichever order they arrive in: a nudged
+    /// endpoint that is then freed must not come back.
+    #[test]
+    fn stopping_outranks_a_pending_wake() {
+        let halt = Halt::default();
+        let began = halt.generation();
+
+        halt.nudge();
+        halt.stop();
+
+        assert_eq!(halt.rest(LONGEST_BACKOFF, began), Rested::Stopped);
+        let (near, far) = socket_pair();
+        assert!(
+            !halt.arm(halt.generation(), crate::endpoint::Interrupt::Local(near)),
+            "a stopped endpoint armed another transport"
+        );
+        drop(far);
+    }
+
+    /// Four wakes in a row are four reconnects, not one. A laptop opened four
+    /// times is the ordinary case, and a generation that stopped moving — or a
+    /// flag that stopped being noticed — would leave it offline.
+    #[test]
+    fn every_wake_counts_not_just_the_first() {
+        let halt = Halt::default();
+        let mut began = halt.generation();
+
+        for round in 1..=4 {
+            halt.nudge();
+            assert_eq!(
+                halt.rest(LONGEST_BACKOFF, began),
+                Rested::Woken,
+                "wake {round} was not acted on"
+            );
+            began = halt.generation();
+            assert_eq!(began, round, "the generation stopped moving at {began}");
+        }
+
+        // And with no wake pending, the next wait is an ordinary one.
+        assert_eq!(
+            halt.rest(std::time::Duration::from_millis(50), began),
+            Rested::Elapsed
+        );
+    }
+}
 
 #[cfg(test)]
 mod tests {
