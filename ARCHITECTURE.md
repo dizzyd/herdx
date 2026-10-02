@@ -153,12 +153,18 @@ connection the Mac had before it slept points at a path that stopped existing
 while it slept, and nothing on either side will say so: the far end has no
 reason to speak, and this end is parked in a read that never returns. ssh does
 work it out from missed keepalives, but that measures at `(ServerAliveCountMax
-+ 1) × ServerAliveInterval`, and two minutes of dead panes after every wake is
-what "it never reconnects" looks like from the keyboard. So the app observes
++ 1) × ServerAliveInterval` — 40s as configured, and 120s before it was — and
+even the shorter one reads as "it never reconnects" from the keyboard. So the
+app observes
 `NSWorkspace.didWakeNotification` and nudges each remote endpoint: the live
 connection is broken, the backoff starts over, and the loop that was already
 there does the rest. Local endpoints are left alone — a unix socket lives in
 this machine's kernel and comes back from sleep exactly as it went in.
+
+The keepalives still matter, for the drops nothing announces: a Wi-Fi roam, a
+VPN flap, a machine rebooting. Those arrive with no notification to hang a
+nudge off, so the only question is how long they are believed, and 40s is the
+answer rather than 120.
 
 ### Images
 

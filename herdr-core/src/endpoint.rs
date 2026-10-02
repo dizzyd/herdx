@@ -756,8 +756,18 @@ fn start_ssh(
         .arg("BatchMode=yes")
         .arg("-o")
         .arg("ConnectTimeout=10")
+        // How long a connection whose path died unnoticed stays believed.
+        // ssh gives up after `(ServerAliveCountMax + 1) * ServerAliveInterval`
+        // — measured at 120s with the 30s interval this used to carry, and 40s
+        // with these. A wake from sleep does not wait for either, since
+        // `hx_reattach_remotes` is told about it; this is for the drops nothing
+        // announces, which is a Wi-Fi roam, a VPN flap or a machine rebooting.
+        // Three missed probes ten seconds apart is a link that is really gone,
+        // and reattaching costs a handshake and a surface resend, not a pane.
         .arg("-o")
-        .arg("ServerAliveInterval=30")
+        .arg("ServerAliveInterval=10")
+        .arg("-o")
+        .arg("ServerAliveCountMax=3")
         .arg(target)
         .arg(remote_bridge_command(session));
     if let Some(agent) = agent {
