@@ -140,6 +140,14 @@ was not. The habit that works:
   the bug were indistinguishable.
 - Python edits that `str.replace` without asserting the match land silently and
   build clean. Assert first. A commit once claimed a fix that was never applied.
+- **A dead connection is not a closed one, and the difference is the whole
+  bug.** Sleep, a Wi-Fi roam and a VPN flap all leave both ends holding a
+  socket with no FIN, no RST and no data — so nothing returns from a read and
+  nothing reports an error. Killing a process or stopping a server tests the
+  *closed* case and says nothing about this one. To reproduce it without sudo
+  or sleeping the machine, put a TCP relay in front of the remote and stop it
+  passing bytes without closing either side; then time how long the app takes
+  to notice. That is where the 120s and 40s in `start_ssh` come from.
 
 ## Dev affordances
 
