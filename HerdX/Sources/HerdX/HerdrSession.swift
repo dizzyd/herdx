@@ -79,6 +79,10 @@ struct EndpointInfo {
     let label: String
     let status: Status
     let isRemote: Bool
+    /// How many times it has attached, counting the first. Climbs on every
+    /// reconnect, so a probe can tell a reattach that landed between samples
+    /// from one that never happened — status reads `online` either way.
+    var attachments: UInt64 = 0
     /// Why it is not connected, when it has said so.
     let error: String?
     /// Reachable, but with no herdr on it — a failure that has an answer.
@@ -188,6 +192,7 @@ final class HerdrSession {
                     }
                 }(),
                 isRemote: hx_endpoint_is_remote(handle, index),
+                attachments: hx_endpoint_attachments(handle, index),
                 error: Self.take(hx_endpoint_error(handle, index)),
                 needsInstall: hx_endpoint_needs_install(handle, index),
                 snapshot: snapshots[endpoint: index])
@@ -361,6 +366,15 @@ final class HerdrSession {
     func setDefaultColor(foreground: Bool, rgb: (UInt8, UInt8, UInt8)) {
         guard let handle else { return }
         _ = hx_set_default_color(handle, foreground, rgb.0, rgb.1, rgb.2)
+    }
+
+    /// Drops and reattaches every remote machine, for a wake from sleep.
+    ///
+    /// Returns how many were asked, which is what a probe can assert on.
+    @discardableResult
+    func reattachRemotes() -> Int {
+        guard let handle else { return 0 }
+        return hx_reattach_remotes(handle)
     }
 
     /// Tells the servers whether this window is the one being looked at.

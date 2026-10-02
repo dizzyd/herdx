@@ -148,6 +148,18 @@ host-key prompt, and a stall would be indistinguishable from a slow machine —
 and its stderr is captured, since discarding it makes an unknown host key, a
 missing remote herdr and a refused connection all look like "the stream ended".
 
+Waking from sleep is told to the endpoints rather than discovered by them. A
+connection the Mac had before it slept points at a path that stopped existing
+while it slept, and nothing on either side will say so: the far end has no
+reason to speak, and this end is parked in a read that never returns. ssh does
+work it out from missed keepalives, but that measures at `(ServerAliveCountMax
++ 1) × ServerAliveInterval`, and two minutes of dead panes after every wake is
+what "it never reconnects" looks like from the keyboard. So the app observes
+`NSWorkspace.didWakeNotification` and nudges each remote endpoint: the live
+connection is broken, the backoff starts over, and the loop that was already
+there does the rest. Local endpoints are left alone — a unix socket lives in
+this machine's kernel and comes back from sleep exactly as it went in.
+
 ### Images
 
 Panes carry a graphics scene alongside their cells: image assets keyed by

@@ -160,6 +160,7 @@ All are development-only and read from the environment.
 | `HERDX_PROBE_CHORDS=1` | Report any prefix binding no keystroke can reach |
 | `HERDX_PROBE_COMMANDS=1` | Run commands against a live server and report what it made of them — throwaway sessions only |
 | `HERDX_PROBE_RESIZE=1` | Put resize mode up so it can be photographed |
+| `HERDX_PROBE_WAKE=1` | Post the wake notification and report each endpoint's attachment count either side of it — a real wake needs a real sleep, and status reads `online` either way |
 | `HERDX_PROBE_LOCK=<s>` | Report once a second whether the screen reads as locked and whether a sound would be heard. Lock the screen you are not sitting at: `vm.sh gui` runs it in the guest's login session, and `open -a ScreenSaverEngine` with `sysadminctl -screenLock immediate` locks that one |
 | `HERDX_ENDPOINT=<id>` | Pick an endpoint for one run (`local`, or a profile id) without writing the selection the TUI shares |
 | `HERDX_SESSION=<name>` | Aim one run at a named session, running or not, without writing the selection — and the only way to watch the window start a server, which otherwise means starting the default session you are sitting in |

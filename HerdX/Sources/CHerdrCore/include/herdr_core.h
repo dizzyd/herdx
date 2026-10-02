@@ -157,6 +157,12 @@ bool hx_machine_remove(const char *id);
 char *hx_machine_error(void);
 uint8_t hx_endpoint_status(const HxSession *session, size_t index);
 bool hx_endpoint_is_remote(const HxSession *session, size_t index);
+/// How many times the endpoint has attached, counting the first. Climbs on
+/// every reconnect, which is how a reconnect is told from no reconnect.
+uint64_t hx_endpoint_attachments(const HxSession *session, size_t index);
+/// Drops and reattaches every remote connection. For a wake from sleep,
+/// whose sockets point at a path that no longer exists.
+size_t hx_reattach_remotes(const HxSession *session);
 size_t hx_active_endpoint(const HxSession *session);
 bool hx_set_active_endpoint(HxSession *session, size_t index);
 char *hx_endpoint_snapshot_json(const HxSession *session, size_t index);

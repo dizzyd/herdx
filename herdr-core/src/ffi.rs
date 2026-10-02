@@ -513,6 +513,9 @@ struct Halt {
 struct HaltState {
     stopped: bool,
     interrupt: Option<crate::endpoint::Interrupt>,
+    /// Set by `nudge`, so the loop knows its wait was cut short by a caller
+    /// who knows better rather than by the clock running out.
+    nudged: bool,
 }
 
 impl Halt {
@@ -544,6 +547,35 @@ impl Halt {
         }
     }
 
+    /// Breaks the live connection and starts the next attempt now.
+    ///
+    /// Unlike `stop`, the endpoint survives: this is how a client that *knows*
+    /// its connection is stale — the machine has just woken, and every socket
+    /// it had is attached to a path that no longer exists — gets a reconnect
+    /// without waiting for ssh to notice. ssh notices by missing keepalives,
+    /// which measures at two minutes of dead panes after every wake, and
+    /// nothing short of this can shorten it: the far side is not going to
+    /// speak, so the blocked read never returns on its own.
+    fn nudge(&self) {
+        let interrupt = {
+            let mut state = self.state.lock().unwrap();
+            if state.stopped {
+                return;
+            }
+            state.nudged = true;
+            state.interrupt.take()
+        };
+        self.woken.notify_all();
+        if let Some(interrupt) = interrupt {
+            interrupt.wake();
+        }
+    }
+
+    /// Whether a nudge has arrived since this was last asked.
+    fn take_nudge(&self) -> bool {
+        std::mem::take(&mut self.state.lock().unwrap().nudged)
+    }
+
     fn stopped(&self) -> bool {
         self.state.lock().unwrap().stopped
     }
@@ -567,6 +599,13 @@ struct EndpointState {
     /// with a slow ssh handshake.
     outbound: std::sync::mpsc::Sender<ClientMessage>,
     status: Arc<std::sync::atomic::AtomicU8>,
+    /// How many times this endpoint has attached, counting the first.
+    ///
+    /// Monotonic because a status cannot answer "did it reconnect?": a drop
+    /// and a reattach that both land between two samples leave the status
+    /// exactly as it was, and a probe reading `online` either side of a wake
+    /// learns nothing. A number that only climbs cannot be missed.
+    attachments: Arc<std::sync::atomic::AtomicU64>,
     /// Stops the reconnect loop, wakes it out of its backoff and breaks it out
     /// of a blocking read.
     halt: Arc<Halt>,
@@ -832,6 +871,7 @@ fn spawn_endpoint(
 ) -> EndpointState {
     let shared = Arc::new(Shared::new(geometry, surface_active));
     let status = Arc::new(std::sync::atomic::AtomicU8::new(HX_ENDPOINT_CONNECTING));
+    let attachments = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let halt = Arc::new(Halt::default());
     let (tx, rx) = std::sync::mpsc::channel::<ClientMessage>();
 
@@ -847,6 +887,7 @@ fn spawn_endpoint(
 
     let thread_shared = Arc::clone(&shared);
     let thread_status = Arc::clone(&status);
+    let thread_attachments = Arc::clone(&attachments);
     let thread_endpoint = endpoint.clone();
     let thread_outbound = tx.clone();
     let thread_halt = Arc::clone(&halt);
@@ -869,6 +910,7 @@ fn spawn_endpoint(
                     begin_attachment(&thread_shared, hello.surface_active);
                     thread_shared.connected.store(true, Ordering::Release);
                     thread_status.store(HX_ENDPOINT_ONLINE, Ordering::Release);
+                    thread_attachments.fetch_add(1, Ordering::Release);
                     *thread_shared.error.lock().unwrap() = None;
                     thread_shared.needs_install.store(false, Ordering::Release);
                     backoff = std::time::Duration::from_millis(250);
@@ -911,7 +953,14 @@ fn spawn_endpoint(
             if !thread_halt.rest(backoff) {
                 break;
             }
-            backoff = (backoff * 2).min(std::time::Duration::from_secs(10));
+            // A nudge means the last failure was the stale connection we were
+            // told to drop, not a machine that is refusing us, so the climb
+            // starts over rather than carrying on from where it was.
+            backoff = if thread_halt.take_nudge() {
+                std::time::Duration::from_millis(250)
+            } else {
+                (backoff * 2).min(std::time::Duration::from_secs(10))
+            };
             thread_status.store(HX_ENDPOINT_CONNECTING, Ordering::Release);
         }
 
@@ -924,6 +973,7 @@ fn spawn_endpoint(
         shared,
         outbound: tx,
         status,
+        attachments,
         halt,
         writer: outbound,
         workers: vec![connect_thread, writer_thread],
@@ -1199,6 +1249,23 @@ pub unsafe extern "C" fn hx_endpoint_status(session: *const HxSession, index: us
         .map_or(HX_ENDPOINT_OFFLINE, |e| e.status.load(Ordering::Acquire))
 }
 
+/// How many times this endpoint has attached, counting the first.
+///
+/// For telling a reconnect that happened from one that did not. Status cannot:
+/// a drop and a reattach between two samples leave it reading `online` both
+/// times, which is what a wake that works and a wake that does nothing have in
+/// common.
+///
+/// # Safety
+/// `session` must be live.
+#[no_mangle]
+pub unsafe extern "C" fn hx_endpoint_attachments(session: *const HxSession, index: usize) -> u64 {
+    session
+        .as_ref()
+        .and_then(|s| s.endpoints.get(index))
+        .map_or(0, |e| e.attachments.load(Ordering::Acquire))
+}
+
 /// Whether the endpoint is reached over ssh rather than the local socket.
 ///
 /// # Safety
@@ -1209,6 +1276,55 @@ pub unsafe extern "C" fn hx_endpoint_is_remote(session: *const HxSession, index:
         .as_ref()
         .and_then(|s| s.endpoints.get(index))
         .is_some_and(|e| !matches!(e.endpoint.kind, crate::endpoint::EndpointKind::Local))
+}
+
+/// Drops one endpoint's connection and reattaches, without waiting for the
+/// transport to work out that it is dead.
+///
+/// The reconnect loop is already there and already does the work; this only
+/// says "now". Separate from the policy above it so both halves can be
+/// measured: this one against a mock server, which is a unix socket and so
+/// never the kind of endpoint the wake policy touches.
+///
+/// # Safety
+/// `session` must be live.
+#[no_mangle]
+pub unsafe extern "C" fn hx_reattach(session: *const HxSession, index: usize) -> bool {
+    session
+        .as_ref()
+        .and_then(|s| s.endpoints.get(index))
+        .map(|endpoint| endpoint.halt.nudge())
+        .is_some()
+}
+
+/// Drops every remote connection and reattaches, without waiting for ssh.
+///
+/// For a wake from sleep. The connections a sleeping Mac had are attached to a
+/// path that stopped existing while it slept, and nothing on either side says
+/// so: the far end has no reason to speak and the near end is parked in a read
+/// that will not return. ssh gets there eventually, through missed keepalives
+/// — measured at two minutes — and two minutes of dead panes after every wake
+/// is indistinguishable from never reconnecting at all.
+///
+/// Local endpoints are left alone. A unix socket lives entirely in this
+/// machine's kernel, so it comes back from sleep exactly as it went in, and
+/// dropping a connection that works to prove it would only cost a resend.
+///
+/// Returns how many endpoints were asked to reattach.
+///
+/// # Safety
+/// `session` must be live.
+#[no_mangle]
+pub unsafe extern "C" fn hx_reattach_remotes(session: *const HxSession) -> usize {
+    let Some(session) = session.as_ref() else {
+        return 0;
+    };
+    session
+        .endpoints
+        .iter()
+        .filter(|endpoint| !matches!(endpoint.endpoint.kind, crate::endpoint::EndpointKind::Local))
+        .map(|endpoint| endpoint.halt.nudge())
+        .count()
 }
 
 /// Which endpoint currently renders a surface and takes input.

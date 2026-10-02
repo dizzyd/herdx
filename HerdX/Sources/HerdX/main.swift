@@ -304,6 +304,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         installCaptureHookIfRequested()
         installInputProbeIfRequested()
         installLockProbeIfRequested()
+        installWakeObserver()
+        installWakeProbeIfRequested()
         checkForUpdate()
         // Its own slow timer, not the sixty-a-second one: this asks a server
         // several questions and nothing it looks at changes in under an hour.
@@ -933,6 +935,80 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         // size used for the handshake was whatever existed before layout.
         gridView.reportGridSize()
         return true
+    }
+
+    /// Dev affordance: `HERDX_PROBE_WAKE=1` posts the wake notification and
+    /// reports what the endpoints made of it.
+    ///
+    /// A real wake needs a real sleep, which is not something a test run can
+    /// arrange, so this exercises the half that is in this app: that the
+    /// observer is installed, that it reaches the core, and that the policy
+    /// picks the remote machines and leaves a local one alone. What the core
+    /// then does with a nudged connection is measured in `session_wake.rs`,
+    /// against a server rather than against this app's opinion of one.
+    ///
+    /// Statuses are printed before and after, because "it asked" is checking
+    /// your own homework — the transition is the answer.
+    private func installWakeProbeIfRequested() {
+        guard ProcessInfo.processInfo.environment["HERDX_PROBE_WAKE"] != nil else { return }
+        let delay = ProcessInfo.processInfo.environment["HERDX_PROBE_DELAY"]
+            .flatMap(Double.init) ?? 6
+        func report(_ when: String) {
+            for endpoint in session?.endpoints ?? [] {
+                print(
+                    "probe: \(when) \(endpoint.label) remote=\(endpoint.isRemote)"
+                        + " status=\(endpoint.status)"
+                        + " attachments=\(endpoint.attachments)")
+            }
+            fflush(stdout)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                report("before")
+                NSWorkspace.shared.notificationCenter.post(
+                    name: NSWorkspace.didWakeNotification, object: nil)
+                // Not the observer's own count: that would only say the
+                // notification was delivered. The attachment numbers either
+                // side of this line are the answer, and they are the core's.
+                print("probe: posted didWake")
+                fflush(stdout)
+                for seconds in [1.0, 3.0, 6.0] {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
+                        MainActor.assumeIsolated {
+                            report("t+\(Int(seconds))s")
+                            if seconds == 6.0 {
+                                print("probe: done")
+                                fflush(stdout)
+                                NSApp.terminate(nil)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Reattaches the remote machines the moment the Mac wakes.
+    ///
+    /// Sleep leaves every remote connection pointing at a path that stopped
+    /// existing while the lid was shut, and neither end has anything to say
+    /// about it: the far side has no reason to speak, and this side is parked
+    /// in a read that will not return. ssh does work it out from missed
+    /// keepalives, but that measures at two minutes, and two minutes of dead
+    /// panes after every wake is what "it never reconnects" looks like from
+    /// the keyboard.
+    ///
+    /// Waking is the one moment when the staleness is known rather than
+    /// guessed, so this is where to act on it. The reconnect itself is the
+    /// core's, and local endpoints are left alone — a unix socket survives
+    /// sleep untouched.
+    private func installWakeObserver() {
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { _ = self?.session?.reattachRemotes() }
+        }
     }
 
     /// Reattaches after the server goes away.
