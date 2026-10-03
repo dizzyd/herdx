@@ -65,6 +65,13 @@ extension Command {
         case .paneSendText: return 42
         case .paneGet: return 44
         case .zoomPaneWithID: return 43
+        case .newWorktree: return 45
+        case .openWorktree: return 46
+        case .removeWorktree: return 47
+        case .worktreeList: return 48
+        case .worktreeCreate: return 49
+        case .worktreeOpen: return 50
+        case .worktreeRemove: return 51
         }
     }
 
@@ -73,6 +80,7 @@ extension Command {
             .newTab, .closeTab, .nextTab, .previousTab, .splitRight, .splitDown,
             .focusLeft, .focusDown, .focusUp, .focusRight, .closePane, .zoomPane, .newWorkspace,
             .newLocalWorkspace, .hibernateWorkspace, .copyMode, .toggleSidebar, .help,
+            .newWorktree, .openWorktree, .removeWorktree,
         ]
         return Dictionary(uniqueKeysWithValues: all.map { ($0.tag, $0) })
     }()
@@ -103,6 +111,19 @@ extension Command {
         // shortcut for something that ends processes is too easy to hit while
         // reaching for ⌘H, which macOS uses to hide the app.
         .item("Hibernate Workspace", .unbound, .hibernateWorkspace),
+        .separator,
+        // With the workspaces rather than in a menu of their own: a worktree
+        // *is* a workspace here, made from a branch instead of a directory,
+        // and that is where someone would look for it.
+        //
+        // None carries an equivalent. herdr binds the first to a prefix chord,
+        // which a Mac menu cannot spell, and leaves the other two unbound — so
+        // for most people this menu is the only way to reach them, and
+        // inventing ⌘ keys the TUI does not have would make the two clients
+        // disagree about a keymap that belongs to the user.
+        .item("New Worktree…", .unbound, .newWorktree),
+        .item("Open Worktree…", .unbound, .openWorktree),
+        .item("Remove Worktree…", .unbound, .removeWorktree),
     ]
 
     /// Copy mode sits under Edit because that is what it is for — selecting

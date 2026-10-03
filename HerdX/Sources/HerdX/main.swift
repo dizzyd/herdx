@@ -306,6 +306,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         installLockProbeIfRequested()
         installWakeObserver()
         installWakeProbeIfRequested()
+        installWorktreeProbeIfRequested()
         checkForUpdate()
         // Its own slow timer, not the sixty-a-second one: this asks a server
         // several questions and nothing it looks at changes in under an hour.
@@ -1337,6 +1338,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         case .resizeMode:
             return { self.enterResizeMode() }
 
+        // All three are offered whatever the focused workspace is. Whether an
+        // action applies to it is a question with a useful answer — "start from
+        // the parent", "this is not a worktree" — and returning nil here would
+        // replace that answer with "not in HerdX yet".
+        case .newWorktree: return { self.newWorktree(session: session) }
+        case .openWorktree: return { self.openWorktree(session: session) }
+        case .removeWorktree: return { self.removeWorktree(session: session) }
+
         // Zero jumps to whatever most needs you; the other two cycle. All three
         // walk the same order the Agents sidebar is in, so the key and the list
         // cannot disagree about what "next" means.
@@ -1721,6 +1730,357 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         }
     }
 
+    /// Dev affordance: `HERDX_PROBE_WORKTREE=<cwd>` runs the whole worktree
+    /// round trip against a live server and reports what it made of it.
+    ///
+    /// Throwaway sessions and throwaway repos only — it creates a branch and a
+    /// checkout and then deletes them.
+    ///
+    /// The sheets are what a person uses and what a probe cannot answer, so
+    /// this drives the requests under them. The one thing it is really for is
+    /// the path: `Worktrees.checkoutPath` promises one before anything exists,
+    /// and the only way to know the promise is kept is to ask herdr where the
+    /// checkout actually went. Unit vectors cannot answer that — they only say
+    /// the port matches the copy of the rule that was copied.
+    private func installWorktreeProbeIfRequested() {
+        guard let cwd = ProcessInfo.processInfo.environment["HERDX_PROBE_WORKTREE"] else { return }
+        let delay = ProcessInfo.processInfo.environment["HERDX_PROBE_DELAY"]
+            .flatMap(Double.init) ?? 6
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            MainActor.assumeIsolated { self?.runWorktreeProbe(in: cwd) }
+        }
+    }
+
+    private func runWorktreeProbe(in cwd: String) {
+        guard let session else { return print("probe: no session") }
+        func say(_ text: String) {
+            print("probe: \(text)")
+            fflush(stdout)
+        }
+        func finish() {
+            say("done")
+            NSApp.terminate(nil)
+        }
+
+        // Its own workspace in the repo under test, so the probe never asks
+        // about whatever the session happened to be sitting in.
+        ask(.createWorkspace(cwd: cwd, label: "wtprobe"), Reply.WorkspaceCreated.self,
+            session: session, failing: "workspace"
+        ) { made in
+            let workspace = made.workspace.workspaceID
+            say("workspace=\(workspace) cwd=\(cwd)")
+            let root = session.lastSnapshot?.worktreeDirectory
+            say("worktree_directory=\(root ?? "nil")")
+
+            self.ask(.worktreeList(workspace: workspace), Reply.WorktreeList.self,
+                session: session, failing: "list"
+            ) { list in
+                let branch = "worktree/probe-\(Int(Date().timeIntervalSince1970) % 100000)"
+                // Worked out before the request, exactly as the sheet shows it.
+                let predicted = root.map {
+                    Worktrees.checkoutPath(
+                        root: $0, repo: list.source.repoName, branch: branch)
+                }
+                say("repo=\(list.source.repoName) existing=\(list.worktrees.count)")
+                say("predicted=\(predicted ?? "nil")")
+
+                self.ask(.worktreeCreate(workspace: workspace, branch: branch),
+                    Reply.WorktreeCreated.self, session: session, failing: "create"
+                ) { created in
+                    // What the server did, against what we told the person it
+                    // would do.
+                    say("created tab=\(created.tab.tabID) at=\(created.worktree.path)")
+                    say("path_matches_preview=\(created.worktree.path == predicted)")
+
+                    self.ask(.worktreeList(workspace: workspace), Reply.WorktreeList.self,
+                        session: session, failing: "relist"
+                    ) { after in
+                        let entry = after.worktrees.first { $0.path == created.worktree.path }
+                        say(
+                            "relisted=\(after.worktrees.count) found=\(entry != nil) "
+                                + "title=\(entry?.title ?? "nil") "
+                                + "linked=\(entry?.isLinkedWorktree ?? false) "
+                                + "open_workspace=\(entry?.openWorkspaceID ?? "nil")")
+                        say("offered_to_open=\(after.openable.count)")
+
+                        // Removed through the same guard a person goes through,
+                        // so the probe also says whether that guard agrees the
+                        // new workspace is removable.
+                        guard let opened = entry?.openWorkspaceID else {
+                            say("no workspace to remove; leaving \(created.worktree.path)")
+                            return finish()
+                        }
+                        let made = session.lastSnapshot?.workspaces
+                            .first { $0.workspaceID == opened }
+                        say(
+                            "remove_refusal=\(Worktrees.refusal(for: .removeWorktree, workspace: made) ?? "none")")
+
+                        // The lookup the remove flow actually does, which is
+                        // not the one above: it lists from *inside* the linked
+                        // checkout and finds the entry pointing back at it.
+                        // Whether `worktree.list` answers from there at all is
+                        // herdr's business, and the only way to know is to ask.
+                        //
+                        // Strictly before the removal, never alongside it.
+                        // herdr runs one worktree operation at a time and
+                        // answers `endpoint_busy` to anything that overlaps —
+                        // which, measured the overlapping way round, replaced
+                        // the refusal this probe exists to read.
+                        self.ask(.worktreeList(workspace: opened),
+                            Reply.WorktreeList.self, session: session, failing: "list from linked"
+                        ) { inside in
+                            let mine = inside.worktrees.first { $0.openWorkspaceID == opened }
+                            say(
+                                "from_linked repo=\(inside.source.repoName) "
+                                    + "found_self=\(mine != nil) path=\(mine?.path ?? "nil")")
+                            say("path_is_the_one_created=\(mine?.path == created.worktree.path)")
+
+                            // Left dirty on purpose. The second half of the
+                            // remove flow hangs off herdr's refusal code, and a
+                            // code that does not match is a force prompt that
+                            // never appears — the person just sees a removal
+                            // fail and stay failed.
+                            let dirtied = FileManager.default.createFile(
+                                atPath: created.worktree.path + "/probe-dirt.txt",
+                                contents: Data("uncommitted\n".utf8))
+                            say("dirtied=\(dirtied)")
+
+                            self.sendProbeRemoval(
+                                workspace: opened, force: false, session: session, say: say
+                            ) { gentle in
+                                say(
+                                    "unforced=\(gentle.map { "refused \($0.code ?? "nil")" } ?? "removed")")
+                                say("needs_force=\(gentle.map(Worktrees.needsForce) ?? false)")
+                                self.sendProbeRemoval(
+                                    workspace: opened, force: true, session: session, say: say
+                                ) { forced in
+                                    say("forced=\(forced.map { "refused \($0.text)" } ?? "removed")")
+                                    self.ask(.worktreeList(workspace: workspace),
+                                        Reply.WorktreeList.self, session: session, failing: "final"
+                                    ) { final in
+                                        let gone = !final.worktrees.contains {
+                                            $0.path == created.worktree.path
+                                        }
+                                        say("removed=\(gone) remaining=\(final.worktrees.count)")
+                                        self.invoke(.closeWorkspace(workspace), session: session)
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                                            MainActor.assumeIsolated { finish() }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// One removal for the probe, reporting the refusal rather than acting on
+    /// it — the flow a person drives asks a question here instead.
+    private func sendProbeRemoval(
+        workspace: String, force: Bool, session: HerdrSession, say: @escaping (String) -> Void,
+        then done: @escaping (Reply.Failure?) -> Void
+    ) {
+        let id = UUID().uuidString
+        let command = Command.worktreeRemove(workspace: workspace, force: force)
+        guard let boot = session.lastSnapshot?.bootID, let json = command.requestJSON(id: id)
+        else { return say("remove: no boot id") }
+        session.request(json, bootID: boot, id: id) { body in
+            MainActor.assumeIsolated { done(Reply.rejection(in: body)) }
+        }
+    }
+
+    // MARK: - Worktrees
+
+    /// Asks the endpoint about the focused workspace's repo, then hands over.
+    ///
+    /// Every worktree action starts here, create included: the sheet shows
+    /// where a branch will land, and that needs the repo's name, which the
+    /// snapshot does not carry. The guard runs first so a refusal costs no
+    /// request — and so it can say which way round the rule is, which is the
+    /// part that tells someone what to do instead.
+    private func withWorktrees(
+        _ action: Keymap.Action, session: HerdrSession,
+        then use: @escaping (String, Reply.WorktreeList) -> Void
+    ) {
+        let workspace = session.lastSnapshot?.workspaces.first(where: \.focused)
+        if let refusal = Worktrees.refusal(for: action, workspace: workspace) {
+            notice(refusal)
+            return
+        }
+        guard let workspace else { return }
+        ask(.worktreeList(workspace: workspace.workspaceID), Reply.WorktreeList.self,
+            session: session, failing: "worktrees"
+        ) { use(workspace.workspaceID, $0) }
+    }
+
+    /// One request whose reply is read rather than only checked for rejection.
+    ///
+    /// `invoke` is for the commands whose reply says nothing but whether they
+    /// worked. These three carry what the next step needs — the repo, the tab
+    /// to focus — so the body has to be decoded, and a failure named rather
+    /// than swallowed.
+    private func ask<Result: Decodable>(
+        _ command: Command, _ type: Result.Type, session: HerdrSession, failing label: String,
+        then use: @escaping (Result) -> Void
+    ) {
+        let id = UUID().uuidString
+        guard let boot = session.lastSnapshot?.bootID, let json = command.requestJSON(id: id)
+        else { return }
+        session.request(json, bootID: boot, id: id) { [weak self] body in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                switch Reply.decode(type, from: body) {
+                case .success(let result): use(result)
+                case .failure(let failure): self.notice("\(label): \(failure.text)")
+                }
+            }
+        }
+    }
+
+    /// Asks for a branch, showing where it will be checked out as it is typed.
+    private func newWorktree(session: HerdrSession) {
+        withWorktrees(.newWorktree, session: session) { workspace, list in
+            // Absent only from a server too old to publish it; the sheet then
+            // asks for a branch without claiming to know where it goes.
+            let root = session.lastSnapshot?.worktreeDirectory
+            self.prompt.ask(
+                over: self.window, title: "New worktree",
+                value: Worktrees.branchSuggestion(),
+                describe: root.map { root in
+                    { branch in
+                        branch.isEmpty
+                            ? ""
+                            : Worktrees.checkoutPath(
+                                root: root, repo: list.source.repoName, branch: branch)
+                    }
+                }
+            ) { branch in
+                self.createWorktree(branch: branch, from: workspace, session: session)
+            }
+        }
+    }
+
+    /// Creates the checkout and goes to it.
+    ///
+    /// Two steps because the request cannot ask for focus and mean it: herdr
+    /// makes the workspace asynchronously, and the reply is the first thing
+    /// that knows which tab there is to focus.
+    private func createWorktree(branch: String, from workspace: String, session: HerdrSession) {
+        // `git worktree add` plus whatever the repo runs on checkout, so this
+        // is not instant and the window should not look idle while it happens.
+        notice("creating \(branch)…")
+        ask(.worktreeCreate(workspace: workspace, branch: branch), Reply.WorktreeCreated.self,
+            session: session, failing: "worktree \(branch)"
+        ) { created in
+            guard let session = self.session else { return }
+            self.invoke(.focusTab(created.tab.tabID), session: session)
+            self.notice("worktree \(branch)")
+        }
+    }
+
+    /// Lists the repo's checkouts and opens the chosen one.
+    private func openWorktree(session: HerdrSession) {
+        withWorktrees(.openWorktree, session: session) { workspace, list in
+            let entries = list.openable
+            guard !entries.isEmpty else {
+                self.notice("no git worktrees for this repo")
+                return
+            }
+            self.picker.show(
+                over: self.window, title: "Open worktree",
+                items: entries.map { entry in
+                    // Said rather than left to be discovered: opening one that
+                    // is already open lands you somewhere you could have
+                    // reached, and the repo's own checkout is not a worktree
+                    // anyone means to "open".
+                    let detail = [
+                        entry.openWorkspaceID != nil ? "open" : nil,
+                        entry.isLinkedWorktree ? nil : "source",
+                        entry.isDetached ? "detached" : nil,
+                        entry.path,
+                    ].compactMap { $0 }.joined(separator: "  ·  ")
+                    return Picker.Item(title: entry.title, detail: detail) {
+                        self.invoke(
+                            .worktreeOpen(workspace: workspace, path: entry.path),
+                            session: session)
+                    }
+                })
+        }
+    }
+
+    /// Removes the checkout this workspace is, after asking.
+    private func removeWorktree(session: HerdrSession) {
+        withWorktrees(.removeWorktree, session: session) { workspace, list in
+            // The guard only proved this workspace is a linked checkout. Which
+            // checkout it is comes from the list, and a workspace herdr does
+            // not match to one is not ours to remove.
+            guard let entry = list.worktrees.first(where: { $0.openWorkspaceID == workspace })
+            else {
+                self.notice("This workspace is not a Herdr-managed worktree checkout.")
+                return
+            }
+            guard
+                self.confirm(
+                    "Remove “\(entry.title)”?",
+                    detail: "The checkout at \(entry.path) is deleted. The branch is not.",
+                    action: "Remove")
+            else { return }
+            self.sendWorktreeRemoval(entry, workspace: workspace, force: false, session: session)
+        }
+    }
+
+    /// Sends the removal, and asks a second time when git will not do it
+    /// quietly.
+    ///
+    /// herdr answers a checkout with uncommitted work — or one whose directory
+    /// has already gone — by refusing and saying so, rather than by deciding
+    /// for anybody. So does this: the second question is a different question,
+    /// and it names what is being thrown away.
+    private func sendWorktreeRemoval(
+        _ entry: Reply.WorktreeList.Entry, workspace: String, force: Bool, session: HerdrSession
+    ) {
+        let id = UUID().uuidString
+        let command = Command.worktreeRemove(workspace: workspace, force: force)
+        guard let boot = session.lastSnapshot?.bootID, let json = command.requestJSON(id: id)
+        else { return }
+        session.request(json, bootID: boot, id: id) { [weak self] body in
+            MainActor.assumeIsolated {
+                guard let self, let session = self.session else { return }
+                guard let failure = Reply.rejection(in: body) else {
+                    self.notice("removed \(entry.title)")
+                    return
+                }
+                guard !force, Worktrees.needsForce(failure) else {
+                    self.notice("remove \(entry.title): \(failure.text)")
+                    return
+                }
+                guard
+                    self.confirm(
+                        "Force removal of “\(entry.title)”?",
+                        detail: "git will not remove it as it is: \(failure.text)",
+                        action: "Force Remove")
+                else { return }
+                self.sendWorktreeRemoval(
+                    entry, workspace: workspace, force: true, session: session)
+            }
+        }
+    }
+
+    /// A destructive confirm, with Return on Cancel.
+    private func confirm(_ message: String, detail: String, action: String) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = message
+        alert.informativeText = detail
+        let proceed = alert.addButton(withTitle: action)
+        let cancel = alert.addButton(withTitle: "Cancel")
+        // Return must not be the button that deletes a directory.
+        proceed.keyEquivalent = ""
+        cancel.keyEquivalent = "\r"
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
     private func invoke(_ command: Command, session: HerdrSession, bootID: String? = nil) {
         // Copy mode is entirely client-side: herdr has no endpoint method for
         // it, because the shell that owns the keymap owns the mode.
@@ -1748,6 +2108,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         }
         if case .hibernateWorkspace = command {
             hibernateFocusedWorkspace(session: session)
+            return
+        }
+        // Each is a sequence rather than a payload, and each asks the repo
+        // about itself before it can even draw its sheet.
+        if case .newWorktree = command {
+            newWorktree(session: session)
+            return
+        }
+        if case .openWorktree = command {
+            openWorktree(session: session)
+            return
+        }
+        if case .removeWorktree = command {
+            removeWorktree(session: session)
             return
         }
         // These take a required id that herdr will not infer from who is

@@ -112,6 +112,25 @@ to stop one is not the same as there being none.
 **Attach Machines** decides whether the saved remotes come along with the
 session in front of you, or it stays local.
 
+### Worktrees
+
+A worktree is a second checkout of a repo on another branch, and herdr treats
+one as a workspace of its own. **New Worktree…** asks for a branch, suggesting a
+name so the common case is one keystroke, and shows the directory it is about to
+land in as you type — the one thing about a new worktree that is not obvious
+from its name. The branch is cut from HEAD, and you end up in it.
+
+**Open Worktree…** lists the repo's existing checkouts, saying which are already
+open, and **Remove Worktree…** deletes the checkout you are in — not its branch,
+and not without asking. A checkout with uncommitted work in it is refused rather
+than quietly discarded, and forcing it is a second, separate question.
+
+All three work on the repo the focused workspace belongs to, so new and open
+start from the repo itself rather than from inside one of its worktrees, and
+remove only applies inside one. herdr binds the first to a prefix chord (⌃b ⇧G
+by default) and leaves the other two for you to bind; all three are in the
+**Shell** menu either way.
+
 ### Several machines
 
 Machines come from herdr's own catalog, and **Machines…** (⇧⌘M) edits it. Each

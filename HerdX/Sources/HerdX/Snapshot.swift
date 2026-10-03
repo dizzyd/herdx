@@ -9,6 +9,12 @@ struct Snapshot: Decodable {
     let revision: UInt64
     /// The user's own keybindings, normalised by the server.
     let serverKeybindingsToml: String?
+    /// Where this endpoint puts new linked worktree checkouts.
+    ///
+    /// The endpoint's own path, not a path on this Mac: the create sheet shows
+    /// where a branch is about to land, and the machine it lands on may not
+    /// spell paths the way this one does.
+    let worktreeDirectory: String?
     let focusedWorkspaceID: String?
     let focusedTabID: String?
     let focusedPaneID: String?
@@ -21,6 +27,7 @@ struct Snapshot: Decodable {
         case bootID = "boot_id"
         case revision
         case serverKeybindingsToml = "server_keybindings_toml"
+        case worktreeDirectory = "worktree_directory"
         case focusedWorkspaceID = "focused_workspace_id"
         case focusedTabID = "focused_tab_id"
         case focusedPaneID = "focused_pane_id"
@@ -63,12 +70,32 @@ struct Snapshot: Decodable {
         /// one tab anywhere carries it, so it cannot say which tab a workspace
         /// you are *not* in would open at.
         let activeTabID: String?
+        /// Present when this workspace is a checkout herdr manages, which is
+        /// what decides which worktree actions apply to it.
+        let worktree: Worktree?
 
         enum CodingKeys: String, CodingKey {
             case workspaceID = "workspace_id"
-            case number, label, branch, focused
+            case number, label, branch, focused, worktree
             case agentStatus = "agent_status"
             case activeTabID = "active_tab_id"
+        }
+    }
+
+    /// A workspace's place in a repo, as the snapshot reports it.
+    ///
+    /// `isLinkedWorktree` distinguishes the repo's own checkout from one of its
+    /// linked worktrees. Both carry a `worktree`, so its presence alone says
+    /// nothing — which is the mistake the guards in `Worktrees.refusal` exist
+    /// to avoid making.
+    struct Worktree: Decodable {
+        let key: String
+        let label: String
+        let isLinkedWorktree: Bool
+
+        enum CodingKeys: String, CodingKey {
+            case key, label
+            case isLinkedWorktree = "is_linked_worktree"
         }
     }
 

@@ -188,6 +188,72 @@ enum Reply {
         }
     }
 
+    /// `worktree.list`: the repo the workspace belongs to, and its checkouts.
+    struct WorktreeList: Decodable {
+        let source: Source
+        let worktrees: [Entry]
+
+        /// The repo itself. `repoName` is what the create sheet needs — the
+        /// checkout path is the worktree directory, then this, then the
+        /// branch's slug.
+        struct Source: Decodable {
+            let repoName: String
+            let repoRoot: String
+
+            enum CodingKeys: String, CodingKey {
+                case repoName = "repo_name"
+                case repoRoot = "repo_root"
+            }
+        }
+
+        struct Entry: Decodable {
+            let path: String
+            let branch: String?
+            let label: String
+            let isBare: Bool
+            let isDetached: Bool
+            let isPrunable: Bool
+            let isLinkedWorktree: Bool
+            /// Set when this checkout is already open as a workspace, which is
+            /// worth saying before someone opens it a second time.
+            let openWorkspaceID: String?
+
+            enum CodingKeys: String, CodingKey {
+                case path, branch, label
+                case isBare = "is_bare"
+                case isDetached = "is_detached"
+                case isPrunable = "is_prunable"
+                case isLinkedWorktree = "is_linked_worktree"
+                case openWorkspaceID = "open_workspace_id"
+            }
+
+            /// What to call it: the branch when it has one, since that is what
+            /// anyone is looking for, and herdr's own label when it does not.
+            var title: String { branch ?? label }
+        }
+
+        /// The checkouts worth offering. A bare repo has no working tree to
+        /// open, and a prunable one is a checkout whose directory has gone —
+        /// herdr's own picker drops both.
+        var openable: [Entry] { worktrees.filter { !$0.isBare && !$0.isPrunable } }
+    }
+
+    /// `worktree.create`: the tab to focus, since the request did not ask for
+    /// focus and this is the first thing that knows there is a tab.
+    struct WorktreeCreated: Decodable {
+        let tab: Tab
+        let worktree: Worktree
+
+        struct Tab: Decodable {
+            let tabID: String
+            enum CodingKeys: String, CodingKey { case tabID = "tab_id" }
+        }
+        struct Worktree: Decodable {
+            let path: String
+            let branch: String?
+        }
+    }
+
     struct PaneInfo: Decodable {
         let pane: PaneEntry
     }

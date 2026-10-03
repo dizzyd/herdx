@@ -50,6 +50,27 @@ enum Command {
     case renamePane(String, String)
     case renameWorkspace(String, String)
     case resizePane(String)
+    /// What repo a workspace belongs to, and what worktrees it already has.
+    ///
+    /// Every worktree action starts here, including create: the sheet needs the
+    /// repo's name to show where a branch will land, and nothing in the
+    /// snapshot carries it.
+    case worktreeList(workspace: String)
+    /// A new linked checkout of `branch`, cut from HEAD.
+    ///
+    /// `focus` is deliberately not set. herdr's own client leaves it false and
+    /// focuses the tab the reply names instead, because the reply is what says
+    /// which tab there is to focus.
+    case worktreeCreate(workspace: String, branch: String)
+    case worktreeOpen(workspace: String, path: String)
+    case worktreeRemove(workspace: String, force: Bool)
+    /// The three worktree actions as the menu bar offers them.
+    ///
+    /// Separate from the four requests above because none of them is one
+    /// request: each asks the repo about itself first, then puts a sheet up,
+    /// and only then sends anything. Same shape as `newLocalWorkspace` — a
+    /// command `invoke` resolves into a flow rather than a payload.
+    case newWorktree, openWorktree, removeWorktree
 
     var method: String {
         switch self {
@@ -71,6 +92,10 @@ enum Command {
         case .renamePane: return "pane.rename"
         case .renameWorkspace: return "workspace.rename"
         case .resizePane: return "pane.resize"
+        case .worktreeList: return "worktree.list"
+        case .worktreeCreate: return "worktree.create"
+        case .worktreeOpen: return "worktree.open"
+        case .worktreeRemove: return "worktree.remove"
         case .reloadConfig: return "server.reload_config"
         case .closeWorkspace: return "workspace.close"
         case .paneList: return "pane.list"
@@ -88,6 +113,9 @@ enum Command {
         // a named machine, and the aiming is `invoke`'s job rather than
         // anything the request itself can say.
         case .newLocalWorkspace: return ""
+        // Likewise: a sequence that starts with worktree.list and asks a
+        // question before it sends anything.
+        case .newWorktree, .openWorktree, .removeWorktree: return ""
         // Several requests over the local socket rather than one over the
         // endpoint; see `Hibernator`.
         case .hibernateWorkspace: return ""
@@ -141,6 +169,17 @@ enum Command {
         // No amount: herdr picks its own step, which is the one its own
         // resize mode moves by.
         case .resizePane(let direction): return ["direction": direction]
+        case .worktreeList(let workspace): return ["workspace_id": workspace]
+        case .worktreeCreate(let workspace, let branch):
+            // `base` is what the new branch is cut from, and herdr's own
+            // client names HEAD explicitly rather than leaving it out.
+            return ["workspace_id": workspace, "branch": branch, "base": "HEAD"]
+        case .worktreeOpen(let workspace, let path):
+            // Focused here, unlike create: opening an existing checkout is
+            // asking to be in it, and the reply adds nothing to wait for.
+            return ["workspace_id": workspace, "path": path, "focus": true]
+        case .worktreeRemove(let workspace, let force):
+            return ["workspace_id": workspace, "force": force]
         default: return [:]
         }
     }

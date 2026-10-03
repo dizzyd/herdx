@@ -188,6 +188,39 @@ VPN flap, a machine rebooting. Those arrive with no notification to hang a
 nudge off, so the only question is how long they are believed, and 40s is the
 answer rather than 120.
 
+### Worktrees
+
+All four of herdr's worktree methods are in the client-shell allow-list, so
+these go over the endpoint like everything else rather than through `LocalAPI`.
+
+Each of the three actions begins with `worktree.list`, create included: the
+create sheet shows where a branch is about to be checked out, and that needs the
+repo's name, which the snapshot does not carry. The path itself is worked out
+here — `Worktrees.checkoutPath`, a port of herdr's `branch_to_path_slug` — because
+nothing will tell you a path that does not exist yet. A port is a promise about
+someone else's code, so `WorktreeNamingTests` carries herdr's own test vectors
+and `HERDX_PROBE_WORKTREE` checks the prediction against where the server
+actually put the checkout.
+
+`worktree.create` and `worktree.remove` are handled asynchronously on herdr's
+app runtime, so their replies arrive on the same request id but take as long as
+`git worktree add` and whatever the repo runs on checkout. Create is sent with
+`focus` unset and the tab from its reply is focused in a second request, which is
+what herdr's own client does — the reply is the first thing that knows there is
+a tab to focus.
+
+Which actions apply depends on the focused workspace's `worktree.is_linked_worktree`:
+new and open start from the repo, remove only means something inside a linked
+checkout. Both kinds of workspace carry a `worktree`, so its presence alone says
+nothing — the flag is the whole answer, and getting it backwards would offer to
+delete the repo someone works in.
+
+Removing a checkout with uncommitted work is refused by herdr with
+`dirty_worktree_requires_force` rather than decided for anybody, and HerdX asks
+a second, separate question rather than retrying. That code is matched on, which
+makes it a thing that can drift: the probe exercises a deliberately dirty
+checkout so the match is measured rather than assumed.
+
 ### Images
 
 Panes carry a graphics scene alongside their cells: image assets keyed by
