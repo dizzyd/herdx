@@ -57,14 +57,16 @@ pub struct MockServer {
 impl MockServer {
     /// Where this server listens.
     ///
-    /// Short and bounded on purpose. A unix socket path is capped at
-    /// `SUN_LEN` — 104 bytes on macOS — and the old name was the test's own
-    /// description plus a pid plus a `ThreadId`, which grew with the number
-    /// of tests in the binary. It fit here and did not on CI, where the
-    /// temp directory is longer, so a release failed at `bind` with a message
-    /// about nothing a reader of the test would recognise. Asking every
-    /// caller to keep its name short was the first answer and it only moved
-    /// the cliff.
+    /// Short and bounded on purpose. `sun_path` is 104 bytes including its
+    /// NUL, and the old name was the caller's description, the pid and a
+    /// `ThreadId` under the temp directory — which on macOS is 49 bytes of
+    /// the budget before anything else. The longest name in the suite came
+    /// to 102 of the usable 103 with a four-digit pid and a one-digit thread
+    /// id, so a five-digit pid or a tenth thread was enough to fail a
+    /// release at `bind`, with a message about nothing a reader of the test
+    /// would recognise. Which machine it broke on was luck; the margin was
+    /// two bytes everywhere. Shortening the one name that tipped over was
+    /// the first answer and only moved the cliff.
     ///
     /// So: a counter rather than a thread id, six characters of the name for
     /// anything that leaks, and `/tmp` when even that will not fit.
@@ -74,7 +76,7 @@ impl MockServer {
         let short: String = name.chars().filter(|c| c.is_ascii_alphanumeric()).take(6).collect();
         let file = format!("hx-{short}-{}-{n}.sock", std::process::id());
         let candidate = std::env::temp_dir().join(&file);
-        // 104 includes the trailing NUL, so leave room for it.
+        // 103 usable; stop well short of it rather than at the edge again.
         if candidate.as_os_str().len() < 100 {
             candidate
         } else {
