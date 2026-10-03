@@ -55,6 +55,10 @@ pub struct MockServer {
 }
 
 impl MockServer {
+    /// Keep `name` short. A unix socket path is capped at `SUN_LEN` — 104
+    /// bytes on macOS — and the temp directory alone is about half of that,
+    /// so a descriptive name fails at `bind` with a message about nothing a
+    /// reader of the test would recognise.
     pub fn start(name: &str) -> Self {
         let path = std::env::temp_dir().join(format!(
             "herdx-mock-{name}-{}-{:?}.sock",

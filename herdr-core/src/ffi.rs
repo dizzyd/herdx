@@ -879,6 +879,36 @@ struct Outbound {
     writer: Option<crate::endpoint::WriteHalf>,
     resize: Option<ClientMessage>,
     focus: Option<ClientMessage>,
+    theme: HostTheme,
+}
+
+/// The palette, as the four separate statements it is actually made of.
+///
+/// Publishing a theme sends a default background, a default foreground, the
+/// palette and the appearance, and the server tracks each on its own. Keeping
+/// "the last theme message" would therefore keep a quarter of a theme — the
+/// appearance, with the colours lost — so each is kept in its own place.
+#[derive(Default)]
+struct HostTheme {
+    background: Option<ClientMessage>,
+    foreground: Option<ClientMessage>,
+    palette: Option<ClientMessage>,
+    appearance: Option<ClientMessage>,
+}
+
+impl HostTheme {
+    /// In the order a publication sends them, so a replay is the same
+    /// sequence the server saw the first time.
+    fn replay(&self) -> impl Iterator<Item = ClientMessage> {
+        [
+            self.background.clone(),
+            self.foreground.clone(),
+            self.palette.clone(),
+            self.appearance.clone(),
+        ]
+        .into_iter()
+        .flatten()
+    }
 }
 
 impl Outbound {
@@ -900,6 +930,27 @@ impl Outbound {
         match message {
             ClientMessage::ClientShellResize { .. } => self.resize = Some(message.clone()),
             ClientMessage::ClientShellFocus { .. } => self.focus = Some(message.clone()),
+            // The palette is state like the other two, and a server starts
+            // every connection on its own default one. A theme that had been
+            // sent successfully was forgotten, so a reconnect came back in the
+            // server's colours and stayed there — the client had nothing left
+            // to say and the window had no reason to say it again.
+            ClientMessage::ClientShellHostTheme { update } => {
+                use herdr_protocol::protocol::{
+                    ClientHostDefaultColorKind as Kind, ClientHostThemeUpdate as Update,
+                };
+                let slot = match update {
+                    Update::DefaultColor { kind: Kind::Background, .. } => {
+                        &mut self.theme.background
+                    }
+                    Update::DefaultColor { kind: Kind::Foreground, .. } => {
+                        &mut self.theme.foreground
+                    }
+                    Update::PaletteColors(_) => &mut self.theme.palette,
+                    Update::Appearance(_) => &mut self.theme.appearance,
+                };
+                *slot = Some(message.clone());
+            }
             _ => {}
         }
     }
@@ -928,9 +979,21 @@ impl Outbound {
     ///
     /// Cloned rather than taken, because this is the client's current state
     /// and the next reconnect needs it just as much as this one did.
+    ///
+    /// All three of them: size, focus, and the palette the panes are drawn in.
     fn attach(&mut self, writer: Option<crate::endpoint::WriteHalf>) {
         self.writer = writer;
-        for message in [self.resize.clone(), self.focus.clone()].into_iter().flatten() {
+        // Focus before theme, and not as a matter of taste: the server
+        // applies a host theme from the *foreground* client and drops one
+        // from anybody else without saying so. Sent first, the palette would
+        // be discarded by a server that has not yet been told this client has
+        // focus.
+        let catchup: Vec<ClientMessage> = [self.resize.clone(), self.focus.clone()]
+            .into_iter()
+            .flatten()
+            .chain(self.theme.replay())
+            .collect();
+        for message in catchup {
             self.write(message);
         }
     }

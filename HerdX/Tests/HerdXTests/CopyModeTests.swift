@@ -60,6 +60,64 @@ final class CopyModeTests: XCTestCase {
         #"{"result":{"cursor":{"row":\#(row),"col":\#(column)}}}"#
     }
 
+    /// Copy mode and a mouse drag are both ways of making a selection, so
+    /// only one of them can be the selection.
+    ///
+    /// Leaving copy mode up left two: the highlight followed the mouse while
+    /// `y` still copied copy mode's own anchor and cursor, so what was copied
+    /// was not what was lit up.
+    func testAMouseSelectionTakesOverFromCopyMode() {
+        let view = gridView(panes: [pane("w1:p1")])
+        view.onCopyModeRequest = { _, _, _ in }
+
+        view.enterCopyMode()
+        _ = view.handleCopyModeKey(keystroke("v"))
+        _ = view.handleCopyModeKey(keystroke("l"))
+        XCTAssertNotNil(view.copyMode)
+
+        view.mouseDown(with: drag(at: 5, in: view))
+
+        XCTAssertNil(
+            view.copyMode,
+            "copy mode kept its own anchor, so y would copy a span nobody can see")
+        XCTAssertEqual(
+            view.selection?.paneID, "w1:p1", "the mouse selection did not take over")
+    }
+
+    /// And a motion still in flight cannot repaint over the mouse: ending
+    /// copy mode makes its reply stale, which is the existing rule.
+    func testALateMotionDoesNotRepaintOverAMouseSelection() {
+        let view = gridView(panes: [pane("w1:p1")])
+        var replies: [(String) -> Void] = []
+        view.onCopyModeRequest = { _, _, completion in replies.append(completion) }
+
+        view.enterCopyMode()
+        _ = view.handleCopyModeKey(keystroke("v"))
+        _ = view.handleCopyModeKey(keystroke("w"))
+
+        view.mouseDown(with: drag(at: 5, in: view))
+        let mouseSelection = view.selection
+
+        replies[0](cursorAt(row: 0, column: 40))
+
+        XCTAssertNil(view.copyMode)
+        XCTAssertEqual(
+            view.selection?.anchor, mouseSelection?.anchor,
+            "a motion from the copy mode that was replaced moved the mouse's selection")
+    }
+
+    /// A mouse press at a column, in window coordinates.
+    private func drag(at column: Int, in view: TerminalGridView) -> NSEvent {
+        let inView = view.contentOrigin.y + view.cellSize.height * 0.5
+        return NSEvent.mouseEvent(
+            with: .leftMouseDown,
+            location: NSPoint(
+                x: view.contentOrigin.x + view.cellSize.width * (CGFloat(column) + 0.5),
+                y: view.bounds.height - inView),
+            modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, eventNumber: 0,
+            clickCount: 1, pressure: 1)!
+    }
+
     /// A reply from a copy-mode session that has ended must not release the
     /// queue of the session now on screen.
     ///

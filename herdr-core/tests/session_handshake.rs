@@ -6,7 +6,10 @@ use std::time::Duration;
 
 use mock_server::MockServer;
 
-use herdr_core::ffi::{hx_resize, hx_session_connect, hx_session_free, hx_set_focus, HxSession};
+use herdr_core::ffi::{
+    hx_resize, hx_session_connect, hx_session_free, hx_set_appearance, hx_set_default_color,
+    hx_set_focus, hx_set_palette, HxSession,
+};
 use herdr_core::protocol::ClientMessage;
 
 /// Whether this connection was told the window has focus.
@@ -167,6 +170,105 @@ fn a_second_reconnect_is_told_as_much_as_the_first() {
              an earlier attach"
         );
     }
+
+    unsafe { hx_session_free(session) };
+}
+
+/// Whether this connection was told the palette, and what it was told.
+fn theme_updates(
+    server: &MockServer, attachment: usize,
+) -> Vec<herdr_core::protocol::ClientHostThemeUpdate> {
+    server.attachments()[attachment]
+        .messages
+        .iter()
+        .filter_map(|message| match message {
+            ClientMessage::ClientShellHostTheme { update } => Some(update.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A server starts every connection on its own default theme, so a reconnect
+/// that says nothing comes back in the wrong colours and stays there.
+///
+/// The palette was kept only when a write *failed*, like focus before it, so a
+/// theme that had been sent successfully was forgotten. The window did not
+/// make up for it either: it republished when the set of online machines
+/// gained one, and a reconnect finishing between two samples never changes
+/// that set — a real window now that a reattach can finish in about twelve
+/// milliseconds.
+#[test]
+fn a_reconnect_says_the_palette_again() {
+    let server = MockServer::start("reconnect-theme");
+    let session = connect(&server, 80, 24);
+
+    // Foreground first: the server drops a host theme from a client it does
+    // not consider foreground, and says nothing about having done so.
+    unsafe { hx_set_focus(session, true) };
+    // A whole publication, as the window makes one: two default colours, the
+    // palette, and the appearance.
+    let palette: Vec<u8> = (0u8..48).collect();
+    unsafe {
+        hx_set_default_color(session, false, 10, 20, 30);
+        hx_set_default_color(session, true, 200, 210, 220);
+        hx_set_palette(session, palette.as_ptr(), palette.len() / 3);
+        hx_set_appearance(session, true);
+    }
+    assert!(
+        server.wait_until(Duration::from_secs(5), |_| theme_updates(&server, 0).len() >= 4),
+        "the first connection was not told the whole theme"
+    );
+
+    server.disconnect_all();
+    assert!(
+        server.wait_until(Duration::from_secs(10), |a| a.len() >= 2),
+        "the endpoint never reconnected"
+    );
+
+    assert!(
+        server.wait_until(Duration::from_secs(5), |_| theme_updates(&server, 1).len() >= 4),
+        "the reconnect did not say the whole theme, so the panes keep some of \
+         the server's own default colours"
+    );
+    // All four statements, not merely the last one: a publication is a
+    // background, a foreground, a palette and an appearance, and the server
+    // tracks each separately.
+    assert_eq!(
+        theme_updates(&server, 1),
+        theme_updates(&server, 0),
+        "the reconnect was told a different theme than the one in use"
+    );
+
+    unsafe { hx_session_free(session) };
+}
+
+/// And it is said after focus, not before: a server applies a host theme from
+/// the foreground client and silently drops one from anybody else, so a
+/// palette sent ahead of the focus that earns it is thrown away.
+#[test]
+fn the_palette_is_replayed_after_focus() {
+    let server = MockServer::start("theme-order");
+    let session = connect(&server, 80, 24);
+    unsafe { hx_set_focus(session, true) };
+    let palette: Vec<u8> = (0u8..48).collect();
+    unsafe { hx_set_palette(session, palette.as_ptr(), palette.len() / 3) };
+    assert!(server.wait_until(Duration::from_secs(5), |_| !theme_updates(&server, 0).is_empty()));
+
+    server.disconnect_all();
+    assert!(server.wait_until(Duration::from_secs(10), |a| a.len() >= 2));
+    assert!(server.wait_until(Duration::from_secs(5), |_| !theme_updates(&server, 1).is_empty()));
+
+    let messages = &server.attachments()[1].messages;
+    let focus = messages
+        .iter()
+        .position(|m| matches!(m, ClientMessage::ClientShellFocus { .. }));
+    let theme = messages
+        .iter()
+        .position(|m| matches!(m, ClientMessage::ClientShellHostTheme { .. }));
+    assert!(
+        focus < theme,
+        "the palette was replayed before the focus that lets the server accept it"
+    );
 
     unsafe { hx_session_free(session) };
 }

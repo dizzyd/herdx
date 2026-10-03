@@ -81,11 +81,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     private var appearanceObserver: NSKeyValueObservation?
     /// What was last sent to the server, so an unchanged theme is not resent.
     private var publishedTheme: [UInt8]?
-    /// Machines that have been told our palette. An ssh endpoint attaches
-    /// seconds after launch, long after the theme was first published, and a
-    /// machine that never heard it composes against its own default background
-    /// — which is why switching to one turned the terminal a different colour.
-    private var themedEndpoints: Set<Int> = []
+    /// Which attachment of each machine has been told our palette.
+    ///
+    /// An ssh endpoint attaches seconds after launch, long after the theme was
+    /// first published, and a machine that never heard it composes against its
+    /// own default background — which is why switching to one turned the
+    /// terminal a different colour.
+    ///
+    /// By attachment count, not by whether the machine is online. A server
+    /// starts every *connection* on its default theme, so a reconnect needs
+    /// telling again — and a reconnect that completes between two samples
+    /// leaves "online" looking unchanged, which is a real window now that one
+    /// can finish in about twelve milliseconds. The count only ever climbs, so
+    /// it cannot be missed between ticks.
+    private var themedAttachments: [Int: UInt64] = [:]
     /// Machines already offered a herdr install, so the offer is made once and
     /// not every time the endpoint retries.
     private var offeredInstall: Set<String> = []
@@ -1122,13 +1131,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         }
         sidebar.priority = agentPriority
 
-        let online = Set(session.endpoints.filter { $0.status == .online }.map(\.index))
-        if !online.subtracting(themedEndpoints).isEmpty {
-            themedEndpoints = online
+        // A machine is owed the palette when it has attached since it was
+        // last told — which covers a first attach and every reconnect alike,
+        // without having to catch either one happening.
+        let attached = session.endpoints.filter { $0.status == .online }
+        if attached.contains(where: { themedAttachments[$0.index] != $0.attachments }) {
+            for endpoint in attached { themedAttachments[endpoint.index] = endpoint.attachments }
             publish(theme: terminalTheme, force: true)
-        } else if online != themedEndpoints {
-            // A machine that dropped is told again when it returns.
-            themedEndpoints = online
         }
 
         watchMachines()
@@ -2583,7 +2592,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         gridView.session = nil
         session?.cancelPendingReplies()
         session = nil
-        themedEndpoints = []
+        themedAttachments = [:]
         publishedTheme = nil
         knownMachines = nil
         if !connect() {

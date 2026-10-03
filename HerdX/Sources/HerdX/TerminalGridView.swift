@@ -216,16 +216,38 @@ final class TerminalGridView: NSView {
     /// the program saw a button go down and never come up.
     private enum MouseGesture {
         case selecting(paneID: String)
-        /// The pane the press went down in, for the same reason `selecting`
-        /// carries one: a drag belongs to where it started. Without it, every
-        /// move and the release were hit-tested afresh, so dragging into a
-        /// neighbour sent that pane the rest of the gesture and left the first
-        /// one holding a button that never came up — and a release outside
-        /// every pane went nowhere at all.
+        /// A press that went to the program in a pane rather than starting a
+        /// selection. Which pane is `reportOwners`' business, not this one's;
+        /// what this records is that there was a press at all, so a release
+        /// is not invented from nothing.
         case reporting(paneID: String)
         case link
     }
     private var gesture: MouseGesture?
+
+    /// Which pane each held button was pressed in, and on which machine.
+    ///
+    /// A press and its release are one thing to the program receiving them,
+    /// and the program is chosen when the button goes down. Hit-testing the
+    /// release instead sends the pair to two different programs: one is left
+    /// holding a button that never comes up, the other gets a release it never
+    /// asked for. Per button, because the right button can be held while the
+    /// left is clicked and they are not the same gesture.
+    ///
+    /// The session and endpoint ride along because a pane id means something
+    /// different on another server. If the machine changes under a held
+    /// button, the release belongs to nobody that is still here — and is
+    /// dropped rather than aimed at whatever now occupies that part of the
+    /// screen.
+    private struct MouseReportOwner {
+        let paneID: String
+        /// Absent only with no session at all, which is the tests driving the
+        /// view directly. Compared either way, so a session appearing or
+        /// going during a held button is a mismatch like any other.
+        let session: UUID?
+        let endpoint: Int?
+    }
+    private var reportOwners: [UInt8: MouseReportOwner] = [:]
     private var ownsLinkGesture: Bool {
         if case .link = gesture { return true }
         return false
@@ -421,6 +443,12 @@ final class TerminalGridView: NSView {
         // Keep ownership through mouse-up even when switching machines;
         // otherwise the new pane receives a release without a press.
         linkPressCancelled = true
+        // Held buttons belonged to panes on the machine being left. `send`
+        // checks the session and endpoint and would refuse them anyway;
+        // dropping them here is the same answer said once rather than per
+        // event, and it is the answer — a release is consumed, never aimed at
+        // whatever has taken that pane's place.
+        reportOwners.removeAll()
         hoveredLink = nil
         lastRevision = .max
         panes = []
@@ -1194,29 +1222,50 @@ extension TerminalGridView {
     ///
     /// Without an owner — a press, or a scroll, which is not a gesture — the
     /// pane under the pointer is the right answer.
-    private func send(_ event: NSEvent, kind: UInt16, button: UInt8, owner: String? = nil) {
-        let target: (pane: PaneView, column: Int, row: Int)?
-        if let owner, let pane = panes.first(where: { $0.id == owner }) {
-            // Still measured from the pointer; `mouseEvent` clamps it into the
-            // owner, which is what makes a drag past the edge report the edge
-            // rather than a cell in somebody else's pane.
-            let cell = cellLocation(of: event)
-            target = (pane, cell?.column ?? Int(pane.inner.x), cell?.row ?? Int(pane.inner.y))
+    private func send(_ event: NSEvent, kind: UInt16, button: UInt8) {
+        let owner: MouseReportOwner?
+        if kind == UInt16(HX_MOUSE_DOWN) {
+            // The press chooses the pane, and everything until the release
+            // goes there.
+            guard let hit = hit(event) else { return }
+            owner = MouseReportOwner(
+                paneID: hit.pane.id, session: session?.token,
+                endpoint: session?.activeEndpoint)
+            reportOwners[button] = owner
         } else {
-            target = hit(event)
+            // A drag or a release with no press is not this view's to invent.
+            // It happens — a click that only brought the window forward, a
+            // button already down when the surface was replaced — and
+            // hit-testing it sends a program a release it never asked for.
+            owner = reportOwners[button]
+            if kind == UInt16(HX_MOUSE_UP) { reportOwners[button] = nil }
         }
-        guard let target else { return }
+        guard let owner else { return }
+        // The machine must still be the one the button went down on, and the
+        // pane must still exist. Neither is true after a surface swap, and the
+        // old behaviour then fell back to hit-testing — which aimed the
+        // release at whatever replaced it.
+        guard session?.token == owner.session, session?.activeEndpoint == owner.endpoint,
+            let pane = panes.first(where: { $0.id == owner.paneID })
+        else { return }
+        // Still measured from the pointer; `mouseEvent` clamps it into the
+        // owner, which is what makes a drag past the edge report the edge
+        // rather than a cell in somebody else's pane.
+        let cell = cellLocation(of: event)
+        let target = (
+            pane: pane, column: cell?.column ?? Int(pane.inner.x),
+            row: cell?.row ?? Int(pane.inner.y)
+        )
         let report = mouseEvent(
             event, kind: kind, button: button, in: target.pane, column: target.column,
             row: target.row)
         mouseReportForTesting?(kind, target.pane.id, report)
-        guard let session else { return }
         // Clicking an unfocused pane focuses it. herdr leaves this to the
         // client shell, which is us.
         if kind == UInt16(HX_MOUSE_DOWN), !target.pane.focused {
             onFocusPane?(target.pane.id)
         }
-        session.send(mouse: report, to: target.pane.id)
+        session?.send(mouse: report, to: target.pane.id)
     }
 
     /// Whether a drag selects text rather than going to the pane's program.
@@ -1263,6 +1312,13 @@ extension TerminalGridView {
         guard let hit = hit(event) else { return }
 
         if dragSelectsText(event, pane: hit.pane) {
+            // Copy mode is a way of making a selection, and so is this, so
+            // only one of them can be the selection. Leaving copy mode up
+            // left two: the highlight followed the mouse while `y` still
+            // copied copy mode's own anchor and cursor, and a motion reply
+            // arriving afterwards repainted the span the mouse had replaced.
+            // Ending it here also makes that reply stale, so it does nothing.
+            if copyMode != nil { exitCopyMode() }
             gesture = .selecting(paneID: hit.pane.id)
             switch event.clickCount {
             case 2: selectWord(in: hit.pane, column: hit.column, row: hit.row)
@@ -1281,9 +1337,7 @@ extension TerminalGridView {
         }
         gesture = .reporting(paneID: hit.pane.id)
         dismissSelectionAndCopyMode()
-        send(
-            event, kind: UInt16(HX_MOUSE_DOWN), button: UInt8(HX_BUTTON_LEFT),
-            owner: hit.pane.id)
+        send(event, kind: UInt16(HX_MOUSE_DOWN), button: UInt8(HX_BUTTON_LEFT))
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -1312,11 +1366,13 @@ extension TerminalGridView {
             // An empty selection is just a click; clear it so a stray highlight
             // does not linger.
             if selection?.isEmpty == true { selection = nil; needsDisplay = true }
-        case .reporting(let paneID):
-            send(
-                event, kind: UInt16(HX_MOUSE_UP), button: UInt8(HX_BUTTON_LEFT), owner: paneID)
-        case nil:
+        case .reporting:
             send(event, kind: UInt16(HX_MOUSE_UP), button: UInt8(HX_BUTTON_LEFT))
+        case nil:
+            // No press of ours, so no release of ours. `send` would refuse it
+            // anyway for want of an owner; saying so here is cheaper than
+            // finding out there.
+            break
         }
     }
 
@@ -1335,11 +1391,10 @@ extension TerminalGridView {
             else { return }
             selection?.extend(to: point(in: owner, column: cell.column, row: cell.row))
             needsDisplay = true
-        case .reporting(let paneID):
-            send(
-                event, kind: UInt16(HX_MOUSE_DRAG), button: UInt8(HX_BUTTON_LEFT), owner: paneID)
-        case nil:
+        case .reporting:
             send(event, kind: UInt16(HX_MOUSE_DRAG), button: UInt8(HX_BUTTON_LEFT))
+        case nil:
+            break
         }
     }
 

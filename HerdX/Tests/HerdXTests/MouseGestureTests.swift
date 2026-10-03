@@ -239,6 +239,79 @@ final class MouseGestureTests: XCTestCase {
         XCTAssertEqual(drag.column, 19, "the report left the pane it belongs to")
     }
 
+    /// A press and its release are one thing to the program receiving them.
+    ///
+    /// The right and middle buttons each hit-tested independently, so a press
+    /// in one pane and a release in another sent an unmatched pair to two
+    /// programs: one left holding a button that never comes up, the other
+    /// handed a release it never asked for.
+    func testARightClickReleasesInThePaneItWasPressedIn() {
+        let left = pane("w1:p1", x: 0, width: 20, reporting: true)
+        let right = pane("w1:p2", x: 20, width: 20, reporting: true)
+        let view = self.view([left, right])
+
+        var reported: [(UInt16, String)] = []
+        view.mouseReportForTesting = { kind, pane, _ in reported.append((kind, pane)) }
+
+        view.rightMouseDown(with: event(.rightMouseDown, at: at(column: 25, in: view)))
+        view.rightMouseUp(with: event(.rightMouseUp, at: at(column: 5, in: view)))
+
+        XCTAssertEqual(
+            reported.map(\.1), ["w1:p2", "w1:p2"],
+            "the release went to the pane under the pointer, not the one pressed")
+    }
+
+    func testAMiddleClickReleasesInThePaneItWasPressedIn() {
+        let view = self.view([
+            pane("w1:p1", x: 0, width: 20, reporting: true),
+            pane("w1:p2", x: 20, width: 20, reporting: true),
+        ])
+        var reported: [(UInt16, String)] = []
+        view.mouseReportForTesting = { kind, pane, _ in reported.append((kind, pane)) }
+
+        view.otherMouseDown(with: event(.otherMouseDown, at: at(column: 5, in: view)))
+        view.otherMouseUp(with: event(.otherMouseUp, at: at(column: 25, in: view)))
+
+        XCTAssertEqual(reported.map(\.1), ["w1:p1", "w1:p1"])
+    }
+
+    /// A release with no press of ours is not ours to invent. It happens — a
+    /// click that only brought the window forward — and hit-testing it hands
+    /// a program a release it never asked for.
+    func testAReleaseWithNoPressIsNotSent() {
+        let view = self.view([pane("w1:p1", x: 0, width: 20, reporting: true)])
+        var reported: [UInt16] = []
+        view.mouseReportForTesting = { kind, _, _ in reported.append(kind) }
+
+        view.rightMouseUp(with: event(.rightMouseUp, at: at(column: 5, in: view)))
+        view.mouseUp(with: event(.leftMouseUp, at: at(column: 5, in: view)))
+
+        XCTAssertTrue(reported.isEmpty, "a release was invented: \(reported)")
+    }
+
+    /// Switching machines under a held button leaves the owner on a server
+    /// that is no longer there. The release belongs to nobody still present,
+    /// and must not be aimed at whatever has taken that part of the screen.
+    func testAHeldButtonIsNotReleasedOntoAReplacementPane() {
+        let view = self.view([pane("w1:p1", x: 0, width: 20, reporting: true)])
+        var reported: [(UInt16, String)] = []
+        view.mouseReportForTesting = { kind, pane, _ in reported.append((kind, pane)) }
+
+        view.mouseDown(with: event(.leftMouseDown, at: at(column: 5, in: view)))
+        XCTAssertEqual(reported.count, 1)
+
+        // The machine changes: the surface goes, and a pane with the same id
+        // on the new server takes its place.
+        view.forgetSurface()
+        view.setPanesForTesting([pane("w1:p1", x: 0, width: 20, reporting: true)])
+        view.mouseUp(with: event(.leftMouseUp, at: at(column: 5, in: view)))
+
+        XCTAssertEqual(
+            reported.count, 1,
+            "the release was delivered to a pane on another machine that happens "
+                + "to share an id")
+    }
+
     /// A pixel-mouse program scales against the geometry it is sent, so the
     /// pane's size is the only one that describes it.
     func testAReportCarriesThePanesOwnGeometry() throws {
