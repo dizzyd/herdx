@@ -108,6 +108,11 @@ enum Worktrees {
     /// are only unique within a server, so one carried forward and resolved
     /// against whatever is active *now* names somebody else's work.
     struct Target: Equatable {
+        /// Which session object, by token rather than by reference: a flow
+        /// that held its session would keep it alive through the reply
+        /// callback it is waiting on, and a reply that never comes would keep
+        /// it alive for good.
+        let session: UUID
         let endpoint: Int
         let bootID: String
         /// For saying which machine, when a flow has to be abandoned.
@@ -126,9 +131,9 @@ enum Worktrees {
     /// A new boot id counts as a different machine: the server restarted, and
     /// the ids the flow is holding describe a session that no longer exists.
     static func drift(
-        from target: Target, sessionReplaced: Bool, activeEndpoint: Int, bootID: String?
+        from target: Target, session: UUID?, activeEndpoint: Int, bootID: String?
     ) -> String? {
-        if sessionReplaced { return "the connection was rebuilt" }
+        guard session == target.session else { return "the connection was rebuilt" }
         guard activeEndpoint == target.endpoint, bootID == target.bootID else {
             return "\(target.label) is no longer in front of you"
         }

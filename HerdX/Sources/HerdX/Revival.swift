@@ -4,8 +4,14 @@ import AppKit
 ///
 /// A class rather than a chain of nested closures because the sequence is long
 /// and each step needs what the last one replied — the created workspace's tab,
-/// then the pane ids `layout.apply` handed back, then one `agent.start` per
-/// pane. Written as nesting it was unreadable by the third step.
+/// then the pane ids `layout.apply` handed back, then each agent's resume
+/// command typed into its pane once that pane has reached a prompt. Written as
+/// nesting it was unreadable by the third step.
+///
+/// Typed, not started: `agent.start` refuses a pane that is not sitting at an
+/// available shell, and whether a pane is *is* the question — see
+/// `waitForPrompt`. So the resume goes in as `pane.send_text` and herdr is
+/// then polled until it notices the agent.
 ///
 /// The panes are made as plain shells and the agents submitted into them
 /// afterwards, never as a `command` on the applied tree. A pane launched with
@@ -200,10 +206,25 @@ final class Revival {
     /// refused the workspace is still back, with its agents in it.
     private func finishUp() {
         for (tab, layout) in applied where tab.zoomed {
-            if let pane = layout.root.leaves.first?.pane.paneID {
-                send(.zoomPaneWithID(pane), socket) { _ in }
+            // The pane this tab was zoomed *on*, resolved in the tree that
+            // came back. The first leaf was being zoomed instead, which is the
+            // right answer only for a tab that was zoomed on its first pane —
+            // and the wrong one is not merely cosmetic, because the server
+            // focuses whatever pane it zooms. So a second tab zoomed on a
+            // right-hand split came back zoomed and focused on the left one,
+            // and the focus repair below only ever covered the first tab.
+            let zoomed =
+                tab.focused.flatMap { layout.root.leaf(at: $0)?.paneID }
+                // No saved focus is a record from before focus was kept, or a
+                // tree that no longer has that shape. One pane is as good a
+                // guess as another then, and the first is the old behaviour.
+                ?? layout.root.leaves.first?.pane.paneID
+            if let zoomed {
+                send(.zoomPaneWithID(zoomed), socket) { _ in }
             }
         }
+        // Last, so it wins over the focus each zoom above moved: the workspace
+        // should come back on the pane it was left on.
         if let first = applied.first,
             let path = first.tab.focused,
             let pane = first.layout.root.leaf(at: path)?.paneID

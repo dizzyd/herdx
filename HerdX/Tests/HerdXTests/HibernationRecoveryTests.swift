@@ -22,6 +22,23 @@ final class HibernationRecoveryTests: XCTestCase {
         HibernationStore(url: directory.appendingPathComponent("hibernated.json"))
     }
 
+    /// What `layout.apply` answers on each call, in the order revival makes
+    /// them: the first tab's single pane, then the second tab's split.
+    private static func appliedLayout(call: Int) -> String {
+        if call == 1 {
+            return """
+                {"id":"1","result":{"layout":{"tab_id":"w9:t1","zoomed":false,
+                "focused_pane_id":"w9:p1","root":{"type":"pane","pane_id":"w9:p1"}}}}
+                """
+        }
+        return """
+            {"id":"1","result":{"layout":{"tab_id":"w9:t2","zoomed":false,
+            "focused_pane_id":"w9:p2","root":{"type":"split","direction":"row","ratio":0.5,
+            "first":{"type":"pane","pane_id":"w9:p2"},
+            "second":{"type":"pane","pane_id":"w9:p3"}}}}}
+            """
+    }
+
     private func record() -> Hibernated {
         Hibernated(
             id: UUID(), endpointID: "local", number: 1, label: "augur",
@@ -148,5 +165,133 @@ final class HibernationRecoveryTests: XCTestCase {
             hibernator.records.count, 1,
             "the record was forgotten although the husk never took the agent's session")
         XCTAssertEqual(store.load().count, 1, "the file lost the record")
+    }
+
+    // MARK: - Coming back zoomed
+
+    /// A record of two tabs: the second split in two and zoomed on its right
+    /// leaf, which is the saved focus path `[true]`.
+    private func zoomedOnTheRightOfTheSecondTab() -> Hibernated {
+        func split() -> LayoutNode {
+            .split(
+                LayoutNode.Split(
+                    direction: "row", ratio: 0.5,
+                    first: .pane(LayoutNode.Pane(cwd: "/tmp")),
+                    second: .pane(LayoutNode.Pane(cwd: "/tmp"))))
+        }
+        return Hibernated(
+            id: UUID(), endpointID: "local", number: 1, label: "augur",
+            cwd: "/tmp", branch: nil, at: Date(timeIntervalSince1970: 1_758_000_000),
+            tabs: [
+                Hibernated.Tab(
+                    label: "1", zoomed: false, root: .pane(LayoutNode.Pane(cwd: "/tmp")), focused: [],
+                    agents: []),
+                Hibernated.Tab(
+                    label: "2", zoomed: true, root: split(), focused: [true], agents: []),
+            ])
+    }
+
+    /// Revival zoomed the first leaf of every zoomed tab, so a tab zoomed on
+    /// its right split came back zoomed on the left one.
+    ///
+    /// Not cosmetic: the server focuses whatever pane it zooms, and the focus
+    /// repair at the end only ever covered the first tab. So the workspace
+    /// came back looking at a pane nobody left it on.
+    func testAZoomedTabComesBackOnThePaneItWasZoomedOn() throws {
+        let store = self.store
+        let original = zoomedOnTheRightOfTheSecondTab()
+        try store.save([original])
+
+        var zoomed: [String] = []
+        var focused: [String] = []
+        var applies = 0
+        let hibernator = Hibernator(store: store) { command, _, then in
+            switch command.method {
+            case "workspace.create":
+                then(.success(#"""
+                    {"id":"1","result":{"workspace":{"workspace_id":"w9"},
+                    "tab":{"tab_id":"w9:t1"},"root_pane":{"pane_id":"w9:p1"}}}
+                    """#))
+            case "layout.apply":
+                // One per tab, in order: the first tab is a single pane,
+                // the second is the split. A `[true]` path in that split
+                // names its second child, `w9:p3`.
+                applies += 1
+                then(.success(Self.appliedLayout(call: applies)))
+            case "pane.zoom":
+                zoomed.append(Self.paneID(in: command))
+                then(.success(#"{"id":"1","result":{}}"#))
+            case "pane.focus":
+                focused.append(Self.paneID(in: command))
+                then(.success(#"{"id":"1","result":{}}"#))
+            default:
+                then(.success(#"{"id":"1","result":{}}"#))
+            }
+        }
+
+        let finished = expectation(description: "revive settles")
+        hibernator.revive(original.id, socket: nil) { _ in finished.fulfill() }
+        wait(for: [finished], timeout: 5)
+
+        XCTAssertEqual(
+            zoomed, ["w9:p3"],
+            "the saved focus path [true] names the second leaf, not the first")
+        XCTAssertFalse(
+            zoomed.contains("w9:p2"),
+            "zooming the wrong leaf also moves focus there, since the server "
+                + "focuses what it zooms")
+        // The first tab's saved focus is its root, which came back as w9:p1,
+        // and it is asked for last so it wins over the focus the zoom moved.
+        XCTAssertEqual(focused.last, "w9:p1", "the workspace did not come back where it was left")
+    }
+
+    /// A record from before focus was kept has no path to resolve, and one
+    /// guess is as good as another.
+    func testAZoomedTabWithNoSavedFocusFallsBackToTheFirstLeaf() throws {
+        let store = self.store
+        var original = zoomedOnTheRightOfTheSecondTab()
+        original = Hibernated(
+            id: original.id, endpointID: original.endpointID, number: original.number,
+            label: original.label, cwd: original.cwd, branch: original.branch, at: original.at,
+            tabs: original.tabs.map {
+                Hibernated.Tab(
+                    label: $0.label, zoomed: $0.zoomed, root: $0.root, focused: nil,
+                    agents: $0.agents)
+            })
+        try store.save([original])
+
+        var zoomed: [String] = []
+        var applies = 0
+        let hibernator = Hibernator(store: store) { command, _, then in
+            switch command.method {
+            case "workspace.create":
+                then(.success(#"""
+                    {"id":"1","result":{"workspace":{"workspace_id":"w9"},
+                    "tab":{"tab_id":"w9:t1"},"root_pane":{"pane_id":"w9:p1"}}}
+                    """#))
+            case "layout.apply":
+                // One per tab, in order: the first tab is a single pane,
+                // the second is the split. A `[true]` path in that split
+                // names its second child, `w9:p3`.
+                applies += 1
+                then(.success(Self.appliedLayout(call: applies)))
+            case "pane.zoom":
+                zoomed.append(Self.paneID(in: command))
+                then(.success(#"{"id":"1","result":{}}"#))
+            default:
+                then(.success(#"{"id":"1","result":{}}"#))
+            }
+        }
+
+        let finished = expectation(description: "revive settles")
+        hibernator.revive(original.id, socket: nil) { _ in finished.fulfill() }
+        wait(for: [finished], timeout: 5)
+
+        XCTAssertEqual(zoomed, ["w9:p2"], "an unknown focus should keep the old behaviour")
+    }
+
+    /// The pane a command names, read off the request it would send.
+    private static func paneID(in command: Command) -> String {
+        command.params["pane_id"] as? String ?? ""
     }
 }

@@ -180,12 +180,14 @@ final class WorktreeGuardTests: XCTestCase {
 /// deleted checkout on a machine the question never mentioned — workspace ids
 /// are only unique within a server, so A's id means something on B.
 final class WorktreeTargetTests: XCTestCase {
-    private let target = Worktrees.Target(endpoint: 2, bootID: "boot-A", label: "Alemetry")
+    private let sessionToken = UUID()
+    private lazy var target = Worktrees.Target(
+        session: sessionToken, endpoint: 2, bootID: "boot-A", label: "Alemetry")
 
     func testAFlowOnItsOwnMachineMayAct() {
         XCTAssertNil(
             Worktrees.drift(
-                from: target, sessionReplaced: false, activeEndpoint: 2, bootID: "boot-A"))
+                from: target, session: sessionToken, activeEndpoint: 2, bootID: "boot-A"))
     }
 
     /// The force-removal case: confirmed for A, answered after the window
@@ -193,7 +195,7 @@ final class WorktreeTargetTests: XCTestCase {
     func testAFlowIsAbandonedOnceAnotherMachineIsInFront() {
         XCTAssertEqual(
             Worktrees.drift(
-                from: target, sessionReplaced: false, activeEndpoint: 3, bootID: "boot-B"),
+                from: target, session: sessionToken, activeEndpoint: 3, bootID: "boot-B"),
             "Alemetry is no longer in front of you")
     }
 
@@ -203,7 +205,7 @@ final class WorktreeTargetTests: XCTestCase {
     func testASameEndpointWithANewBootIsADifferentMachine() {
         XCTAssertEqual(
             Worktrees.drift(
-                from: target, sessionReplaced: false, activeEndpoint: 2, bootID: "boot-A2"),
+                from: target, session: sessionToken, activeEndpoint: 2, bootID: "boot-A2"),
             "Alemetry is no longer in front of you")
     }
 
@@ -212,15 +214,29 @@ final class WorktreeTargetTests: XCTestCase {
     func testAnEndpointWithNoBootIdIsNotActedOn() {
         XCTAssertNotNil(
             Worktrees.drift(
-                from: target, sessionReplaced: false, activeEndpoint: 2, bootID: nil))
+                from: target, session: sessionToken, activeEndpoint: 2, bootID: nil))
     }
 
     /// `reattach` builds a new session with its own endpoints; index 2 on the
     /// new one need not be the machine index 2 was.
+    /// `reattach` builds a new session with its own endpoints; index 2 on the
+    /// new one need not be the machine index 2 was.
+    ///
+    /// Compared by token rather than by holding the session, which is not a
+    /// detail: a flow that kept its session would keep it alive through the
+    /// reply it is waiting on, and a reply that never comes would keep its
+    /// sockets, ssh children and reconnect threads alive for good.
     func testARebuiltSessionStopsTheFlowEvenOnAMatchingIndex() {
         XCTAssertEqual(
             Worktrees.drift(
-                from: target, sessionReplaced: true, activeEndpoint: 2, bootID: "boot-A"),
+                from: target, session: UUID(), activeEndpoint: 2, bootID: "boot-A"),
+            "the connection was rebuilt")
+    }
+
+    /// And no session at all is not a licence to carry on.
+    func testNoSessionStopsTheFlow() {
+        XCTAssertEqual(
+            Worktrees.drift(from: target, session: nil, activeEndpoint: 2, bootID: "boot-A"),
             "the connection was rebuilt")
     }
 }

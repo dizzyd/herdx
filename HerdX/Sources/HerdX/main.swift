@@ -888,6 +888,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
             return false
         }
 
+        // Whatever was here is being replaced; its outstanding replies are
+        // nobody's business now, and leaving them keeps the whole session
+        // alive through them.
+        self.session?.cancelPendingReplies()
         self.session = session
         agentSounds.isEnabled = preferences.agentSounds
         // Endpoint indices are about to mean different machines; what this
@@ -1018,6 +1022,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     private func reconnect() {
         guard !reconnecting else { return }
         reconnecting = true
+        session?.cancelPendingReplies()
         session = nil
         gridView.session = nil
         serverTitle = nil
@@ -1784,7 +1789,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         // Its own workspace in the repo under test, so the probe never asks
         // about whatever the session happened to be sitting in.
         ask(.createWorkspace(cwd: cwd, label: "wtprobe"), Reply.WorkspaceCreated.self,
-            session: session, target: target, failing: "workspace"
+            target: target, failing: "workspace"
         ) { made in
             let workspace = made.workspace.workspaceID
             say("workspace=\(workspace) cwd=\(cwd)")
@@ -1792,7 +1797,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
             say("worktree_directory=\(root ?? "nil")")
 
             self.ask(.worktreeList(workspace: workspace), Reply.WorktreeList.self,
-                session: session, target: target, failing: "list"
+                target: target, failing: "list"
             ) { list in
                 let branch = "worktree/probe-\(Int(Date().timeIntervalSince1970) % 100000)"
                 // Worked out before the request, exactly as the sheet shows it.
@@ -1804,7 +1809,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
                 say("predicted=\(predicted ?? "nil")")
 
                 self.ask(.worktreeCreate(workspace: workspace, branch: branch),
-                    Reply.WorktreeCreated.self, session: session, target: target,
+                    Reply.WorktreeCreated.self, target: target,
                     failing: "create"
                 ) { created in
                     // What the server did, against what we told the person it
@@ -1813,7 +1818,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
                     say("path_matches_preview=\(created.worktree.path == predicted)")
 
                     self.ask(.worktreeList(workspace: workspace), Reply.WorktreeList.self,
-                        session: session, target: target, failing: "relist"
+                        target: target, failing: "relist"
                     ) { after in
                         let entry = after.worktrees.first { $0.path == created.worktree.path }
                         say(
@@ -1847,7 +1852,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
                         // which, measured the overlapping way round, replaced
                         // the refusal this probe exists to read.
                         self.ask(.worktreeList(workspace: opened),
-                            Reply.WorktreeList.self, session: session, target: target,
+                            Reply.WorktreeList.self, target: target,
                             failing: "list from linked"
                         ) { inside in
                             let mine = inside.worktrees.first { $0.openWorkspaceID == opened }
@@ -1877,7 +1882,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
                                 ) { forced in
                                     say("forced=\(forced.map { "refused \($0.text)" } ?? "removed")")
                                     self.ask(.worktreeList(workspace: workspace),
-                                        Reply.WorktreeList.self, session: session,
+                                        Reply.WorktreeList.self,
                                         target: target, failing: "final"
                                     ) { final in
                                         let gone = !final.worktrees.contains {
@@ -1933,7 +1938,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         }
         guard let workspace, let target = worktreeTarget(session: session) else { return }
         ask(.worktreeList(workspace: workspace.workspaceID), Reply.WorktreeList.self,
-            session: session, target: target, failing: "worktrees"
+            target: target, failing: "worktrees"
         ) { use(workspace.workspaceID, target, $0) }
     }
 
@@ -1942,22 +1947,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         let endpoint = session.activeEndpoint
         guard let bootID = session.bootID(forEndpoint: endpoint) else { return nil }
         return Worktrees.Target(
-            endpoint: endpoint, bootID: bootID,
+            session: session.token, endpoint: endpoint, bootID: bootID,
             label: session.endpoints.first { $0.index == endpoint }?.label ?? "that machine")
     }
 
     /// Whether a flow may still act, saying so when it may not.
-    private func stillAimed(
-        at target: Worktrees.Target, session: HerdrSession, doing what: String
-    ) -> Bool {
+    ///
+    /// Resolved from the window's current session rather than from one the
+    /// flow is carrying: a captured session is one a lost reply can keep
+    /// alive for good. The token is what tells a rebuilt connection apart.
+    private func stillAimed(at target: Worktrees.Target, doing what: String) -> Bool {
         guard
             let drift = Worktrees.drift(
-                from: target,
-                // Identity, not equality: a rebuilt session is a different
-                // object holding a different set of machines.
-                sessionReplaced: self.session !== session,
-                activeEndpoint: session.activeEndpoint,
-                bootID: session.bootID(forEndpoint: target.endpoint))
+                from: target, session: session?.token,
+                activeEndpoint: session?.activeEndpoint ?? -1,
+                bootID: session?.bootID(forEndpoint: target.endpoint))
         else { return true }
         notice("\(what): \(drift)")
         return false
@@ -1970,11 +1974,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     /// to focus — so the body has to be decoded, and a failure named rather
     /// than swallowed.
     private func ask<Result: Decodable>(
-        _ command: Command, _ type: Result.Type, session: HerdrSession,
+        _ command: Command, _ type: Result.Type,
         target: Worktrees.Target, failing label: String,
         then use: @escaping (Result) -> Void
     ) {
-        guard stillAimed(at: target, session: session, doing: label) else { return }
+        // Resolved here, never captured. A callback holding its session keeps
+        // it alive through `pendingReplies`, and a reply that never arrives
+        // keeps it alive for good — sockets, ssh children and all.
+        guard stillAimed(at: target, doing: label), let session else { return }
         let id = UUID().uuidString
         guard let json = command.requestJSON(id: id) else { return }
         // The pinned boot id, not the active snapshot's: they are the same
@@ -1995,7 +2002,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         withWorktrees(.newWorktree, session: session) { workspace, target, list in
             // Absent only from a server too old to publish it; the sheet then
             // asks for a branch without claiming to know where it goes.
-            let root = session.lastSnapshot?.worktreeDirectory
+            let root = self.session?.lastSnapshot?.worktreeDirectory
             self.prompt.ask(
                 over: self.window, title: "New worktree",
                 value: Worktrees.branchSuggestion(),
@@ -2011,8 +2018,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
                 // The sheet may have been open across a machine switch, so the
                 // target is checked again on the way out of it rather than
                 // trusted from when it opened.
-                self.createWorktree(
-                    branch: branch, from: workspace, target: target, session: session)
+                self.createWorktree(branch: branch, from: workspace, target: target)
             }
         }
     }
@@ -2023,17 +2029,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     /// makes the workspace asynchronously, and the reply is the first thing
     /// that knows which tab there is to focus.
     private func createWorktree(
-        branch: String, from workspace: String, target: Worktrees.Target, session: HerdrSession
+        branch: String, from workspace: String, target: Worktrees.Target
     ) {
         // `git worktree add` plus whatever the repo runs on checkout, so this
         // is not instant and the window should not look idle while it happens.
         notice("creating \(branch)…")
         ask(.worktreeCreate(workspace: workspace, branch: branch), Reply.WorktreeCreated.self,
-            session: session, target: target, failing: "worktree \(branch)"
+            target: target, failing: "worktree \(branch)"
         ) { created in
             // A tab id from the machine this was created on. Focusing it
             // against whatever is active now would name another machine's tab.
-            guard self.stillAimed(at: target, session: session, doing: "worktree \(branch)")
+            guard self.stillAimed(at: target, doing: "worktree \(branch)"),
+                let session = self.session
             else { return }
             self.invoke(.focusTab(created.tab.tabID), session: session, bootID: target.bootID)
             self.notice("worktree \(branch)")
@@ -2067,9 +2074,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
                         // while, and an identical path exists on more than one
                         // of these machines.
                         guard
-                            self.stillAimed(
-                                at: target, session: session, doing: "open \(entry.title)")
+                            self.stillAimed(at: target, doing: "open \(entry.title)")
                         else { return }
+                        guard let session = self.session else { return }
                         self.invoke(
                             .worktreeOpen(workspace: workspace, path: entry.path),
                             session: session, bootID: target.bootID)
@@ -2096,7 +2103,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
                     action: "Remove")
             else { return }
             self.sendWorktreeRemoval(
-                entry, workspace: workspace, target: target, force: false, session: session)
+                entry, workspace: workspace, target: target, force: false)
         }
     }
 
@@ -2109,10 +2116,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     /// and it names what is being thrown away.
     private func sendWorktreeRemoval(
         _ entry: Reply.WorktreeList.Entry, workspace: String, target: Worktrees.Target,
-        force: Bool, session: HerdrSession
+        force: Bool
     ) {
         let doing = "remove \(entry.title)"
-        guard stillAimed(at: target, session: session, doing: doing) else { return }
+        guard stillAimed(at: target, doing: doing), let session else { return }
         let id = UUID().uuidString
         let command = Command.worktreeRemove(workspace: workspace, force: force)
         guard let json = command.requestJSON(id: id) else { return }
@@ -2139,7 +2146,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
                         action: "Force Remove")
                 else { return }
                 self.sendWorktreeRemoval(
-                    entry, workspace: workspace, target: target, force: true, session: session)
+                    entry, workspace: workspace, target: target, force: true)
             }
         }
     }
@@ -2567,6 +2574,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     private func reattach() {
         gridView.forgetSurface()
         gridView.session = nil
+        session?.cancelPendingReplies()
         session = nil
         themedEndpoints = []
         publishedTheme = nil

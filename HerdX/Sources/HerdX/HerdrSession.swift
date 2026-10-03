@@ -31,7 +31,6 @@ struct CellRect {
     var x: Int, y: Int, width: Int, height: Int
 }
 
-/// A borrowed view of the current surface. Only valid inside `withGrid`.
 /// An image the server placed in a pane.
 struct Placement {
     let assetID: UInt64
@@ -42,6 +41,12 @@ struct Placement {
     let z: Int
 }
 
+/// A borrowed view of the current surface. Only valid inside `withGrid`.
+///
+/// The buffers below point into the core's own memory, which the next
+/// acquisition replaces: keeping one past `withGrid` is a dangling read. The
+/// warning was attached to `Placement`, which holds nothing but values and
+/// needs no warning at all.
 struct GridView {
     let width: Int
     let height: Int
@@ -123,6 +128,16 @@ final class HerdrSession {
     private var handle: OpaquePointer?
     /// Callbacks awaiting a reply, keyed by request id.
     private var pendingReplies: [String: (String) -> Void] = [:]
+
+    /// Tells one session object from the next.
+    ///
+    /// So a long-running flow can notice the window rebuilt its connection
+    /// without holding the old session to compare against. Holding one is not
+    /// free: a reply callback that captures its session is reachable from
+    /// `pendingReplies`, so a reply that never arrives — a server that went
+    /// away mid-flight — keeps the session, its sockets, its ssh children and
+    /// its reconnect threads alive for the life of the app.
+    let token = UUID()
     private(set) var snapshots = SnapshotCache()
 
     /// The active machine's snapshot, which is what a command is built from.
@@ -418,11 +433,25 @@ final class HerdrSession {
         _ = hx_resize(handle, UInt16(cols), UInt16(rows), UInt32(cellWidth), UInt32(cellHeight))
     }
 
+    /// Drops every reply still being waited for.
+    ///
+    /// Called when the window lets go of this session, because "dropped when
+    /// the session is" was circular: a callback holding its session is
+    /// reachable from the session, so nothing was ever released and `deinit`
+    /// never ran. The connections stayed up, invisible and unstoppable.
+    ///
+    /// Safe to call more than once, and safe to call on a session still in
+    /// use — abandoning a reply nobody is waiting for is what disposal means.
+    func cancelPendingReplies() {
+        pendingReplies.removeAll()
+    }
+
     /// Invokes one of herdr's 38 endpoint methods.
     ///
-    /// `onReply` is called once with the raw reply body. A request whose reply
-    /// never arrives — a server that went away mid-flight — simply leaves the
-    /// callback unused; it is dropped when the session is.
+    /// `onReply` is called once with the raw reply body. A reply that never
+    /// arrives leaves its callback in `pendingReplies` until the session is
+    /// let go of, so a callback must not capture the session strongly — see
+    /// `token` and `cancelPendingReplies`.
     func request(_ json: String, bootID: String, id: String? = nil, onReply: ((String) -> Void)? = nil) {
         guard let handle else { return }
         if let id, let onReply { pendingReplies[id] = onReply }
