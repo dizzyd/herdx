@@ -26,6 +26,15 @@ final class SidebarRow: NSView {
     }
 
     let target: Target
+    /// What this row was built to say, and whether it was drawn under another.
+    ///
+    /// Kept for the same reason as `builtRows` and `rebuilds`: what the list
+    /// decided is not observable through a window, and the decisions — which
+    /// row names the repo, which one is a sibling of it — are the part worth
+    /// pinning down.
+    let title: String
+    let subtitle: String
+    let isUnderLead: Bool
     private let onSelect: (Target) -> Void
     /// Raised by the disclosure triangle, which acts on the row without
     /// selecting it.
@@ -48,6 +57,13 @@ final class SidebarRow: NSView {
         selected: Bool,
         chrome: Chrome,
         target: Target,
+        /// Drawn a step in, for a row that belongs to the one above it.
+        ///
+        /// Only ever to the *right*: indenting workspaces under machines was
+        /// tried and read backwards, because a machine spends a column on its
+        /// chevron and the workspace then started left of it. A sibling has no
+        /// such column between it and its lead, so a step in is a step in.
+        under lead: Bool = false,
         onSelect: @escaping (Target) -> Void,
         onToggle: (() -> Void)? = nil
     ) {
@@ -56,6 +72,9 @@ final class SidebarRow: NSView {
         self.chrome = chrome
         self.onSelect = onSelect
         self.onToggle = onToggle
+        self.title = title
+        self.subtitle = subtitle ?? ""
+        self.isUnderLead = lead
         super.init(frame: .zero)
 
         wantsLayer = true
@@ -143,7 +162,7 @@ final class SidebarRow: NSView {
             // start at the margin instead put every workspace to the left of
             // the machine it belongs to, which reads as the wrong way round.
             row.leadingAnchor.constraint(
-                equalTo: leadingAnchor, constant: collapsed == nil ? 26 : 8),
+                equalTo: leadingAnchor, constant: (collapsed == nil ? 26 : 8) + (lead ? 14 : 0)),
             row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             row.topAnchor.constraint(equalTo: topAnchor, constant: 4),
             row.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
@@ -556,48 +575,70 @@ final class SidebarView: NSView {
             return
         }
 
-        let ordered = priority.ordered(all, agent: { $0.1 }, endpoint: { $0.0.index })
+        // Urgency order, then the agents sharing a workspace gathered under
+        // whichever of them that order put first.
+        let groups = Self.grouped(priority.ordered(all, agent: { $0.1 }, endpoint: { $0.0.index }))
         // Headings only when there is more than one band to tell apart. A lone
         // "Active" over every row labels nothing and costs a line of the list.
-        let tiers = ordered.map { priority.tier($0.1, on: $0.0.index) }
+        //
+        // By the lead's tier, not each row's: a group sits where its most
+        // urgent member put it, and a quieter sibling drawn under it is not a
+        // new band — it says what it is in its own text.
+        let tiers = groups.map { priority.tier($0[0].1, on: $0[0].0.index) }
         // Hibernated rows are a band of their own, so their presence is another
         // reason for the live rows above them to be labelled.
-        let banded = Set(tiers).count > 1 || (!dormant.isEmpty && !ordered.isEmpty)
+        let banded = Set(tiers).count > 1 || (!dormant.isEmpty && !groups.isEmpty)
         var band: AgentPriority.Tier?
+        // Spent on every row when there is more than one machine, and on none
+        // when there is not: "local" after every agent is a column of noise in
+        // a sidebar this narrow.
+        let naming = endpoints.count > 1
 
-        for (index, (endpoint, agent)) in ordered.enumerated() {
+        for (index, group) in groups.enumerated() {
             if banded, tiers[index] != band {
                 addSection(tiers[index].title, rule: band != nil)
                 band = tiers[index]
             }
 
-            let workspace = endpoint.snapshot.flatMap { snapshot in
-                snapshot.workspaces.first { $0.workspaceID == agent.workspaceID }
-                    .map { $0.label + Self.namedPlace(of: agent, in: snapshot) }
+            let names = Self.agentNames(group)
+            for (position, (endpoint, agent)) in group.enumerated() {
+                let isLead = position == 0
+                let workspace = endpoint.snapshot.flatMap { snapshot in
+                    snapshot.workspaces.first { $0.workspaceID == agent.workspaceID }?.label
+                }
+                // "idle 3h" rather than "idle · 3h": how long it has been quiet
+                // is part of what state it is in, not a second fact about it.
+                let reason = [
+                    priority.reason(agent, on: endpoint.index),
+                    priority.quietFor(agent, on: endpoint.index),
+                ].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " ")
+                let named = names[position]
+
+                // The lead carries the workspace, because that is what tells
+                // one group from the next — a column of rows all called
+                // "claude" identifies nothing when you run one per repo. The
+                // siblings under it are already placed, so they need only say
+                // which agent they are.
+                let title = isLead ? (workspace ?? named ?? agent.paneID) : (named ?? agent.paneID)
+                let qualifiers =
+                    isLead
+                    ? [named, reason, naming ? endpoint.label : nil]
+                    : [reason]
+
+                add(
+                    title: title,
+                    subtitle: qualifiers.compactMap { $0 }.filter { !$0.isEmpty }
+                        .joined(separator: " · "),
+                    status: priority.displayStatus(agent, on: endpoint.index),
+                    symbol: nil,
+                    collapsed: nil,
+                    selected: agent.focused && endpoint.index == active,
+                    target: .pane(agent.paneID, endpoint: endpoint.index),
+                    under: !isLead)
             }
-            // "idle 3h" rather than "idle · 3h": how long it has been quiet is
-            // part of what state it is in, not a second fact about it.
-            let reason = [
-                priority.reason(agent, on: endpoint.index),
-                priority.quietFor(agent, on: endpoint.index),
-            ].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " ")
-            // Falls back to the workspace rather than to the pane id: an agent
-            // that has not named itself is still identified by the work it is
-            // doing, and "w2:p1" identifies nothing to anybody.
-            let named = [agent.name, agent.displayAgent, agent.title]
-                .compactMap { $0 }.first { !$0.isEmpty }
-            add(
-                title: named ?? workspace ?? agent.paneID,
-                subtitle: [reason, named == nil ? nil : workspace, endpoint.label]
-                    .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "),
-                status: priority.displayStatus(agent, on: endpoint.index),
-                symbol: nil,
-                collapsed: nil,
-                selected: agent.focused && endpoint.index == active,
-                target: .pane(agent.paneID, endpoint: endpoint.index))
         }
 
-        addHibernated(dormant, under: !ordered.isEmpty)
+        addHibernated(dormant, under: !groups.isEmpty)
     }
 
     /// The workspaces that are not running, under the live ones.
@@ -657,6 +698,72 @@ final class SidebarView: NSView {
     /// is named — its own name if somebody gave it one, and its number
     /// otherwise. A bare number says little on its own, so it is prefixed
     /// with what is running there when that is known: `(claude 2)`.
+    /// The agents sharing a workspace, gathered under whichever of them came
+    /// first in `rows`.
+    ///
+    /// The order `rows` arrived in is kept exactly: a group sits where its most
+    /// urgent member sat, and the rest follow it in their own relative order.
+    /// Nothing is re-sorted, so an agent that has just finished is in the same
+    /// place it would have been before any of this grouping — which is what
+    /// keeps the list's answer to "what needs me" the answer it always gave.
+    ///
+    /// Grouped by workspace *and* endpoint: two machines really do both have a
+    /// `w1`, so keying on the workspace alone would file one machine's agents
+    /// under another's.
+    static func grouped(
+        _ rows: [(EndpointInfo, Snapshot.Agent)]
+    ) -> [[(EndpointInfo, Snapshot.Agent)]] {
+        var groups: [[(EndpointInfo, Snapshot.Agent)]] = []
+        var placed: [String: Int] = [:]
+        for row in rows {
+            let key = "\(row.0.index)/\(row.1.workspaceID)"
+            if let index = placed[key] {
+                groups[index].append(row)
+            } else {
+                placed[key] = groups.count
+                groups.append([row])
+            }
+        }
+        return groups
+    }
+
+    /// What to call each agent in a group, so that no two read the same.
+    ///
+    /// The kind is what you want to see — "claude", "omp" — but two of the
+    /// same kind in one repo is exactly the case this list exists to untangle,
+    /// and two rows both saying "claude" untangle nothing. Where the kind
+    /// repeats, the pane's own label is used instead, which is what herdr's
+    /// `namedPlace` has always reached for and is usually the one thing the
+    /// person named themselves.
+    ///
+    /// `agent` rather than `display_agent` among the fallbacks, because the
+    /// server sends the latter only for an agent it was told about — for a
+    /// detected one, which is nearly all of them, it is not there at all.
+    static func agentNames(
+        _ group: [(EndpointInfo, Snapshot.Agent)]
+    ) -> [String?] {
+        func kind(_ agent: Snapshot.Agent) -> String? {
+            [agent.name, agent.displayAgent, agent.agent, agent.title]
+                .compactMap { $0 }.first { !$0.isEmpty }
+        }
+        func place(_ endpoint: EndpointInfo, _ agent: Snapshot.Agent) -> String? {
+            guard let snapshot = endpoint.snapshot else { return nil }
+            let named = namedPlace(of: agent, in: snapshot)
+                .trimmingCharacters(in: CharacterSet(charactersIn: " ()"))
+            return named.isEmpty ? nil : named
+        }
+
+        let kinds = group.map { kind($0.1) }
+        return group.indices.map { index in
+            let mine = kinds[index]
+            let shared = kinds.enumerated().contains { $0.offset != index && $0.element == mine }
+            if mine == nil || shared {
+                return place(group[index].0, group[index].1) ?? mine
+            }
+            return mine
+        }
+    }
+
     static func namedPlace(of agent: Snapshot.Agent, in snapshot: Snapshot) -> String {
         let siblings = snapshot.agents.filter { $0.workspaceID == agent.workspaceID }
         guard siblings.count > 1 else { return "" }
@@ -880,12 +987,13 @@ final class SidebarView: NSView {
         collapsed: Bool?,
         selected: Bool,
         target: SidebarRow.Target,
+        under lead: Bool = false,
         onToggle: (() -> Void)? = nil
     ) {
         let row = SidebarRow(
             title: title, subtitle: subtitle, detail: detail, status: status,
             symbol: symbol, collapsed: collapsed, selected: selected, chrome: chrome,
-            target: target,
+            target: target, under: lead,
             onSelect: { [weak self] target in self?.select(target) },
             onToggle: onToggle)
         row.translatesAutoresizingMaskIntoConstraints = false
