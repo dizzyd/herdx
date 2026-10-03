@@ -30,6 +30,33 @@ struct CopyMode {
     var field: Field = .none
     /// The last query, so `n` and `N` can repeat it.
     var lastQuery: String?
+    /// What this session is waiting on.
+    var pending = Pending()
+
+    /// A request out to the server, and the keystrokes waiting behind it.
+    ///
+    /// Inside the session rather than beside it, because this is exactly the
+    /// lifetime it has: entering copy mode starts an empty queue, and leaving
+    /// throws it away. Kept on the view, a reply from a session that had
+    /// already ended released the flag the session now on screen was waiting
+    /// on — so that session's second request went out ahead of its first
+    /// answer and both moved from the same place.
+    ///
+    /// Keystrokes rather than motions. Nearly everything in copy mode is
+    /// relative to where the cursor is, and where it is comes back from the
+    /// server; only server motions used to queue, so a local key run while a
+    /// motion was out moved from the stale cursor and was then overwritten by
+    /// the reply. `wl` ended one column past where `w` *started* rather than
+    /// one past where it landed, and `vwy` could copy before `w` had extended
+    /// the selection. Holding the keystroke serializes every command without
+    /// having to enumerate which of them depend on the cursor, and replays
+    /// each through the same interpretation it would have had.
+    struct Pending {
+        /// Whether a request the cursor depends on is out.
+        var requestOutstanding = false
+        /// Typed while it was, in the order typed.
+        var keys: [NSEvent] = []
+    }
 
     var selection: Selection? {
         guard let anchor else { return nil }

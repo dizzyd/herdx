@@ -646,8 +646,12 @@ impl Halt {
 struct EndpointState {
     endpoint: crate::endpoint::Endpoint,
     shared: Arc<Shared>,
-    /// Queued before the connection is up, so input is never lost to a race
-    /// with a slow ssh handshake.
+    /// One queue per endpoint, so sending does not block on a write and a
+    /// slow machine cannot hold up the others.
+    ///
+    /// Not a buffer that survives a disconnection: what reaches a server that
+    /// is not there is decided by `Outbound`, which keeps state and drops
+    /// actions. See its `remember`.
     outbound: std::sync::mpsc::Sender<ClientMessage>,
     status: Arc<std::sync::atomic::AtomicU8>,
     /// How many times this endpoint has attached, counting the first.
@@ -878,36 +882,55 @@ struct Outbound {
 }
 
 impl Outbound {
-    /// Holds a message that describes the client, and drops one that does not.
-    fn remember(&mut self, message: ClientMessage) {
+    /// Keeps the newest message that *describes* this client, and ignores one
+    /// that merely asks for something.
+    ///
+    /// State, not a queue. A resize or a focus change says what the client is
+    /// rather than what it wants done, so only the latest matters — and it
+    /// goes on mattering after it has been sent, because the server tracks
+    /// both per connection and a reconnect starts it knowing neither.
+    ///
+    /// Remembering only a *failed* write was the bug: a client that had
+    /// successfully said "I am focused" had nothing left to say after
+    /// reconnecting. The old connection going away makes the server report
+    /// focus lost, and only `ClientShellFocus(true)` takes it back — nothing
+    /// in the handshake carries focus — so a program that reports focus sat
+    /// unfocused until somebody happened to click away and back.
+    fn remember(&mut self, message: &ClientMessage) {
         match message {
-            ClientMessage::ClientShellResize { .. } => self.resize = Some(message),
-            ClientMessage::ClientShellFocus { .. } => self.focus = Some(message),
+            ClientMessage::ClientShellResize { .. } => self.resize = Some(message.clone()),
+            ClientMessage::ClientShellFocus { .. } => self.focus = Some(message.clone()),
             _ => {}
         }
     }
 
-    /// Writes one message, remembering it again if the connection has gone.
+    /// Writes one message, keeping whatever it said about this client.
     fn write(&mut self, message: ClientMessage) {
+        self.remember(&message);
         let Some(writer) = self.writer.as_mut() else {
-            return self.remember(message);
+            // Nothing to write to. Anything describing the client is now held
+            // above and goes out on the next attach; anything else is an
+            // action with no connection to perform it, and is dropped.
+            return;
         };
         if crate::protocol::write_message(writer, &message).is_err() || writer.flush().is_err() {
             // The connection went away; the endpoint thread will install a new
-            // writer when it reconnects, and this goes out then if it must.
+            // writer when it reconnects.
             self.writer = None;
-            self.remember(message);
         }
     }
 
-    /// Installs a new writer and tells it what it missed.
+    /// Installs a new writer and brings it up to date on this client.
     ///
     /// Before anything queued behind it: the server should learn this client's
     /// size and focus in the same state the hello described, not after a
     /// keystroke has already been acted on at the wrong geometry.
+    ///
+    /// Cloned rather than taken, because this is the client's current state
+    /// and the next reconnect needs it just as much as this one did.
     fn attach(&mut self, writer: Option<crate::endpoint::WriteHalf>) {
         self.writer = writer;
-        for message in [self.resize.take(), self.focus.take()].into_iter().flatten() {
+        for message in [self.resize.clone(), self.focus.clone()].into_iter().flatten() {
             self.write(message);
         }
     }
@@ -926,8 +949,12 @@ fn spawn_endpoint(
     let halt = Arc::new(Halt::default());
     let (tx, rx) = std::sync::mpsc::channel::<ClientMessage>();
 
-    // Outbound messages are funnelled through one queue that survives
-    // reconnects, so input is never lost to a machine that briefly went away.
+    // Everything outbound goes through one `Outbound`, which survives
+    // reconnects and holds this client's state across them. What it does with
+    // a message sent while there is no connection is its own policy, stated
+    // there — keystrokes for a machine that has gone away are dropped, not
+    // banked, because a burst of them replayed minutes later is worse than
+    // nothing.
     let outbound = Arc::new(Mutex::new(Outbound::default()));
     let writer_slot = Arc::clone(&outbound);
     let writer_thread = std::thread::spawn(move || {
@@ -2761,10 +2788,8 @@ mod tests {
         assert_eq!(grid.revision, 1);
     }
 
-    fn geometry() -> Geometry {
-        Geometry { cols: 80, rows: 24, cell_width_px: 9, cell_height_px: 16 }
-    }
-
+    /// A report as the client builds one: already in the addressed pane's
+    /// coordinates, and carrying that pane's size rather than the surface's.
     fn mouse(kind: u16, button: u8, lines: u16) -> HxMouseEvent {
         HxMouseEvent {
             kind,
@@ -2773,6 +2798,10 @@ mod tests {
             row: 3,
             pixel_x: 40,
             pixel_y: 52,
+            cols: 40,
+            rows: 12,
+            width_px: 360,
+            height_px: 192,
             modifiers: 0,
             lines,
         }
@@ -2983,13 +3012,15 @@ mod tests {
         assert_eq!(mouse_kind(HX_MOUSE_DOWN, 42), None);
     }
 
-    /// Panes running SGR pixel mouse need exact pixel geometry, so the message
-    /// must carry the real surface size rather than a cell-rounded guess.
+    /// Panes running SGR pixel mouse need exact pixel geometry, and it has to
+    /// be the *pane's*: the server hands this straight to that pane's
+    /// emulator, so the surface's dimensions describe something that is not
+    /// there. The position is the pane's for the same reason.
     #[test]
-    fn mouse_message_carries_exact_pixel_geometry() {
+    fn mouse_message_carries_the_panes_own_geometry() {
         use herdr_protocol::protocol::{ClientMouseGeometry, ClientMousePosition, ClientPaneInputEvent};
         let kind = mouse_kind(HX_MOUSE_DOWN, HX_BUTTON_LEFT).unwrap();
-        let message = mouse_message("p1", &mouse(HX_MOUSE_DOWN, HX_BUTTON_LEFT, 0), kind, geometry());
+        let message = mouse_message("p1", &mouse(HX_MOUSE_DOWN, HX_BUTTON_LEFT, 0), kind);
 
         let ClientMessage::ClientShellPaneInput { pane_id, events } = message else {
             panic!("mouse input must target a pane");
@@ -3004,7 +3035,8 @@ mod tests {
         );
         assert_eq!(
             *g,
-            Some(ClientMouseGeometry { cols: 80, rows: 24, width_px: 720, height_px: 384 })
+            Some(ClientMouseGeometry { cols: 40, rows: 12, width_px: 360, height_px: 192 }),
+            "the whole surface's size was sent for one pane"
         );
         assert_eq!(*lines, 1, "a zero-row scroll should still move one row");
     }
@@ -3012,12 +3044,7 @@ mod tests {
     #[test]
     fn scroll_rows_are_preserved() {
         let kind = mouse_kind(HX_MOUSE_SCROLL_DOWN, HX_BUTTON_LEFT).unwrap();
-        let message = mouse_message(
-            "p1",
-            &mouse(HX_MOUSE_SCROLL_DOWN, HX_BUTTON_LEFT, 5),
-            kind,
-            geometry(),
-        );
+        let message = mouse_message("p1", &mouse(HX_MOUSE_SCROLL_DOWN, HX_BUTTON_LEFT, 5), kind);
         let ClientMessage::ClientShellPaneInput { events, .. } = message else { unreachable!() };
         let herdr_protocol::protocol::ClientPaneInputEvent::Mouse { lines, .. } = &events[0] else {
             unreachable!()
@@ -3088,18 +3115,29 @@ pub const HX_BUTTON_LEFT: u8 = 0;
 pub const HX_BUTTON_RIGHT: u8 = 1;
 pub const HX_BUTTON_MIDDLE: u8 = 2;
 
-/// One mouse event in surface coordinates.
+/// One mouse event, already in the addressed pane's coordinates.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct HxMouseEvent {
     pub kind: u16,
     pub button: u8,
-    /// Cell coordinates, relative to the surface origin.
+    /// Cell coordinates, relative to the addressed pane's inner origin.
+    ///
+    /// The server hands these to that pane's emulator without subtracting
+    /// anything, so they have to arrive pane-local. They used to be surface
+    /// coordinates, which told a pane halfway across the window that every
+    /// click was halfway across the window.
     pub column: u16,
     pub row: u16,
-    /// Pixel coordinates within the surface, for SGR pixel mouse.
+    /// Pixel coordinates within the pane, for SGR pixel mouse.
     pub pixel_x: u32,
     pub pixel_y: u32,
+    /// The pane's own size, which is what a program using pixel mouse scales
+    /// against. The surface's described a pane that does not exist.
+    pub cols: u16,
+    pub rows: u16,
+    pub width_px: u32,
+    pub height_px: u32,
     pub modifiers: u8,
     /// Rows to move for a scroll event.
     pub lines: u16,
@@ -3153,18 +3191,21 @@ pub unsafe extern "C" fn hx_send_mouse(
         return false;
     };
 
-    let geometry = *session.geometry.lock().unwrap();
     session
         .outbound
-        .send(mouse_message(pane_id, &event, kind, geometry))
+        .send(mouse_message(pane_id, &event, kind))
         .is_ok()
 }
 
+/// Builds the wire message for one mouse report.
+///
+/// The geometry comes from the event rather than from the session: it has to
+/// describe the pane being addressed, and only the caller knows which pane the
+/// gesture belongs to.
 fn mouse_message(
     pane_id: &str,
     event: &HxMouseEvent,
     kind: herdr_protocol::protocol::ClientMouseKind,
-    geometry: Geometry,
 ) -> ClientMessage {
     ClientMessage::ClientShellPaneInput {
         pane_id: pane_id.to_owned(),
@@ -3177,10 +3218,10 @@ fn mouse_message(
                 row: event.row,
             },
             geometry: Some(herdr_protocol::protocol::ClientMouseGeometry {
-                cols: geometry.cols,
-                rows: geometry.rows,
-                width_px: u32::from(geometry.cols) * geometry.cell_width_px,
-                height_px: u32::from(geometry.rows) * geometry.cell_height_px,
+                cols: event.cols,
+                rows: event.rows,
+                width_px: event.width_px,
+                height_px: event.height_px,
             }),
             modifiers: event.modifiers,
             // A scroll of zero rows would be a no-op the server still has to

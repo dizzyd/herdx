@@ -29,6 +29,13 @@ pub struct Attachment {
     pub hello: EndpointClientHello,
     /// Set once the client's end of this connection has gone.
     pub closed: bool,
+    /// What the client said on this connection after the handshake, in order.
+    ///
+    /// Recorded because some of what a client has to tell a server is not in
+    /// the hello: focus is not, and the server tracks it per connection, so
+    /// "did the reconnect say it again" is a question only the stream can
+    /// answer.
+    pub messages: Vec<ClientMessage>,
 }
 
 #[derive(Default)]
@@ -146,6 +153,7 @@ fn serve(mut stream: UnixStream, log: Arc<Mutex<Log>>) {
         log.attachments.push(Attachment {
             hello,
             closed: false,
+            messages: Vec::new(),
         });
         if let Ok(handle) = stream.try_clone() {
             log.live.push(handle);
@@ -174,7 +182,13 @@ fn serve(mut stream: UnixStream, log: Arc<Mutex<Log>>) {
 
     // Reading is how the client's departure is noticed: this server has nothing
     // of its own to say, so an error or EOF here means the other end is gone.
-    while read_message::<_, ClientMessage>(&mut stream, MAX_FRAME_SIZE).is_ok() {}
+    // What arrives on the way is kept, because a client tells a server things
+    // the hello has no field for.
+    while let Ok(message) = read_message::<_, ClientMessage>(&mut stream, MAX_FRAME_SIZE) {
+        if let Ok(mut log) = log.lock() {
+            log.attachments[index].messages.push(message);
+        }
+    }
 
     log.lock().unwrap().attachments[index].closed = true;
 }

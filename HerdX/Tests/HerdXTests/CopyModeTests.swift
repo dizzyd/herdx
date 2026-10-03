@@ -60,6 +60,112 @@ final class CopyModeTests: XCTestCase {
         #"{"result":{"cursor":{"row":\#(row),"col":\#(column)}}}"#
     }
 
+    /// A reply from a copy-mode session that has ended must not release the
+    /// queue of the session now on screen.
+    ///
+    /// The callback used to clear the in-flight flag and pump the queue before
+    /// it checked whose reply it was, so the old session's answer let the new
+    /// session's second keystroke run while its own request was still out —
+    /// both moving from column 0, and the second press wasted exactly as it
+    /// was before any of this queued.
+    func testAStaleReplyDoesNotReleaseTheNewSessionsQueue() {
+        let view = gridView(panes: [pane("w1:p1")])
+        var requests: [String] = []
+        var replies: [(String) -> Void] = []
+        view.onCopyModeRequest = { request, _, completion in
+            requests.append(request)
+            replies.append(completion)
+        }
+
+        // One session asks for a motion, then goes away.
+        view.enterCopyMode()
+        _ = view.handleCopyModeKey(keystroke("w"))
+        XCTAssertEqual(requests.count, 1)
+        view.exitCopyMode()
+
+        // A new session asks for its own, and types another key behind it.
+        view.enterCopyMode()
+        _ = view.handleCopyModeKey(keystroke("w"))
+        XCTAssertEqual(requests.count, 2)
+        _ = view.handleCopyModeKey(keystroke("w"))
+        XCTAssertEqual(requests.count, 2, "the second press was not held")
+
+        // The dead session answers. Nothing of this one's may move.
+        replies[0](cursorAt(row: 5, column: 9))
+
+        XCTAssertEqual(
+            requests.count, 2,
+            "a reply from a session that had ended let this one's next request out")
+        XCTAssertEqual(
+            view.copyMode?.cursor.column, 0, "a dead session's reply moved this cursor")
+
+        // And this session's own reply still releases it.
+        replies[1](cursorAt(row: 0, column: 4))
+        XCTAssertEqual(requests.count, 3, "the held keystroke never ran")
+    }
+
+    /// Everything waits for an outstanding request, not just the next motion.
+    ///
+    /// `l` is computed here from the cursor, so run while `w` was out it moved
+    /// from the old cursor and was then overwritten by `w`'s reply: the column
+    /// ended one past where `w` *started* rather than one past where it landed.
+    func testALocalMoveWaitsForAnOutstandingMotion() {
+        let view = gridView(panes: [pane("w1:p1")])
+        var replies: [(String) -> Void] = []
+        view.onCopyModeRequest = { _, _, completion in replies.append(completion) }
+
+        view.enterCopyMode()
+        _ = view.handleCopyModeKey(keystroke("w"))
+        _ = view.handleCopyModeKey(keystroke("l"))
+
+        // `l` has not been allowed to move anything yet.
+        XCTAssertEqual(view.copyMode?.cursor.column, 0)
+
+        // `w` lands on column 4, and only then does `l` take it to 5.
+        replies[0](cursorAt(row: 0, column: 4))
+        XCTAssertEqual(
+            view.copyMode?.cursor.column, 5,
+            "the local move ran against the cursor the motion replaced")
+    }
+
+    /// `vwy` must not copy before `w` has extended the selection.
+    func testASelectionIsNotCopiedBeforeTheMotionExtendsIt() {
+        let view = gridView(panes: [pane("w1:p1")])
+        var replies: [(String) -> Void] = []
+        view.onCopyModeRequest = { _, _, completion in replies.append(completion) }
+
+        view.enterCopyMode()
+        _ = view.handleCopyModeKey(keystroke("v"))
+        _ = view.handleCopyModeKey(keystroke("w"))
+        _ = view.handleCopyModeKey(keystroke("y"))
+
+        // `y` copies and leaves, so still being in copy mode is the proof it
+        // has not run: it is waiting for the selection it would have copied.
+        XCTAssertNotNil(view.copyMode, "y copied and left before the motion answered")
+        XCTAssertEqual(view.copyMode?.anchor?.column, 0, "the anchor moved early")
+
+        // Once the motion lands, `y` runs against the selection it extended.
+        replies[0](cursorAt(row: 0, column: 4))
+        XCTAssertNil(view.copyMode, "the held y never ran")
+    }
+
+    /// A lost reply must not trap anyone in copy mode, so the keys that leave
+    /// are never queued.
+    func testEscapeAndQStillWorkWhileARequestIsOutstanding() {
+        let view = gridView(panes: [pane("w1:p1")])
+        view.onCopyModeRequest = { _, _, _ in }
+
+        view.enterCopyMode()
+        _ = view.handleCopyModeKey(keystroke("w"))
+        _ = view.handleCopyModeKey(keystroke("q"))
+        XCTAssertNil(view.copyMode, "q was queued behind a reply that never came")
+
+        view.enterCopyMode()
+        _ = view.handleCopyModeKey(keystroke("w"))
+        _ = view.handleCopyModeKey(keystroke("\u{1b}", keyCode: 53))
+        XCTAssertNil(view.copyMode, "Esc was queued behind a reply that never came")
+    }
+
     /// Each motion is relative to where the cursor is, and that comes back
     /// from the server. Two presses before the first answer must not both ask
     /// to move from the same place.

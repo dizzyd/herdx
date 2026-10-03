@@ -4,9 +4,10 @@ import CHerdrCore
 /// Draws the pane surface herdr sends us.
 ///
 /// The server composes one grid for the whole active tab and reports where each
-/// pane sits inside it. This view draws that single grid, but every span is
-/// routed through its owning pane first, so panes can become real `NSView`s
-/// later without changing how surfaces or patches are delivered.
+/// pane sits inside it. This view owns that single grid and the input for it;
+/// every span is routed through its owning pane first, which is what let the
+/// panes become real `NSView`s — `syncPaneViews` keeps a `PaneContentView` per
+/// pane — without changing how surfaces or patches are delivered.
 final class TerminalGridView: NSView {
     var session: HerdrSession?
     var theme: Theme = .dark
@@ -146,15 +147,9 @@ final class TerminalGridView: NSView {
     /// session that asked for it has ended can be told apart from one that
     /// belongs to the session now on screen.
     var copyModeGeneration = 0
-    /// Motions waiting for the one in flight to answer.
-    ///
-    /// Each motion is relative to where the cursor is now, and where it is now
-    /// is only known once the server has said. Two `w` presses before the
-    /// first reply both asked to advance from the same place and both landed
-    /// on the same word, so the second press did nothing.
-    var pendingMotions: [CopyMode.Motion] = []
-    /// Whether a motion request is out, so the next one waits for its answer.
-    var motionInFlight = false
+    // What copy mode is waiting on lives in `CopyMode.pending`, with the
+    // session it belongs to: the generation below is the only part of it whose
+    // lifetime is the view's.
     /// Raised with the status text when copy mode starts, changes or ends.
     var onCopyModeChanged: ((String?) -> Void)?
     /// Raised to run a copy-mode request that needs a reply.
@@ -169,8 +164,11 @@ final class TerminalGridView: NSView {
     // Allows AppKit gesture tests to exercise delivery without a live server.
     var linkResolverForTesting: ((CGPoint) -> TerminalLink?)?
     // And to see what reached the program, which otherwise needs a live server
-    // to observe at all.
-    var mouseReportForTesting: ((UInt16, String) -> Void)?
+    // to observe at all. The event as well as the pane, because the
+    // coordinates in it are the thing most worth checking and the thing least
+    // visible from outside: a report with the right kind at the wrong column
+    // is a click in the wrong place.
+    var mouseReportForTesting: ((UInt16, String, HxMouseEvent) -> Void)?
     /// Everything the hover drives hangs off this setter, and only fires on a
     /// real change: hover is re-resolved on every surface revision, and the
     /// underline, tooltip and cursor rects must not be redone per frame.
@@ -193,7 +191,13 @@ final class TerminalGridView: NSView {
     /// the program saw a button go down and never come up.
     private enum MouseGesture {
         case selecting(paneID: String)
-        case reporting
+        /// The pane the press went down in, for the same reason `selecting`
+        /// carries one: a drag belongs to where it started. Without it, every
+        /// move and the release were hit-tested afresh, so dragging into a
+        /// neighbour sent that pane the rest of the gesture and left the first
+        /// one holding a button that never came up — and a release outside
+        /// every pane went nowhere at all.
+        case reporting(paneID: String)
         case link
     }
     private var gesture: MouseGesture?
@@ -1106,34 +1110,88 @@ extension TerminalGridView {
         return (pane, column, row)
     }
 
+    /// One mouse report, in the coordinates the program in the pane expects.
+    ///
+    /// Pane-local, not surface-local. The server hands the position straight to
+    /// the addressed pane's emulator without subtracting anything, so a pane
+    /// twenty columns across the surface was telling its program every click
+    /// was twenty columns further right than it was — which is every click in
+    /// the wrong place for anything that reads the mouse. herdr's own client
+    /// subtracts `inner_rect` here, and this follows it, including the clamp:
+    /// a press on a pane's border belongs to the nearest cell inside it rather
+    /// than to a cell that is not there.
+    ///
+    /// The geometry is the pane's too. A program using SGR pixel mouse sizes
+    /// its own coordinate space from it, and the whole surface's dimensions
+    /// describe a pane that does not exist.
     private func mouseEvent(
-        _ event: NSEvent, kind: UInt16, button: UInt8, column: Int, row: Int, lines: Int = 0
+        _ event: NSEvent, kind: UInt16, button: UInt8, in pane: PaneView, column: Int, row: Int,
+        lines: Int = 0
     ) -> HxMouseEvent {
+        let inner = pane.inner
+        let localColumn = min(max(column - Int(inner.x), 0), max(Int(inner.width) - 1, 0))
+        let localRow = min(max(row - Int(inner.y), 0), max(Int(inner.height) - 1, 0))
+
+        // Pixels against the pane's own origin, clamped to its own box, so the
+        // two spaces agree about which pane they are describing.
         let point = convert(event.locationInWindow, from: nil)
+        let paneOriginX = contentOrigin.x + CGFloat(inner.x) * cellSize.width
+        let paneOriginY = contentOrigin.y + CGFloat(inner.y) * cellSize.height
+        let paneWidth = CGFloat(inner.width) * cellSize.width
+        let paneHeight = CGFloat(inner.height) * cellSize.height
+        let localX = min(max(point.x - paneOriginX, 0), max(paneWidth - 1, 0))
+        let localY = min(max(point.y - paneOriginY, 0), max(paneHeight - 1, 0))
+
         return HxMouseEvent(
             kind: kind,
             button: button,
-            column: UInt16(max(column, 0)),
-            row: UInt16(max(row, 0)),
-            pixel_x: UInt32(max(point.x - contentOrigin.x, 0)),
-            pixel_y: UInt32(max(point.y - contentOrigin.y, 0)),
+            column: UInt16(localColumn),
+            row: UInt16(localRow),
+            pixel_x: UInt32(localX),
+            pixel_y: UInt32(localY),
+            cols: UInt16(max(inner.width, 0)),
+            rows: UInt16(max(inner.height, 0)),
+            width_px: UInt32(paneWidth),
+            height_px: UInt32(paneHeight),
             modifiers: KeyMapper.modifiers(event.modifierFlags),
             lines: UInt16(max(lines, 0)))
     }
 
-    private func send(_ event: NSEvent, kind: UInt16, button: UInt8) {
-        if let mouseReportForTesting, let hit = hit(event) {
-            mouseReportForTesting(kind, hit.pane.id)
+    /// Sends one report to the pane a gesture belongs to.
+    ///
+    /// `owner` is the pane the press went down in. Given one, the whole
+    /// gesture goes there whatever the pointer is now over — a drag that
+    /// leaves its pane is still that pane's drag, and the button it put down
+    /// has to come back up in the same place. Hit-testing each event instead
+    /// handed the neighbour a drag it never started and left the first pane
+    /// waiting for a release that went somewhere else; a release outside every
+    /// pane was dropped entirely, which is a button held down for good.
+    ///
+    /// Without an owner — a press, or a scroll, which is not a gesture — the
+    /// pane under the pointer is the right answer.
+    private func send(_ event: NSEvent, kind: UInt16, button: UInt8, owner: String? = nil) {
+        let target: (pane: PaneView, column: Int, row: Int)?
+        if let owner, let pane = panes.first(where: { $0.id == owner }) {
+            // Still measured from the pointer; `mouseEvent` clamps it into the
+            // owner, which is what makes a drag past the edge report the edge
+            // rather than a cell in somebody else's pane.
+            let cell = cellLocation(of: event)
+            target = (pane, cell?.column ?? Int(pane.inner.x), cell?.row ?? Int(pane.inner.y))
+        } else {
+            target = hit(event)
         }
-        guard let session, let hit = hit(event) else { return }
+        guard let target else { return }
+        let report = mouseEvent(
+            event, kind: kind, button: button, in: target.pane, column: target.column,
+            row: target.row)
+        mouseReportForTesting?(kind, target.pane.id, report)
+        guard let session else { return }
         // Clicking an unfocused pane focuses it. herdr leaves this to the
         // client shell, which is us.
-        if kind == UInt16(HX_MOUSE_DOWN), !hit.pane.focused {
-            onFocusPane?(hit.pane.id)
+        if kind == UInt16(HX_MOUSE_DOWN), !target.pane.focused {
+            onFocusPane?(target.pane.id)
         }
-        session.send(
-            mouse: mouseEvent(event, kind: kind, button: button, column: hit.column, row: hit.row),
-            to: hit.pane.id)
+        session.send(mouse: report, to: target.pane.id)
     }
 
     /// Whether a drag selects text rather than going to the pane's program.
@@ -1196,9 +1254,11 @@ extension TerminalGridView {
             if !hit.pane.focused { onFocusPane?(hit.pane.id) }
             return
         }
-        gesture = .reporting
+        gesture = .reporting(paneID: hit.pane.id)
         dismissSelectionAndCopyMode()
-        send(event, kind: UInt16(HX_MOUSE_DOWN), button: UInt8(HX_BUTTON_LEFT))
+        send(
+            event, kind: UInt16(HX_MOUSE_DOWN), button: UInt8(HX_BUTTON_LEFT),
+            owner: hit.pane.id)
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -1227,7 +1287,10 @@ extension TerminalGridView {
             // An empty selection is just a click; clear it so a stray highlight
             // does not linger.
             if selection?.isEmpty == true { selection = nil; needsDisplay = true }
-        case .reporting, nil:
+        case .reporting(let paneID):
+            send(
+                event, kind: UInt16(HX_MOUSE_UP), button: UInt8(HX_BUTTON_LEFT), owner: paneID)
+        case nil:
             send(event, kind: UInt16(HX_MOUSE_UP), button: UInt8(HX_BUTTON_LEFT))
         }
     }
@@ -1247,7 +1310,10 @@ extension TerminalGridView {
             else { return }
             selection?.extend(to: point(in: owner, column: cell.column, row: cell.row))
             needsDisplay = true
-        case .reporting, nil:
+        case .reporting(let paneID):
+            send(
+                event, kind: UInt16(HX_MOUSE_DRAG), button: UInt8(HX_BUTTON_LEFT), owner: paneID)
+        case nil:
             send(event, kind: UInt16(HX_MOUSE_DRAG), button: UInt8(HX_BUTTON_LEFT))
         }
     }
@@ -1382,7 +1448,7 @@ extension TerminalGridView {
         let kind = delta > 0 ? HX_MOUSE_SCROLL_UP : HX_MOUSE_SCROLL_DOWN
         session.send(
             mouse: mouseEvent(
-                event, kind: UInt16(kind), button: UInt8(HX_BUTTON_LEFT),
+                event, kind: UInt16(kind), button: UInt8(HX_BUTTON_LEFT), in: hit.pane,
                 column: hit.column, row: hit.row, lines: Int(abs(delta))),
             to: hit.pane.id)
     }

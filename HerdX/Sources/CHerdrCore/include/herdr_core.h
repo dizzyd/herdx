@@ -188,10 +188,17 @@ void hx_string_free(char *s);
 typedef struct {
   uint16_t kind;
   uint8_t button;
+  /// Cell and pixel coordinates relative to the addressed pane, not the
+  /// surface: the server passes them straight to that pane's emulator.
   uint16_t column;
   uint16_t row;
   uint32_t pixel_x;
   uint32_t pixel_y;
+  /// The pane's own size, which pixel-mouse programs scale against.
+  uint16_t cols;
+  uint16_t rows;
+  uint32_t width_px;
+  uint32_t height_px;
   uint8_t modifiers;
   uint16_t lines;
 } HxMouseEvent;

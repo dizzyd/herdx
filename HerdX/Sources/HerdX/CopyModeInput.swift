@@ -7,8 +7,8 @@ extension TerminalGridView {
             return
         }
         copyModeGeneration += 1
-        pendingMotions = []
-        motionInFlight = false
+        // Nothing to reset: what a session is waiting on is part of the
+        // session, so a new one starts with an empty queue by construction.
         var mode = CopyMode(
             generation: copyModeGeneration,
             paneID: pane.id,
@@ -22,9 +22,8 @@ extension TerminalGridView {
     }
 
     func exitCopyMode() {
+        // The queue goes with it, which is the point of it living in there.
         copyMode = nil
-        pendingMotions = []
-        motionInFlight = false
         selection = nil
         needsDisplay = true
         onCopyModeChanged?(nil)
@@ -36,6 +35,19 @@ extension TerminalGridView {
         let characters = event.charactersIgnoringModifiers ?? ""
         let shift = event.modifierFlags.contains(.shift)
         let control = event.modifierFlags.contains(.control)
+
+        // Everything waits for a request the cursor depends on, not just the
+        // next motion: a local key run while one was out moved from the stale
+        // cursor and was then overwritten by the reply.
+        //
+        // Except the two that end copy mode. Those do not depend on the cursor,
+        // and they are the way out — queueing them behind a reply that never
+        // arrives would make a lost motion something you cannot escape.
+        if mode.pending.requestOutstanding, !Self.leavesCopyMode(event) {
+            mode.pending.keys.append(event)
+            copyMode = mode
+            return true
+        }
 
         // A search query swallows ordinary typing until it is run or abandoned.
         if case .search(let forward, var query) = mode.field {
@@ -186,43 +198,72 @@ extension TerminalGridView {
     /// Every reply goes through this. A reply that arrives after copy mode was
     /// left and entered again belongs to nothing on screen, and applying it
     /// moves the new session's cursor to a result found in the old one's pane.
+    /// Esc and q, which leave copy mode (Esc clears a selection first).
+    ///
+    /// Never queued, so a request that is never answered cannot trap anyone in
+    /// copy mode.
+    private static func leavesCopyMode(_ event: NSEvent) -> Bool {
+        if Int(event.keyCode) == 53 { return true }
+        let characters = (event.charactersIgnoringModifiers ?? "").lowercased()
+        return characters == "q" && !event.modifierFlags.contains(.control)
+    }
+
+    /// Replays what was typed while the server was being waited on.
+    ///
+    /// One at a time and in order: the first replayed key may itself issue a
+    /// request, and the rest have to wait behind that one exactly as they
+    /// waited behind the first.
+    private func drainCopyModeKeys() {
+        while let mode = copyMode, !mode.pending.requestOutstanding,
+            !mode.pending.keys.isEmpty
+        {
+            var next = mode
+            let key = next.pending.keys.removeFirst()
+            copyMode = next
+            _ = handleCopyModeKey(key)
+        }
+    }
+
     private func session(matching issued: CopyMode) -> CopyMode? {
         guard let mode = copyMode, mode.isSameSession(as: issued) else { return nil }
         return mode
     }
 
-    /// Queues a motion, or runs it if nothing is in flight.
+    /// Asks the server to move the cursor, and holds everything behind it.
     ///
     /// A motion is relative to where the cursor is, and where it is comes back
-    /// from the server. Sending the next one before that answer arrives asks
-    /// it to move from where the cursor *was*: `ww` on "one two three" sent
-    /// two next-word requests from column 0 and both landed on "two", so the
-    /// second keystroke was spent for nothing.
+    /// from the server. Anything run before that answer arrives moves from
+    /// where the cursor *was*: `ww` on "one two three" sent two next-word
+    /// requests from column 0 and both landed on "two", so the second
+    /// keystroke was spent for nothing. There is only ever one of these out,
+    /// because `handleCopyModeKey` queues the keystrokes rather than the
+    /// motions.
     private func runMotion(_ motion: CopyMode.Motion) {
-        guard copyMode != nil else { return }
-        pendingMotions.append(motion)
-        sendNextMotion()
-    }
-
-    private func sendNextMotion() {
-        guard !motionInFlight, let issued = copyMode, !pendingMotions.isEmpty else { return }
-        let motion = pendingMotions.removeFirst()
+        guard var issued = copyMode else { return }
         let id = "motion-\(UUID().uuidString)"
-        guard let request = issued.motionRequest(motion, id: id) else {
-            return sendNextMotion()
-        }
-        motionInFlight = true
+        guard let request = issued.motionRequest(motion, id: id) else { return }
+        issued.pending.requestOutstanding = true
+        copyMode = issued
         onCopyModeRequest?(request, id) { [weak self] body in
             guard let self else { return }
-            self.motionInFlight = false
-            defer { self.sendNextMotion() }
-            guard var mode = self.session(matching: issued),
-                let point = Self.cursor(fromReply: body)
-            else { return }
+            // Whose reply this is, before anything of the current session is
+            // touched. Released first, a reply from a session that had already
+            // ended let this one's next keystroke run while its own request
+            // was still out — both moving from the same place.
+            guard var mode = self.session(matching: issued) else { return }
+            mode.pending.requestOutstanding = false
+            // A reply this session cannot read still releases this session's
+            // queue; what it must not do is release somebody else's.
+            guard let point = Self.cursor(fromReply: body) else {
+                self.copyMode = mode
+                self.drainCopyModeKeys()
+                return
+            }
             mode.cursor = point
             self.copyMode = mode
             self.selection = mode.selection
             self.needsDisplay = true
+            self.drainCopyModeKeys()
         }
     }
 
@@ -238,23 +279,34 @@ extension TerminalGridView {
             mode.contentRevision = pane.contentRevision
             copyMode = mode
         }
+        mode.pending.requestOutstanding = true
+        copyMode = mode
         let issued = mode
         let id = "search-\(UUID().uuidString)"
         guard let request = mode.searchRequest(query: query, forward: forward, id: id) else {
+            // Nothing is out after all, so nothing should be waiting on it.
+            mode.pending.requestOutstanding = false
+            copyMode = mode
+            drainCopyModeKeys()
             return
         }
         onCopyModeRequest?(request, id) { [weak self] body in
             // Checked before the retry as well as before the result: retrying
             // a search for a copy mode nobody is in asks the server a question
             // whose answer has nowhere to go.
-            guard let self, self.session(matching: issued) != nil else { return }
+            guard let self, var mode = self.session(matching: issued) else { return }
+            // The retry is still this session waiting on the server, so the
+            // queue stays held rather than draining between the two attempts.
             if !retrying, Self.isStale(body) {
                 self.runSearch(query: query, forward: forward, retrying: true)
                 return
             }
-            guard var mode = self.session(matching: issued),
-                let match = Self.selectedMatch(fromReply: body)
-            else { return }
+            mode.pending.requestOutstanding = false
+            guard let match = Self.selectedMatch(fromReply: body) else {
+                self.copyMode = mode
+                self.drainCopyModeKeys()
+                return
+            }
             mode.cursor = match.start
             mode.anchor = match.end
             mode.lastQuery = query
@@ -262,6 +314,7 @@ extension TerminalGridView {
             self.selection = mode.selection
             self.needsDisplay = true
             self.onCopyModeChanged?(mode.statusText)
+            self.drainCopyModeKeys()
         }
     }
 

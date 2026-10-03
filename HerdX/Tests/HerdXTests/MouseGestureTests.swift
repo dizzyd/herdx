@@ -65,7 +65,7 @@ final class MouseGestureTests: XCTestCase {
         XCTAssertNotNil(view.selection, "the fixture needs a selection left over")
 
         var reported: [(UInt16, String)] = []
-        view.mouseReportForTesting = { reported.append(($0, $1)) }
+        view.mouseReportForTesting = { kind, pane, _ in reported.append((kind, pane)) }
 
         view.mouseDown(with: event(.leftMouseDown, at: at(column: 25, in: view)))
         view.mouseDragged(with: event(.leftMouseDragged, at: at(column: 27, in: view)))
@@ -88,7 +88,7 @@ final class MouseGestureTests: XCTestCase {
         XCTAssertNotNil(view.selection, "the fixture needs a selection")
 
         var reported: [(UInt16, String)] = []
-        view.mouseReportForTesting = { reported.append(($0, $1)) }
+        view.mouseReportForTesting = { kind, pane, _ in reported.append((kind, pane)) }
 
         view.mouseDown(with: event(.leftMouseDown, at: at(column: 4, in: view)))
         view.mouseUp(with: event(.leftMouseUp, at: at(column: 4, in: view)))
@@ -155,20 +155,106 @@ final class MouseGestureTests: XCTestCase {
 
     /// The press that began in a reporting pane keeps reporting even if the
     /// pointer leaves it.
-    func testAReportingDragThatLeavesThePaneIsStillReported() {
-        let left = pane("w1:p1", x: 0, width: 20)
+    /// A drag that leaves its pane is still that pane's drag.
+    ///
+    /// Reported kinds alone are not enough — they were right while every event
+    /// after the press was hit-tested afresh, which sent the neighbour a drag
+    /// it never started and left the pane that *did* start it waiting for a
+    /// release that went somewhere else. A button put down has to come back up
+    /// in the same place, so the target is what this asserts.
+    func testAReportingDragThatLeavesThePaneStaysWithThatPane() {
+        let left = pane("w1:p1", x: 0, width: 20, reporting: true)
         let right = pane("w1:p2", x: 20, width: 20, reporting: true)
         let view = self.view([left, right])
 
-        var reported: [UInt16] = []
-        view.mouseReportForTesting = { kind, _ in reported.append(kind) }
+        var reported: [(UInt16, String)] = []
+        view.mouseReportForTesting = { kind, pane, _ in reported.append((kind, pane)) }
 
         view.mouseDown(with: event(.leftMouseDown, at: at(column: 25, in: view)))
         view.mouseDragged(with: event(.leftMouseDragged, at: at(column: 5, in: view)))
         view.mouseUp(with: event(.leftMouseUp, at: at(column: 5, in: view)))
 
         XCTAssertEqual(
-            reported, [UInt16(HX_MOUSE_DOWN), UInt16(HX_MOUSE_DRAG), UInt16(HX_MOUSE_UP)])
+            reported.map(\.0),
+            [UInt16(HX_MOUSE_DOWN), UInt16(HX_MOUSE_DRAG), UInt16(HX_MOUSE_UP)])
+        XCTAssertEqual(
+            reported.map(\.1), ["w1:p2", "w1:p2", "w1:p2"],
+            "the gesture wandered into the pane under the pointer")
         XCTAssertNil(view.selection, "a reporting press must not start a selection")
+    }
+
+    /// And a release outside every pane still reaches the pane that was
+    /// pressed, rather than being dropped — which left a button down for good.
+    func testAReleaseOutsideEveryPaneStillReachesTheOwner() {
+        let only = pane("w1:p1", x: 0, width: 10, reporting: true)
+        let view = self.view([only])
+
+        var reported: [(UInt16, String)] = []
+        view.mouseReportForTesting = { kind, pane, _ in reported.append((kind, pane)) }
+
+        view.mouseDown(with: event(.leftMouseDown, at: at(column: 5, in: view)))
+        // Well past the pane's last column, where nothing is.
+        view.mouseUp(with: event(.leftMouseUp, at: at(column: 40, in: view)))
+
+        XCTAssertEqual(
+            reported.map(\.0), [UInt16(HX_MOUSE_DOWN), UInt16(HX_MOUSE_UP)],
+            "the release was dropped, so the program still has the button down")
+        XCTAssertEqual(reported.map(\.1), ["w1:p1", "w1:p1"])
+    }
+
+    /// The coordinates a program actually receives.
+    ///
+    /// The server hands the position straight to the addressed pane's
+    /// emulator without subtracting anything, so surface coordinates told a
+    /// pane twenty columns across that every click was twenty columns further
+    /// right than it was.
+    func testAReportIsInThePanesOwnCoordinates() throws {
+        let right = pane("w1:p2", x: 20, width: 20, reporting: true)
+        let view = self.view([pane("w1:p1", x: 0, width: 20), right])
+
+        var reports: [HxMouseEvent] = []
+        view.mouseReportForTesting = { _, _, report in reports.append(report) }
+
+        // Surface column 25 is the pane's own column 5.
+        view.mouseDown(with: event(.leftMouseDown, at: at(column: 25, row: 3, in: view)))
+
+        let report = try XCTUnwrap(reports.first)
+        XCTAssertEqual(report.column, 5, "a surface column reached the program")
+        XCTAssertEqual(report.row, 3)
+    }
+
+    /// A drag past the pane's edge reports the edge, not a cell outside it.
+    /// herdr clamps into `inner_rect` for the same reason.
+    func testADragPastTheEdgeReportsTheEdge() throws {
+        let left = pane("w1:p1", x: 0, width: 20, reporting: true)
+        let view = self.view([left, pane("w1:p2", x: 20, width: 20)])
+
+        var reports: [HxMouseEvent] = []
+        view.mouseReportForTesting = { _, _, report in reports.append(report) }
+
+        view.mouseDown(with: event(.leftMouseDown, at: at(column: 5, in: view)))
+        view.mouseDragged(with: event(.leftMouseDragged, at: at(column: 35, in: view)))
+
+        let drag = try XCTUnwrap(reports.last)
+        XCTAssertEqual(drag.column, 19, "the report left the pane it belongs to")
+    }
+
+    /// A pixel-mouse program scales against the geometry it is sent, so the
+    /// pane's size is the only one that describes it.
+    func testAReportCarriesThePanesOwnGeometry() throws {
+        let right = pane("w1:p2", x: 20, width: 20, reporting: true)
+        let view = self.view([pane("w1:p1", x: 0, width: 20), right])
+
+        var reports: [HxMouseEvent] = []
+        view.mouseReportForTesting = { _, _, report in reports.append(report) }
+
+        view.mouseDown(with: event(.leftMouseDown, at: at(column: 25, in: view)))
+
+        let report = try XCTUnwrap(reports.first)
+        XCTAssertEqual(report.cols, 20, "the whole surface's width was sent")
+        XCTAssertEqual(report.rows, 10)
+        XCTAssertEqual(report.width_px, UInt32(20 * view.cellSize.width))
+        // Pixels against the pane's origin, like the cells.
+        XCTAssertLessThan(report.pixel_x, report.width_px)
     }
 }
