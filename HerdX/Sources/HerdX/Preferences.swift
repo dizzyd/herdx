@@ -71,6 +71,8 @@ struct Preferences {
     var hibernateAfterHours: Int?
     /// Whether an agent changing state makes a sound.
     var agentSounds: Bool
+    /// When to keep the display from sleeping. See `StayAwake`.
+    var stayAwake: StayAwake.Mode
     /// Sessions that attach the local server alone.
     ///
     /// Named rather than counted: a session is remembered by the name it is
@@ -102,6 +104,7 @@ struct Preferences {
         static let fontName = "fontName"
         static let fontSize = "fontSize"
         static let appearance = "appearance"
+        static let stayAwake = "stayAwake"
         static let lightThemeName = "lightThemeName"
         static let lightThemeColors = "lightThemeColors"
         static let darkThemeName = "darkThemeName"
@@ -176,6 +179,10 @@ struct Preferences {
             sessionName: defaults.string(forKey: Key.sessionName),
             hibernateAfterHours: defaults.object(forKey: Key.hibernateAfterHours) as? Int,
             agentSounds: defaults.object(forKey: Key.agentSounds) as? Bool ?? true,
+            // Off unless it is turned on, like hibernation: holding a Mac's
+            // display awake is not something to inherit by upgrading.
+            stayAwake: defaults.string(forKey: Key.stayAwake)
+                .flatMap(StayAwake.Mode.init(rawValue:)) ?? .never,
             localOnlySessions: defaults.stringArray(forKey: Key.localOnlySessions) ?? [])
     }
 
@@ -245,6 +252,7 @@ struct Preferences {
         defaults.set(sessionName, forKey: Key.sessionName)
         defaults.set(hibernateAfterHours, forKey: Key.hibernateAfterHours)
         defaults.set(agentSounds, forKey: Key.agentSounds)
+        defaults.set(stayAwake.rawValue, forKey: Key.stayAwake)
         defaults.set(localOnlySessions, forKey: Key.localOnlySessions)
         // Carried over by `load` already, so what they held is in the two
         // slots now; left behind, a cleared slot would bring them back.

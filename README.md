@@ -169,6 +169,18 @@ Workspaces that have been idle for hours can be **hibernated** — closed on the
 server, remembered here, and brought back with their layout when you click them.
 Settings ▸ Hibernate chooses the delay, or turns it off.
 
+**Settings ▸ Keep awake** stops the display going dark while you are waiting on
+something, which is what `caffeinate -d` in a spare terminal is usually for.
+Set to *While an agent is working* it holds the display on only while some
+agent is working or waiting on you, on any machine, and lets it sleep once they
+are all done — so there is nothing to remember to turn off. *Always* is the
+unconditional version. Either way it only prevents the display sleeping on its
+own: closing the lid still sleeps.
+
+An agent waiting on you counts, deliberately. A dark screen locks, and a locked
+screen is also what silences the sounds above — so sleeping through a question
+is how you come back an hour later to an agent that asked one immediately.
+
 ### Smaller things
 
 - Images drawn in a pane show up as images — kitty graphics, decoded and cached.

@@ -126,6 +126,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     let themePicker = Picker()
     private let sessionMenu = NSMenu(title: "Session")
     let agentSounds = AgentSounds()
+    /// Holds the display awake while there is a reason to. See `StayAwake`.
+    private let stayAwake = StayAwake()
     lazy var machinesWindow = MachinesWindowController(
         onChange: { [weak self] in self?.reattach() },
         onInstall: { [weak self] machine in self?.installHerdr(on: machine) })
@@ -594,6 +596,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
                         guard let self else { return }
                         self.preferences = updated
                         self.agentSounds.isEnabled = updated.agentSounds
+                        self.stayAwake.mode = updated.stayAwake
                         self.gridView.apply(
                             font: updated.font, lineHeight: updated.lineHeight)
                         self.applyTheme()
@@ -909,6 +912,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         self.session?.cancelPendingReplies()
         self.session = session
         agentSounds.isEnabled = preferences.agentSounds
+        stayAwake.mode = preferences.stayAwake
         // Endpoint indices are about to mean different machines; what this
         // remembers about the old ones would be answers to the wrong questions.
         agentPriority.forget()
@@ -1079,6 +1083,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
                 snapshot: snapshot, endpoint: endpoint.index, watching: watching)
         }
         sidebar.priority = agentPriority
+        // Asked every tick, like the sidebar above it: whether to hold the
+        // display awake is a question about what the agents are doing now,
+        // and `update` does nothing when the answer has not changed.
+        stayAwake.update(endpoints: session.endpoints)
 
         // A machine is owed the palette when it has attached since it was
         // last told — which covers a first attach and every reconnect alike,

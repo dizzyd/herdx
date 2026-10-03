@@ -28,6 +28,8 @@ final class PreferencesWindowController: NSWindowController {
     private let soundsCheck = NSButton()
     private let hibernatePopUp = NSPopUpButton()
     private let hibernateNote = NSTextField(labelWithString: "")
+    private let awakePopUp = NSPopUpButton()
+    private let awakeNote = NSTextField(labelWithString: "")
 
     /// Read and written straight through, rather than kept as a copy.
     ///
@@ -187,6 +189,28 @@ final class PreferencesWindowController: NSWindowController {
         hibernate.alignment = .leading
         hibernate.spacing = 4
 
+        // The same shape as Hibernate above: off is the default and belongs in
+        // the control with the choices, not as a switch beside them.
+        awakePopUp.removeAllItems()
+        for mode in StayAwake.Mode.allCases {
+            awakePopUp.addItem(withTitle: mode.title)
+            awakePopUp.lastItem?.representedObject = mode.rawValue
+        }
+        awakePopUp.target = self
+        awakePopUp.action = #selector(awakeChanged)
+
+        note(awakeNote)
+        awakeNote.stringValue =
+            "Stops the display going dark on its own, the way  caffeinate -d  does. Closing "
+            + "the lid still sleeps. While an agent is working covers one that is waiting on "
+            + "you too, since a dark screen locks and a locked screen is also what silences "
+            + "the sounds above."
+
+        let awake = NSStackView(views: [awakePopUp, awakeNote])
+        awake.orientation = .vertical
+        awake.alignment = .leading
+        awake.spacing = 4
+
         soundsCheck.setButtonType(.switch)
         soundsCheck.title = "Play a sound when an agent finishes or needs you"
         soundsCheck.target = self
@@ -211,6 +235,7 @@ final class PreferencesWindowController: NSWindowController {
             ]),
             ("Agents", [
                 [label("Sounds:"), soundsCheck],
+                [label("Keep awake:"), awake],
                 [label("Hibernate:"), hibernate],
             ]),
         ]
@@ -353,6 +378,8 @@ final class PreferencesWindowController: NSWindowController {
 
         soundsCheck.state = preferences.agentSounds ? .on : .off
         hibernatePopUp.selectItem(withTag: preferences.hibernateAfterHours ?? 0)
+        awakePopUp.selectItem(
+            at: StayAwake.Mode.allCases.firstIndex(of: preferences.stayAwake) ?? 0)
         lineField.stringValue = String(format: "%.0f", preferences.lineHeight * 100)
         lineStepper.doubleValue = Double(preferences.lineHeight * 100)
         fitToContent()
@@ -380,6 +407,14 @@ final class PreferencesWindowController: NSWindowController {
     /// does not apply to a terminal grid.
     @objc func validModesForFontPanel(_ panel: NSFontPanel) -> NSFontPanel.ModeMask {
         [.collection, .face, .size]
+    }
+
+    @objc private func awakeChanged() {
+        guard let raw = awakePopUp.selectedItem?.representedObject as? String,
+            let mode = StayAwake.Mode(rawValue: raw)
+        else { return }
+        preferences.stayAwake = mode
+        changed()
     }
 
     @objc private func hibernateChanged() {
