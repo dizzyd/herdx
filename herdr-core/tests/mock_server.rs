@@ -55,18 +55,40 @@ pub struct MockServer {
 }
 
 impl MockServer {
-    /// Keep `name` short. A unix socket path is capped at `SUN_LEN` — 104
-    /// bytes on macOS — and the temp directory alone is about half of that,
-    /// so a descriptive name fails at `bind` with a message about nothing a
-    /// reader of the test would recognise.
+    /// Where this server listens.
+    ///
+    /// Short and bounded on purpose. A unix socket path is capped at
+    /// `SUN_LEN` — 104 bytes on macOS — and the old name was the test's own
+    /// description plus a pid plus a `ThreadId`, which grew with the number
+    /// of tests in the binary. It fit here and did not on CI, where the
+    /// temp directory is longer, so a release failed at `bind` with a message
+    /// about nothing a reader of the test would recognise. Asking every
+    /// caller to keep its name short was the first answer and it only moved
+    /// the cliff.
+    ///
+    /// So: a counter rather than a thread id, six characters of the name for
+    /// anything that leaks, and `/tmp` when even that will not fit.
+    fn socket_path(name: &str) -> std::path::PathBuf {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let short: String = name.chars().filter(|c| c.is_ascii_alphanumeric()).take(6).collect();
+        let file = format!("hx-{short}-{}-{n}.sock", std::process::id());
+        let candidate = std::env::temp_dir().join(&file);
+        // 104 includes the trailing NUL, so leave room for it.
+        if candidate.as_os_str().len() < 100 {
+            candidate
+        } else {
+            std::path::PathBuf::from("/tmp").join(file)
+        }
+    }
+
     pub fn start(name: &str) -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "herdx-mock-{name}-{}-{:?}.sock",
-            std::process::id(),
-            std::thread::current().id()
-        ));
+        let path = Self::socket_path(name);
         let _ = std::fs::remove_file(&path);
-        let listener = Arc::new(UnixListener::bind(&path).expect("bind mock socket"));
+        let listener = Arc::new(
+            UnixListener::bind(&path)
+                .unwrap_or_else(|e| panic!("bind mock socket at {}: {e}", path.display())),
+        );
 
         let log = Arc::new(Mutex::new(Log::default()));
         let stopping = Arc::new(AtomicBool::new(false));
