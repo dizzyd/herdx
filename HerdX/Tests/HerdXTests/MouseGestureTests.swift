@@ -312,6 +312,54 @@ final class MouseGestureTests: XCTestCase {
                 + "to share an id")
     }
 
+    /// A program using button-motion reporting saw the press and the release
+    /// and nothing in between, so a right-drag did whatever a right-click
+    /// does.
+    func testARightDragIsForwarded() {
+        let view = self.view([pane("w1:p1", x: 0, width: 20, reporting: true)])
+        var reported: [UInt16] = []
+        view.mouseReportForTesting = { kind, _, _ in reported.append(kind) }
+
+        view.rightMouseDown(with: event(.rightMouseDown, at: at(column: 5, in: view)))
+        view.rightMouseDragged(with: event(.rightMouseDragged, at: at(column: 8, in: view)))
+        view.rightMouseUp(with: event(.rightMouseUp, at: at(column: 8, in: view)))
+
+        XCTAssertEqual(
+            reported,
+            [UInt16(HX_MOUSE_DOWN), UInt16(HX_MOUSE_DRAG), UInt16(HX_MOUSE_UP)],
+            "the drag never reached the program")
+    }
+
+    func testAMiddleDragIsForwarded() {
+        let view = self.view([pane("w1:p1", x: 0, width: 20, reporting: true)])
+        var reported: [UInt16] = []
+        view.mouseReportForTesting = { kind, _, _ in reported.append(kind) }
+
+        view.otherMouseDown(with: event(.otherMouseDown, at: at(column: 5, in: view)))
+        view.otherMouseDragged(with: event(.otherMouseDragged, at: at(column: 8, in: view)))
+        view.otherMouseUp(with: event(.otherMouseUp, at: at(column: 8, in: view)))
+
+        XCTAssertEqual(
+            reported,
+            [UInt16(HX_MOUSE_DOWN), UInt16(HX_MOUSE_DRAG), UInt16(HX_MOUSE_UP)])
+    }
+
+    /// And a right-drag out of its pane still belongs to the pane it started
+    /// in, like the left one.
+    func testARightDragStaysWithItsPane() {
+        let view = self.view([
+            pane("w1:p1", x: 0, width: 20, reporting: true),
+            pane("w1:p2", x: 20, width: 20, reporting: true),
+        ])
+        var reported: [(UInt16, String)] = []
+        view.mouseReportForTesting = { kind, pane, _ in reported.append((kind, pane)) }
+
+        view.rightMouseDown(with: event(.rightMouseDown, at: at(column: 5, in: view)))
+        view.rightMouseDragged(with: event(.rightMouseDragged, at: at(column: 25, in: view)))
+
+        XCTAssertEqual(reported.map(\.1), ["w1:p1", "w1:p1"])
+    }
+
     /// A pixel-mouse program scales against the geometry it is sent, so the
     /// pane's size is the only one that describes it.
     func testAReportCarriesThePanesOwnGeometry() throws {

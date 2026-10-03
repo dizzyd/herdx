@@ -131,9 +131,7 @@ final class Revival {
                 // A submitted line says nothing about whether it worked, so
                 // wait for herdr to see an agent in the pane. Without this a
                 // missing binary would be reported as a successful revive.
-                self.waitForAgent(
-                    in: next.pane, called: next.agent.agent, tries: Self.agentTries
-                ) { appeared in
+                self.waitForAgent(in: next.pane, tries: Self.agentTries) { appeared in
                     guard appeared else {
                         return self.fail("\(next.agent.agent) did not start in \(next.pane)")
                     }
@@ -148,8 +146,22 @@ final class Revival {
     /// `agent.start` used to answer this question, and answering it here is
     /// the price of submitting the line ourselves — which is what lets the
     /// command be cleared off the screen before the agent draws over it.
+    /// Waits for herdr to notice *an* agent in the pane.
+    ///
+    /// Any agent, deliberately, and the name is now honest about it: the
+    /// argument that used to be here was called `agent` and only ever passed
+    /// to the next retry, so it read as an identity check that was never made.
+    ///
+    /// Any is the right answer rather than a shortcut. The pane was a bare
+    /// shell a moment ago — revival makes it one — and the only thing typed
+    /// into it since is this agent's own resume line, so whatever herdr now
+    /// sees is what that line started. Matching the detected label against
+    /// the stored one would add a way for a revive that worked to be reported
+    /// as failed, which is the worse mistake of the two: the record is
+    /// dropped on success, and a false failure rolls back a workspace that
+    /// had already come back.
     private func waitForAgent(
-        in pane: String, called agent: String, tries: Int, then act: @escaping (Bool) -> Void
+        in pane: String, tries: Int, then act: @escaping (Bool) -> Void
     ) {
         guard tries > 0 else { return act(false) }
         send(.paneGet(pane), socket) { [weak self] result in
@@ -163,8 +175,7 @@ final class Revival {
                 }
                 DispatchQueue.main.asyncAfter(deadline: .now() + Self.promptInterval) {
                     MainActor.assumeIsolated {
-                        self.waitForAgent(
-                            in: pane, called: agent, tries: tries - 1, then: act)
+                        self.waitForAgent(in: pane, tries: tries - 1, then: act)
                     }
                 }
             }

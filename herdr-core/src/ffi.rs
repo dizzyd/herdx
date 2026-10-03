@@ -413,6 +413,15 @@ struct Shared {
     /// server has been told. They differ while a switch waits for a boot id.
     desired_surface: AtomicBool,
     applied_surface: AtomicBool,
+    /// Whether the window has focus, as the app last said.
+    ///
+    /// Kept per endpoint because the server drops a `ClientShellFocus` from a
+    /// client it does not consider active and says nothing about having done
+    /// so — so the focus sent while this endpoint was in the background was
+    /// thrown away, and switching to it never said it again. A program that
+    /// reports focus then sat unfocused until the app was clicked away from
+    /// and back.
+    host_focused: AtomicBool,
     /// The surface size, so a resync can ask for the size we already have.
     geometry: Mutex<Geometry>,
     /// Set while a resync request is outstanding, so one refused patch does not
@@ -451,6 +460,7 @@ impl Shared {
             boot_id: Mutex::new(None),
             desired_surface: AtomicBool::new(surface_active),
             applied_surface: AtomicBool::new(surface_active),
+            host_focused: AtomicBool::new(false),
             geometry: Mutex::new(geometry),
             resync_pending: AtomicBool::new(false),
             snapshot_json: Mutex::new(None),
@@ -1154,7 +1164,6 @@ fn herdr_is_missing(endpoint: &crate::endpoint::Endpoint, message: &str) -> bool
             || message.contains("not found"))
 }
 
-/// Reads from one endpoint until it goes away.
 /// Asks the server for a complete surface after we had to refuse a patch.
 ///
 /// The server tracks surface revisions per connection and has no idea a patch
@@ -1202,9 +1211,19 @@ fn apply_surface_state(
         return false;
     }
     shared.applied_surface.store(desired, Ordering::Release);
+    // Becoming active is the moment the server will start listening to this
+    // client about itself, so it is the moment to say what it missed. After
+    // the surface request, not before: a focus that arrives while the server
+    // still has this client in the background is discarded.
+    if desired {
+        let _ = outbound.send(ClientMessage::ClientShellFocus {
+            focused: shared.host_focused.load(Ordering::Acquire),
+        });
+    }
     true
 }
 
+/// Reads from one endpoint until it goes away.
 fn receive_loop(
     mut conn: crate::client::EndpointConnection,
     loop_shared: Arc<Shared>,
@@ -1772,6 +1791,9 @@ pub unsafe extern "C" fn hx_set_focus(session: *const HxSession, focused: bool) 
     };
     let mut sent = false;
     for endpoint in &session.endpoints {
+        // Remembered on every endpoint, not only the active one: an inactive
+        // endpoint's copy is what it will announce when it is switched to.
+        endpoint.shared.host_focused.store(focused, Ordering::Release);
         sent |= endpoint
             .outbound
             .send(ClientMessage::ClientShellFocus { focused })
@@ -2002,14 +2024,6 @@ pub unsafe extern "C" fn hx_send_paste(
         .is_ok()
 }
 
-/// Publishes the host's default foreground or background colour.
-///
-/// Cells whose colour is `Reset` mean "the terminal's default", and the server
-/// resolves that when composing surfaces. Telling it what our default actually
-/// is keeps server-composed chrome matching the app's theme.
-///
-/// # Safety
-/// `session` must be live.
 /// Sends a host-theme update to every endpoint.
 ///
 /// The window has one palette, so every machine attached to it needs to be
@@ -2032,6 +2046,14 @@ fn broadcast_host_theme(
     sent
 }
 
+/// Publishes the host's default foreground or background colour.
+///
+/// Cells whose colour is `Reset` mean "the terminal's default", and the server
+/// resolves that when composing surfaces. Telling it what our default actually
+/// is keeps server-composed chrome matching the app's theme.
+///
+/// # Safety
+/// `session` must be live.
 #[no_mangle]
 pub unsafe extern "C" fn hx_set_default_color(
     session: *const HxSession,

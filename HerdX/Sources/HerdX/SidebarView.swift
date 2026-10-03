@@ -478,8 +478,14 @@ final class SidebarView: NSView {
                     // Whichever name the row carries — renaming a pane or a
                     // tab changes nothing else here.
                     let tab = Self.namedPlace(of: agent, in: snapshot)
+                    // Focus, because a row draws itself selected from it.
+                    // Moving between two working agents in one tab changes
+                    // nothing else here — same workspace, same status, same
+                    // sequence — so the list was not rebuilt and the old row
+                    // stayed highlighted, which is also where arrow-key
+                    // navigation starts from.
                     return "\(agent.paneID):\(agent.agentStatus):\(agent.stateChangeSeq):\(seen)"
-                        + ":\(tier):\(quiet):\(tab)"
+                        + ":\(tier):\(quiet):\(tab):\(agent.focused)"
                 }
             }
             agents = rows.joined(separator: ",")

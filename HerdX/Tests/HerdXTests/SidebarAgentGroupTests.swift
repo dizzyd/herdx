@@ -242,6 +242,55 @@ final class SidebarAgentGroupTests: XCTestCase {
         XCTAssertEqual(drawn[1].title, "omp")
     }
 
+    /// A row draws itself selected from the agent's `focused`, so the
+    /// signature has to carry it.
+    ///
+    /// Moving focus between two working agents in one tab changes nothing
+    /// else — same workspace, same status, same sequence — so the list was
+    /// not rebuilt and the old row stayed highlighted. That is also where
+    /// arrow-key navigation starts from.
+    func testMovingFocusBetweenTwoAgentsRebuildsTheList() {
+        let view = sidebar()
+        func snapshot(focused: String) -> Snapshot {
+            let agents = ["w1:p1", "w1:p2"].enumerated().map { index, pane in
+                """
+                {"pane_id":"\(pane)","workspace_id":"w1","tab_id":"w1:t1","agent":"claude",
+                 "agent_status":"working","state_change_seq":\(index + 1),
+                 "focused":\(pane == focused)}
+                """
+            }
+            return try! JSONDecoder().decode(
+                Snapshot.self,
+                from: Data(
+                    """
+                    {"boot_id":"boot","revision":1,
+                     "workspaces":[{"workspace_id":"w1","number":1,"label":"herdx",
+                                    "focused":true,"agent_status":"working"}],
+                     "tabs":[],"panes":[],
+                     "agents":[\(agents.joined(separator: ","))]}
+                    """.utf8))
+        }
+
+        let first = snapshot(focused: "w1:p1")
+        view.priority.observe(snapshot: first, endpoint: 0, watching: false)
+        view.update(endpoints: [endpoint(first)], active: 0, hibernated: [])
+        let rebuilds = view.rebuilds
+        XCTAssertEqual(rows(view).filter(\.selected).count, 1)
+
+        let moved = snapshot(focused: "w1:p2")
+        view.priority.observe(snapshot: moved, endpoint: 0, watching: false)
+        view.update(endpoints: [endpoint(moved)], active: 0, hibernated: [])
+
+        XCTAssertEqual(
+            view.rebuilds, rebuilds + 1,
+            "focus moved and nothing else did, so the list never noticed")
+        let selected = rows(view).first { $0.selected }
+        guard case .pane(let paneID, _)? = selected?.target else {
+            return XCTFail("no row is selected after the focus moved")
+        }
+        XCTAssertEqual(paneID, "w1:p2", "the highlight stayed on the pane that lost focus")
+    }
+
     /// Three in one repo is not special, and none of them is left behind.
     func testEveryAgentInARepoIsDrawn() {
         let view = sidebar()

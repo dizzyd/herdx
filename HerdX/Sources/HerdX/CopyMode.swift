@@ -28,8 +28,15 @@ struct CopyMode {
     /// Where a selection started, once one has.
     var anchor: Selection.Point?
     var field: Field = .none
-    /// The last query, so `n` and `N` can repeat it.
+    /// The last query, so `n` and `N` can repeat it, and the direction it was
+    /// made in.
+    ///
+    /// The direction is kept because `n` means "again" and `N` means "the
+    /// other way" — both relative to the search, not to the keyboard. Taken
+    /// from the shift key instead, a `?` search repeated forwards under `n`
+    /// and backwards under `N`, which is both of them wrong.
     var lastQuery: String?
+    var lastDirection = true
     /// What this session is waiting on.
     var pending = Pending()
 

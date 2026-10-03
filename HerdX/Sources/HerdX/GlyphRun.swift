@@ -79,6 +79,9 @@ struct GlyphRunDrawer {
         positions.reserveCapacity(cells.count)
 
         for cell in cells {
+            // A blank cell is in the run so an underline can span it; there is
+            // simply no glyph to place.
+            if cell.text.isEmpty { continue }
             let units = Array(cell.text.utf16)
             // One UTF-16 unit means a simple glyph we can place ourselves;
             // anything else is a cluster and belongs on the fallback path.

@@ -541,6 +541,7 @@ fn shared() -> Shared {
         boot_id: Mutex::new(None),
         desired_surface: AtomicBool::new(false),
         applied_surface: AtomicBool::new(false),
+        host_focused: AtomicBool::new(false),
         geometry: Mutex::new(Geometry {
             cols: 80,
             rows: 24,
@@ -621,6 +622,15 @@ fn surface_request(message: &ClientMessage) -> (String, bool) {
     (boot_id.clone(), request.contains(r#""active":true"#))
 }
 
+/// The focus that follows an activation, which the server will only accept
+/// once this client is the active one.
+fn focus_after_activation(message: &ClientMessage) -> bool {
+    let ClientMessage::ClientShellFocus { focused } = message else {
+        panic!("activation must be followed by the window's focus, got {message:?}");
+    };
+    *focused
+}
+
 /// The server rejects a command carrying an unknown boot id with
 /// `stale_boot`, so the request must wait for a snapshot rather than go out
 /// with a placeholder — which silently left the new machine blank.
@@ -679,8 +689,64 @@ fn surface_state_waits_for_a_boot_id() {
     );
 
     *shared.boot_id.lock().unwrap() = Some("boot-1".into());
+    shared.host_focused.store(true, Ordering::Release);
     assert!(apply_surface_state(&shared, &tx));
     assert_eq!(surface_request(&rx.try_recv().unwrap()), ("boot-1".into(), true));
+    // The server ignores a focus from a client it does not consider active,
+    // so an activation deferred until a boot id arrives has to say it then.
+    assert!(focus_after_activation(&rx.try_recv().unwrap()));
+}
+
+/// Becoming active is the only moment the server will listen to this client
+/// about its focus, so it is the moment to say so.
+///
+/// Switching to a machine sent the surface request and a resize and nothing
+/// else, and whatever focus had been sent while it sat in the background was
+/// dropped without a word — so a program that reports focus stayed unfocused
+/// until the app was clicked away from and back.
+#[test]
+fn activation_announces_the_windows_focus() {
+    let shared = shared();
+    let (tx, rx) = std::sync::mpsc::channel();
+    *shared.boot_id.lock().unwrap() = Some("boot-1".into());
+    shared.host_focused.store(true, Ordering::Release);
+
+    shared.desired_surface.store(true, Ordering::Release);
+    assert!(apply_surface_state(&shared, &tx));
+
+    assert_eq!(surface_request(&rx.try_recv().unwrap()).1, true);
+    assert!(focus_after_activation(&rx.try_recv().unwrap()), "activation said nothing about focus");
+}
+
+/// And it says the truth: a window that has lost focus must not claim it on
+/// the way in.
+#[test]
+fn activation_does_not_claim_focus_the_window_lacks() {
+    let shared = shared();
+    let (tx, rx) = std::sync::mpsc::channel();
+    *shared.boot_id.lock().unwrap() = Some("boot-1".into());
+    shared.host_focused.store(false, Ordering::Release);
+
+    shared.desired_surface.store(true, Ordering::Release);
+    assert!(apply_surface_state(&shared, &tx));
+    let _ = rx.try_recv().unwrap();
+    assert!(!focus_after_activation(&rx.try_recv().unwrap()));
+}
+
+/// Going *in*active says nothing: the server has stopped listening to this
+/// client anyway, and the next activation is what re-establishes it.
+#[test]
+fn deactivation_says_nothing_about_focus() {
+    let shared = shared();
+    let (tx, rx) = std::sync::mpsc::channel();
+    *shared.boot_id.lock().unwrap() = Some("boot-1".into());
+    shared.desired_surface.store(true, Ordering::Release);
+    shared.applied_surface.store(true, Ordering::Release);
+
+    shared.desired_surface.store(false, Ordering::Release);
+    assert!(apply_surface_state(&shared, &tx));
+    let _ = rx.try_recv().unwrap();
+    assert!(rx.try_recv().is_err(), "deactivation volunteered a focus");
 }
 
 #[test]
@@ -691,7 +757,8 @@ fn surface_state_is_not_resent_once_applied() {
 
     shared.desired_surface.store(true, Ordering::Release);
     assert!(apply_surface_state(&shared, &tx));
-    assert!(rx.try_recv().is_ok());
+    assert!(rx.try_recv().is_ok(), "the surface request");
+    assert!(rx.try_recv().is_ok(), "the focus that follows an activation");
 
     assert!(apply_surface_state(&shared, &tx));
     assert!(rx.try_recv().is_err(), "an unchanged state should send nothing");
@@ -707,6 +774,8 @@ fn a_new_boot_reasserts_the_surface_state() {
     shared.desired_surface.store(true, Ordering::Release);
     assert!(apply_surface_state(&shared, &tx));
     assert_eq!(surface_request(&rx.try_recv().unwrap()).0, "boot-1");
+    // The focus that accompanies every activation.
+    let _ = rx.try_recv().unwrap();
 
     // What the receive loop does when a snapshot carries a different boot.
     *shared.boot_id.lock().unwrap() = Some("boot-2".into());
@@ -721,6 +790,8 @@ fn a_new_boot_reasserts_the_surface_state() {
         ("boot-2".into(), true),
         "the new boot must be told the surface is wanted"
     );
+    // And told the focus too: a new boot has never heard it.
+    assert!(focus_after_activation(&rx.try_recv().unwrap()) == false);
 }
 
 #[test]

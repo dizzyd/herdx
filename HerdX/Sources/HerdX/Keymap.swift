@@ -138,15 +138,6 @@ struct Keymap {
             return modifiers + (shift ? "⇧" : "") + key.label
         }
 
-        /// Whether the event is this chord.
-        ///
-        /// Every modifier is compared, the ones the binding does not want
-        /// included: a chord is not "⌃B or anything containing it", or ⌘⌃B
-        /// would arm the prefix on its way to a menu item.
-        ///
-        /// Shift is the exception, and only when `ignoringShift`. A profile
-        /// writes `help = "prefix+?"` with no shift in it, because "?" already
-        /// carries one — demanding shift be up there made help unreachable.
         /// A keystroke that would produce this binding, for self-checking.
         var probeCharacters: String {
             switch key {
@@ -165,6 +156,15 @@ struct Keymap {
             }
         }
 
+        /// Whether the event is this chord.
+        ///
+        /// Every modifier is compared, the ones the binding does not want
+        /// included: a chord is not "⌃B or anything containing it", or ⌘⌃B
+        /// would arm the prefix on its way to a menu item.
+        ///
+        /// Shift is the exception, and only when `ignoringShift`. A profile
+        /// writes `help = "prefix+?"` with no shift in it, because "?" already
+        /// carries one — demanding shift be up there made help unreachable.
         func matches(_ event: NSEvent, ignoringShift: Bool = false) -> Bool {
             let flags = event.modifierFlags
             let shiftMatches = ignoringShift || flags.contains(.shift) == shift
@@ -389,8 +389,6 @@ struct Keymap {
         return binding
     }
 
-    /// The action a key completes, once the prefix is armed.
-    ///
     /// The action a key completes, once the prefix is armed.
     ///
     /// Exact first, then ignoring shift. Both passes are needed: `h` and

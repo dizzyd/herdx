@@ -154,7 +154,10 @@ extension TerminalGridView {
             case "n":
                 if let query = mode.lastQuery {
                     copyMode = mode
-                    runSearch(query: query, forward: !shift)
+                    // `n` repeats the search as it was made and `N` reverses
+                    // it, both relative to the search rather than to the
+                    // keyboard — so a `?` search goes backwards under `n`.
+                    runSearch(query: query, forward: shift ? !mode.lastDirection : mode.lastDirection)
                     return true
                 }
             default:
@@ -191,6 +194,54 @@ extension TerminalGridView {
             onReadSelection?(request)
         }
         exitCopyMode()
+    }
+
+    /// Scrolls the pane so the copy cursor is somewhere it can be seen.
+    ///
+    /// A search can land anywhere in the scrollback, and a motion can walk off
+    /// the top of the viewport. Both are drawn only inside it, and the next
+    /// local move clamps the cursor back — so without this the answer arrives
+    /// and is discarded.
+    ///
+    /// The arithmetic is herdr's `reveal_copy_cursor`: the viewport's top row
+    /// is `max_offset - offset`, so the offset wanted for a given top row is
+    /// `max_offset - top`. Nothing is sent when the cursor is already visible,
+    /// because a scroll request that changes nothing still costs a round trip
+    /// and a repaint.
+    func revealCopyCursor() {
+        guard let mode = copyMode,
+            let pane = panes.first(where: { $0.id == mode.paneID })
+        else { return }
+        let height = UInt64(max(pane.inner.height, 1))
+        let top = pane.viewportTopRow
+        let bottom = top + height - 1
+
+        let desiredTop: UInt64
+        if mode.cursor.row < top {
+            desiredTop = mode.cursor.row
+        } else if mode.cursor.row > bottom {
+            desiredTop = mode.cursor.row - (height - 1)
+        } else {
+            return
+        }
+        let offset = pane.scrollMaxOffsetFromBottom >= desiredTop
+            ? pane.scrollMaxOffsetFromBottom - desiredTop : 0
+        guard offset != pane.scrollOffsetFromBottom else { return }
+        // The reply is nobody's business — the scroll arrives as a new
+        // surface — but the id has to match the one in the body or the
+        // callback is held for a reply that can never be routed to it.
+        let id = "scroll-\(UUID().uuidString)"
+        onCopyModeRequest?(
+            Self.scrollRequest(pane: mode.paneID, offset: offset, id: id), id) { _ in }
+    }
+
+    static func scrollRequest(pane: String, offset: UInt64, id: String) -> String {
+        let body: [String: Any] = [
+            "id": id, "method": "pane.scroll",
+            "params": ["pane_id": pane, "offset_from_bottom": offset],
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: body) else { return "" }
+        return String(decoding: data, as: UTF8.self)
     }
 
     /// Esc and q, which leave copy mode (Esc clears a selection first).
@@ -263,6 +314,9 @@ extension TerminalGridView {
             self.copyMode = mode
             self.selection = mode.selection
             self.needsDisplay = true
+            // A word motion can walk off the top of the viewport as easily as
+            // a search can land above it.
+            self.revealCopyCursor()
             self.drainCopyModeKeys()
         }
     }
@@ -310,10 +364,20 @@ extension TerminalGridView {
             mode.cursor = match.start
             mode.anchor = match.end
             mode.lastQuery = query
+            // The direction this search was made in, not whichever one a
+            // later `n` happens to be typed with. Only set from a real
+            // search, so repeating one does not redefine which way it went.
+            mode.lastDirection = forward
             self.copyMode = mode
             self.selection = mode.selection
             self.needsDisplay = true
             self.onCopyModeChanged?(mode.statusText)
+            // A match above or below the viewport is a match nobody can see:
+            // the cursor and the selection are only drawn inside it, and the
+            // next local motion clamps the cursor back into it, so the result
+            // is silently thrown away. herdr scrolls to it — see
+            // `reveal_copy_cursor` — and so does this.
+            self.revealCopyCursor()
             self.drainCopyModeKeys()
         }
     }

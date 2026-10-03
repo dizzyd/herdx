@@ -27,9 +27,11 @@ final class CopyModeTests: XCTestCase {
         return view
     }
 
-    private func keystroke(_ characters: String, keyCode: UInt16 = 0) -> NSEvent {
+    private func keystroke(
+        _ characters: String, keyCode: UInt16 = 0, shift: Bool = false
+    ) -> NSEvent {
         NSEvent.keyEvent(
-            with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+            with: .keyDown, location: .zero, modifierFlags: shift ? [.shift] : [], timestamp: 0,
             windowNumber: 0, context: nil, characters: characters,
             charactersIgnoringModifiers: characters, isARepeat: false, keyCode: keyCode)!
     }
@@ -42,12 +44,13 @@ final class CopyModeTests: XCTestCase {
     /// Types `query` into the search field and returns the reply handler the
     /// request was issued with.
     private func startSearch(
-        _ query: String, in view: TerminalGridView
+        _ query: String, in view: TerminalGridView, forward: Bool = true
     ) -> ((String) -> Void)? {
         var reply: ((String) -> Void)?
         view.onCopyModeRequest = { _, _, completion in reply = completion }
 
-        view.enterCopyMode(searching: true)
+        view.enterCopyMode()
+        _ = view.handleCopyModeKey(keystroke(forward ? "/" : "?"))
         for character in query {
             _ = view.handleCopyModeKey(keystroke(String(character)))
         }
@@ -104,6 +107,127 @@ final class CopyModeTests: XCTestCase {
         XCTAssertEqual(
             view.selection?.anchor, mouseSelection?.anchor,
             "a motion from the copy mode that was replaced moved the mouse's selection")
+    }
+
+    /// Select All and copy mode both claim the selection, so only one of
+    /// them can have it.
+    ///
+    /// Leaving copy mode up lit the whole pane while `y` copied copy mode's
+    /// own two cells — what was copied was not what was shown.
+    func testSelectAllTakesTheSelectionFromCopyMode() {
+        let view = gridView(panes: [pane("w1:p1")])
+        view.onCopyModeRequest = { _, _, _ in }
+
+        view.enterCopyMode()
+        _ = view.handleCopyModeKey(keystroke("v"))
+        _ = view.handleCopyModeKey(keystroke("l"))
+        XCTAssertNotNil(view.copyMode)
+
+        view.selectAll(nil)
+
+        XCTAssertNil(
+            view.copyMode,
+            "copy mode kept its anchor, so y would copy two cells of a lit pane")
+        XCTAssertEqual(view.selection?.anchor.column, 0)
+        XCTAssertEqual(
+            view.selection?.cursor.column, 77, "the whole pane should be selected")
+    }
+
+    /// A match above the viewport is a match nobody can see: the cursor is
+    /// drawn only inside it, and the next local motion clamps it back.
+    func testASearchResultAboveTheViewportIsScrolledTo() {
+        let view = gridView(panes: [scrolledPane(top: 100, max: 500)])
+        var requests: [String] = []
+        view.onCopyModeRequest = { request, _, _ in requests.append(request) }
+
+        view.enterCopyMode()
+        guard var mode = view.copyMode else { return XCTFail("no copy mode") }
+        mode.cursor = Selection.Point(row: 40, column: 3)
+        view.copyMode = mode
+        view.revealCopyCursor()
+
+        guard let scroll = requests.first(where: { $0.contains("pane.scroll") }) else {
+            return XCTFail("the result was left off screen: \(requests)")
+        }
+        // Viewport top is max - offset, so showing row 40 wants offset 460.
+        XCTAssertTrue(
+            scroll.contains("\"offset_from_bottom\":460"),
+            "scrolled somewhere other than the match: \(scroll)")
+    }
+
+    /// A cursor already on screen costs no round trip and no repaint.
+    func testAVisibleCursorIsNotScrolledTo() {
+        let view = gridView(panes: [scrolledPane(top: 100, max: 500)])
+        var requests: [String] = []
+        view.onCopyModeRequest = { request, _, _ in requests.append(request) }
+
+        view.enterCopyMode()
+        guard var mode = view.copyMode else { return XCTFail("no copy mode") }
+        mode.cursor = Selection.Point(row: 105, column: 0)
+        view.copyMode = mode
+        view.revealCopyCursor()
+
+        XCTAssertFalse(
+            requests.contains { $0.contains("pane.scroll") },
+            "a visible cursor was scrolled to anyway")
+    }
+
+    /// Below the viewport puts the cursor on the last visible row rather than
+    /// the first, which is herdr's arithmetic.
+    func testACursorBelowTheViewportScrollsItIntoView() {
+        let view = gridView(panes: [scrolledPane(top: 100, max: 500)])
+        var requests: [String] = []
+        view.onCopyModeRequest = { request, _, _ in requests.append(request) }
+
+        view.enterCopyMode()
+        guard var mode = view.copyMode else { return XCTFail("no copy mode") }
+        mode.cursor = Selection.Point(row: 300, column: 0)
+        view.copyMode = mode
+        view.revealCopyCursor()
+
+        // 22 rows tall, so showing row 300 last wants top 279, offset 221.
+        XCTAssertTrue(
+            requests.contains { $0.contains("\"offset_from_bottom\":221") },
+            "scrolled to the wrong place: \(requests)")
+    }
+
+    /// `n` means "again" and `N` means "the other way", both relative to the
+    /// search. Read off the shift key instead, a `?` search repeated forwards.
+    func testRepeatingABackwardSearchGoesBackward() {
+        let view = gridView(panes: [pane("w1:p1")])
+        let reply = startSearch("needle", in: view, forward: false)
+        reply?(matchAtRowForty)
+
+        var repeated: [String] = []
+        var answer: ((String) -> Void)?
+        view.onCopyModeRequest = { request, _, completion in
+            repeated.append(request)
+            answer = completion
+        }
+
+        _ = view.handleCopyModeKey(keystroke("n"))
+        XCTAssertEqual(
+            repeated.first?.contains("\"direction\":\"backward\""), true,
+            "n repeated a backward search forwards: \(repeated)")
+
+        // Answered first: everything waits behind a request the cursor
+        // depends on, so an unanswered `n` simply queues the `N`.
+        answer?(matchAtRowForty)
+        repeated.removeAll()
+        _ = view.handleCopyModeKey(keystroke("N", shift: true))
+        XCTAssertEqual(
+            repeated.first?.contains("\"direction\":\"forward\""), true,
+            "N did not reverse the search: \(repeated)")
+    }
+
+    /// A pane scrolled back through history.
+    private func scrolledPane(top: UInt64, max: UInt64) -> PaneView {
+        PaneView(
+            id: "w1:p1", rect: CellRect(x: 0, y: 0, width: 80, height: 24),
+            inner: CellRect(x: 0, y: 0, width: 78, height: 22), focused: true,
+            alternateScreen: false, mouseReporting: false,
+            scrollOffsetFromBottom: max - top, scrollMaxOffsetFromBottom: max,
+            contentRevision: 2)
     }
 
     /// A mouse press at a column, in window coordinates.

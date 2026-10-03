@@ -950,15 +950,21 @@ final class TerminalGridView: NSView {
             let style = CellStyle(rawValue: cell.modifier)
             if style.contains(.hidden) { continue }
 
-            let text = grid.glyph(cell)
-            if text.isEmpty || text == " " { continue }
-
+            // Segmented on every cell, including the blank ones. A space has
+            // no glyph but it still has a style, and skipping it before this
+            // comparison got both ends of that wrong: an underlined space drew
+            // no underline, and an underlined word, a plain gap and another
+            // underlined word became a single run — with the gap underlined
+            // too, because `decorate` fills from the first column to the last.
             let key = (fg: cell.fg, bg: cell.bg, modifier: cell.modifier)
             if runStyle == nil || runStyle! != key {
                 flush()
                 runStyle = key
             }
-            runCells.append((column: col, text: text))
+            // Blank rather than absent: it belongs to the run for the
+            // decoration's sake, and `GlyphRun` draws nothing for it.
+            let text = grid.glyph(cell)
+            runCells.append((column: col, text: text == " " ? "" : text))
         }
         flush()
     }
@@ -1480,6 +1486,11 @@ extension TerminalGridView {
 
     override func selectAll(_ sender: Any?) {
         guard let pane = panes.first(where: { $0.id == focusedPane }) else { return }
+        // The same handover a mouse selection makes. Copy mode is a way of
+        // making a selection and so is this, so leaving it up left two: the
+        // whole pane lit while `y` copied copy mode's own anchor and cursor,
+        // and a motion still in flight repainting over it afterwards.
+        if copyMode != nil { exitCopyMode() }
         selection = Selection(
             paneID: pane.id,
             anchor: Selection.Point(row: 0, column: 0),
@@ -1497,12 +1508,24 @@ extension TerminalGridView {
         send(event, kind: UInt16(HX_MOUSE_UP), button: UInt8(HX_BUTTON_RIGHT))
     }
 
+    // Without these a program using button-motion reporting saw the press and
+    // the release and nothing in between, so a right- or middle-drag did
+    // whatever a click does. `send` routes them to the pane the button went
+    // down in, like the left one.
+    override func rightMouseDragged(with event: NSEvent) {
+        send(event, kind: UInt16(HX_MOUSE_DRAG), button: UInt8(HX_BUTTON_RIGHT))
+    }
+
     override func otherMouseDown(with event: NSEvent) {
         send(event, kind: UInt16(HX_MOUSE_DOWN), button: UInt8(HX_BUTTON_MIDDLE))
     }
 
     override func otherMouseUp(with event: NSEvent) {
         send(event, kind: UInt16(HX_MOUSE_UP), button: UInt8(HX_BUTTON_MIDDLE))
+    }
+
+    override func otherMouseDragged(with event: NSEvent) {
+        send(event, kind: UInt16(HX_MOUSE_DRAG), button: UInt8(HX_BUTTON_MIDDLE))
     }
 
     override func scrollWheel(with event: NSEvent) {
