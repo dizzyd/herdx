@@ -79,6 +79,48 @@ final class KeyRoutingTests: XCTestCase {
                 event: terminal, terminal: terminal, firstResponder: nil, terminalView: grid))
     }
 
+    /// A chord resolved before asking eats the key, and the view never hears
+    /// about it — which for a composing input method means a composition that
+    /// cannot be finished or abandoned.
+    func testAComposingInputMethodOwnsEveryKey() {
+        let view = TerminalGridView(
+            font: .monospacedSystemFont(ofSize: 12, weight: .regular), lineHeight: 1)
+        XCTAssertFalse(view.ownsEveryKey, "nothing is composing yet")
+
+        view.setMarkedText("\u{306B}", selectedRange: NSRange(location: 1, length: 0),
+            replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertTrue(view.ownsEveryKey, "a chord would eat the composition's keys")
+
+        view.unmarkText()
+        XCTAssertFalse(view.ownsEveryKey)
+    }
+
+    /// herdr's own exception: while a copy-mode search prompt is open the
+    /// prefix belongs to the query, because a query is text.
+    ///
+    /// Copy mode at large is deliberately *not* an exception — herdr arms the
+    /// prefix from inside it, and disagreeing with the TUI about a shared key
+    /// would be worse than the binding it shadows.
+    func testACopyModeSearchPromptOwnsEveryKeyButCopyModeDoesNot() {
+        let view = TerminalGridView(
+            font: .monospacedSystemFont(ofSize: 12, weight: .regular), lineHeight: 1)
+        view.setPanesForTesting([
+            PaneView(
+                id: "w1:p1", rect: CellRect(x: 0, y: 0, width: 80, height: 24),
+                inner: CellRect(x: 0, y: 0, width: 80, height: 24), focused: true,
+                alternateScreen: false, mouseReporting: false, scrollOffsetFromBottom: 0,
+                scrollMaxOffsetFromBottom: 0, contentRevision: 1)
+        ])
+
+        view.enterCopyMode()
+        XCTAssertFalse(
+            view.ownsEveryKey,
+            "copy mode took the prefix, which herdr gives to the prefix")
+
+        view.enterCopyMode(searching: true)
+        XCTAssertTrue(view.ownsEveryKey, "the search query lost its keys to a chord")
+    }
+
     /// An event with no window at all — a synthesised one, or one from the
     /// system — is nobody's to act on.
     func testAWindowlessEventIsNotActedOn() {

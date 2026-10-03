@@ -129,7 +129,17 @@ final class Hibernator {
             case .failure(let refusal):
                 done(.failure(refusal))
             case .success(let record):
-                write(record, closing: workspaceID, socket: socket, done: done)
+                // One more reading, as late as it can be taken, because
+                // everything above it is already out of date by the time the
+                // close goes out.
+                confirmStillQuiet(
+                    workspaceID, matching: reported.filter { $0.workspaceID == workspaceID },
+                    socket: socket
+                ) { [weak self] refusal in
+                    guard let self else { return }
+                    if let refusal { return done(.failure(refusal)) }
+                    self.write(record, closing: workspaceID, socket: socket, done: done)
+                }
             }
         }
 
@@ -168,6 +178,81 @@ final class Hibernator {
                 processes[$0.processInfo.paneID] = $0.processInfo
             }
         }
+    }
+
+    /// Reads the workspace once more, immediately before closing it.
+    ///
+    /// This narrows the race. It does not close it, and it would be dishonest
+    /// to describe it as though it did.
+    ///
+    /// `workspace.close` takes a workspace id and a group flag and nothing
+    /// else — no revision to check, no precondition, and the server refuses
+    /// nothing on account of a busy pane. So there is no way to ask for a
+    /// close that happens *only if* nothing has changed. The most a client can
+    /// do is look as late as possible and give up if anything has; an agent
+    /// that starts a turn in the moment between this reply and the close is
+    /// still lost, and no amount of rereading fixes that. Closing it properly
+    /// needs a conditional close in the protocol.
+    ///
+    /// What used to happen was worse than a narrow race: the only reading was
+    /// the `pane.list` issued alongside the layout and process queries, so the
+    /// window was however long all of those took, and it was the *first* of
+    /// them to be answered.
+    ///
+    /// Two things are checked. Whether an agent has started working or become
+    /// blocked, which is the case that costs somebody a turn. And whether the
+    /// workspace holds different panes than the ones inspected — a tab opened
+    /// since the layouts were read is not in the record, so closing it would
+    /// throw it away with nothing written down.
+    private func confirmStillQuiet(
+        _ workspaceID: String, matching inspected: [Reply.PaneEntry], socket: String?,
+        then: @escaping (Error?) -> Void
+    ) {
+        send(.paneList, socket) { result in
+            MainActor.assumeIsolated {
+                switch result {
+                case .failure(let failure):
+                    // A question that was refused is not an answer, and this
+                    // is the question standing between a quiet workspace and
+                    // one being ended mid-turn.
+                    then(failure)
+                case .success(let body):
+                    switch Reply.decode(Reply.PaneList.self, from: body) {
+                    case .failure(let failure):
+                        then(failure)
+                    case .success(let list):
+                        let now = list.panes.filter { $0.workspaceID == workspaceID }
+                        then(Self.changed(from: inspected, to: now))
+                    }
+                }
+            }
+        }
+    }
+
+    /// What about the workspace is no longer what it was, or nil when nothing
+    /// relevant is.
+    ///
+    /// Separate and pure so the rule can be tested without a server, like
+    /// `HibernationPlan` beside it.
+    static func changed(
+        from inspected: [Reply.PaneEntry], to now: [Reply.PaneEntry]
+    ) -> HibernationPlan.Refusal? {
+        if let busy = now.filter(\.holdsAgent).first(where: {
+            $0.agentStatus == .working || $0.agentStatus == .blocked
+        }) {
+            return HibernationPlan.Refusal(
+                reason: "\(busy.agentName) started \(busy.agentStatus) while this was being read")
+        }
+        let before = Set(inspected.map(\.paneID))
+        let after = Set(now.map(\.paneID))
+        guard before == after else {
+            // Either direction is a reason to stop. Something new is not in
+            // the record and would be closed unsaved; something gone means the
+            // record describes a workspace that no longer exists.
+            return HibernationPlan.Refusal(
+                reason: "the workspace changed shape while it was being read")
+        }
+        return nil
     }
 
     /// What a `workspace.close` reply says about the workspace.

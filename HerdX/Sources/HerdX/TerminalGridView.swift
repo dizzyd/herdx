@@ -141,6 +141,31 @@ final class TerminalGridView: NSView {
     /// as input.
     var markedText: String?
 
+    /// Whether every keystroke is this view's, whatever the keymap says.
+    ///
+    /// Asked before a chord is resolved, because a chord resolved first eats
+    /// the key and the view never hears about it.
+    ///
+    /// Two states qualify, and copy mode at large is deliberately not one of
+    /// them. herdr hands the prefix priority over copy mode — see
+    /// `route_copy_mode_key`, which arms the prefix from inside it — so a
+    /// client that kept copy mode's own `⌃b` would disagree with the TUI about
+    /// a key the user shares between them.
+    ///
+    /// An input method composing is the first: return commits a candidate, the
+    /// arrows move through the list, escape abandons it, and a chord that ate
+    /// one of those leaves the composition stuck with no way to finish it.
+    ///
+    /// A copy-mode search query is the second, and it is herdr's own
+    /// exception: while a prompt is open the prefix belongs to the query,
+    /// because a query is text and the prefix is a character in it like any
+    /// other.
+    var ownsEveryKey: Bool {
+        if hasMarkedText() { return true }
+        if case .search = copyMode?.field { return true }
+        return false
+    }
+
     /// Active copy mode, if any.
     var copyMode: CopyMode?
     /// Numbers each copy-mode session, so a reply that arrives after the

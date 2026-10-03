@@ -15,6 +15,16 @@ enum HibernationPlan {
         let reason: String
     }
 
+    /// What `layout.apply` will take, from herdr's `MAX_LAYOUT_PANES` and
+    /// `MAX_LAYOUT_DEPTH`.
+    ///
+    /// Copied rather than asked for: there is no method that reports them, and
+    /// the alternative is finding out after the workspace has been closed.
+    /// `HibernationPlanTests` carries herdr's own boundary so a change
+    /// upstream fails here rather than at somebody's next revive.
+    static let maxRestorablePanes = 24
+    static let maxRestorableDepth = 16
+
     static func plan(
         workspace: Snapshot.Workspace,
         tabs: [Snapshot.Tab],
@@ -32,10 +42,13 @@ enum HibernationPlan {
             return .failure(Refusal(reason: "no agent to bring back"))
         }
 
-        // Asked again rather than trusted from the sweep. Several round trips
-        // happen between choosing a workspace and closing it, and an agent that
-        // started working in that window would otherwise be killed mid-turn by
-        // a decision taken before it began.
+        // Asked again rather than trusted from the sweep, which may have
+        // chosen this workspace hours ago.
+        //
+        // Not the last word, though: this reading is taken alongside the
+        // layout and process queries, and the close goes out after all of
+        // them. `Hibernator.confirmStillQuiet` takes one more immediately
+        // before closing, and says there what that can and cannot promise.
         if let busy = agents.first(where: {
             $0.agentStatus == .working || $0.agentStatus == .blocked
         }) {
@@ -59,6 +72,29 @@ enum HibernationPlan {
                 return .failure(Refusal(reason: "could not read the layout of \(tab.tabID)"))
             }
             let leaves = layout.root.leaves
+
+            // herdr's `layout.apply` refuses a tree its own `layout.export`
+            // was perfectly willing to hand over: more than 24 leaves, or
+            // deeper than 16. Splitting panes enforces neither, so a workspace
+            // can be built that cannot be rebuilt.
+            //
+            // Caught here rather than discovered on the way back, because by
+            // then the workspace is gone: every revive is refused
+            // `invalid_layout` and rolls back, leaving a row that can never
+            // restore and a record that is the only thing still pointing at
+            // those conversations.
+            if leaves.count > maxRestorablePanes {
+                return .failure(
+                    Refusal(
+                        reason: "\(tab.tabID) has \(leaves.count) panes, and herdr will not "
+                            + "rebuild more than \(maxRestorablePanes)"))
+            }
+            if layout.root.depth > maxRestorableDepth {
+                return .failure(
+                    Refusal(
+                        reason: "\(tab.tabID) is split \(layout.root.depth) deep, and herdr "
+                            + "will not rebuild deeper than \(maxRestorableDepth)"))
+            }
 
             // A pane launched with an argv is that process, with no shell under
             // it. It cannot be judged idle and would not come back as itself,

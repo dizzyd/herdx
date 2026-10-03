@@ -188,6 +188,31 @@ enum Reply {
         }
     }
 
+    /// `tab.create`: the tab, and the pane that came with it.
+    ///
+    /// Read because the pane it names is the only reliable answer to "which
+    /// pane did I just make". Waiting for the focused pane to change instead
+    /// accepts whatever the focus moved to — a click, another machine, an
+    /// agent taking focus — and whatever is typed next goes there.
+    struct TabCreated: Decodable {
+        let tab: Tab
+        let rootPane: Pane
+
+        enum CodingKeys: String, CodingKey {
+            case tab
+            case rootPane = "root_pane"
+        }
+
+        struct Tab: Decodable {
+            let tabID: String
+            enum CodingKeys: String, CodingKey { case tabID = "tab_id" }
+        }
+        struct Pane: Decodable {
+            let paneID: String
+            enum CodingKeys: String, CodingKey { case paneID = "pane_id" }
+        }
+    }
+
     /// `worktree.list`: the repo the workspace belongs to, and its checkouts.
     struct WorktreeList: Decodable {
         let source: Source

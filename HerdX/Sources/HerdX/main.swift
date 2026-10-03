@@ -1213,6 +1213,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
                     event: event.window, terminal: self.window,
                     firstResponder: self.window.firstResponder, terminalView: self.gridView)
             else { return event }
+            // And some of what the terminal is doing owns every key outright.
+            // Resolving a chord first would eat it, and the view never hears
+            // about a key the monitor swallowed.
+            guard !self.gridView.ownsEveryKey else { return event }
             if self.resizeKey(event, session: session) { return nil }
             self.pendingDigit = Int(event.charactersIgnoringModifiers ?? "") ?? 0
             let (action, consumed) = self.chords.resolve(event)
@@ -1783,7 +1787,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
             NSApp.terminate(nil)
         }
 
-        guard let target = worktreeTarget(session: session) else {
+        guard let target = aimAtActiveEndpoint(session: session) else {
             return say("no machine to aim at")
         }
         // Its own workspace in the repo under test, so the probe never asks
@@ -1929,24 +1933,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     /// part that tells someone what to do instead.
     private func withWorktrees(
         _ action: Keymap.Action, session: HerdrSession,
-        then use: @escaping (String, Worktrees.Target, Reply.WorktreeList) -> Void
+        then use: @escaping (String, EndpointAim, Reply.WorktreeList) -> Void
     ) {
         let workspace = session.lastSnapshot?.workspaces.first(where: \.focused)
         if let refusal = Worktrees.refusal(for: action, workspace: workspace) {
             notice(refusal)
             return
         }
-        guard let workspace, let target = worktreeTarget(session: session) else { return }
+        guard let workspace, let target = aimAtActiveEndpoint(session: session) else { return }
         ask(.worktreeList(workspace: workspace.workspaceID), Reply.WorktreeList.self,
             target: target, failing: "worktrees"
         ) { use(workspace.workspaceID, target, $0) }
     }
 
-    /// The machine in front of us now, to pin a flow to. See `Worktrees.Target`.
-    private func worktreeTarget(session: HerdrSession) -> Worktrees.Target? {
+    /// The machine in front of us now, to pin an operation to. See
+    /// `EndpointAim`, which says why anything multi-step needs one.
+    private func aimAtActiveEndpoint(session: HerdrSession) -> EndpointAim? {
         let endpoint = session.activeEndpoint
         guard let bootID = session.bootID(forEndpoint: endpoint) else { return nil }
-        return Worktrees.Target(
+        return EndpointAim(
             session: session.token, endpoint: endpoint, bootID: bootID,
             label: session.endpoints.first { $0.index == endpoint }?.label ?? "that machine")
     }
@@ -1956,10 +1961,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     /// Resolved from the window's current session rather than from one the
     /// flow is carrying: a captured session is one a lost reply can keep
     /// alive for good. The token is what tells a rebuilt connection apart.
-    private func stillAimed(at target: Worktrees.Target, doing what: String) -> Bool {
+    private func stillAimed(at target: EndpointAim, doing what: String) -> Bool {
         guard
-            let drift = Worktrees.drift(
-                from: target, session: session?.token,
+            let drift = target.drift(
+                session: session?.token,
                 activeEndpoint: session?.activeEndpoint ?? -1,
                 bootID: session?.bootID(forEndpoint: target.endpoint))
         else { return true }
@@ -1975,7 +1980,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     /// than swallowed.
     private func ask<Result: Decodable>(
         _ command: Command, _ type: Result.Type,
-        target: Worktrees.Target, failing label: String,
+        target: EndpointAim, failing label: String,
         then use: @escaping (Result) -> Void
     ) {
         // Resolved here, never captured. A callback holding its session keeps
@@ -2029,7 +2034,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     /// makes the workspace asynchronously, and the reply is the first thing
     /// that knows which tab there is to focus.
     private func createWorktree(
-        branch: String, from workspace: String, target: Worktrees.Target
+        branch: String, from workspace: String, target: EndpointAim
     ) {
         // `git worktree add` plus whatever the repo runs on checkout, so this
         // is not instant and the window should not look idle while it happens.
@@ -2115,7 +2120,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     /// for anybody. So does this: the second question is a different question,
     /// and it names what is being thrown away.
     private func sendWorktreeRemoval(
-        _ entry: Reply.WorktreeList.Entry, workspace: String, target: Worktrees.Target,
+        _ entry: Reply.WorktreeList.Entry, workspace: String, target: EndpointAim,
         force: Bool
     ) {
         let doing = "remove \(entry.title)"
@@ -2503,41 +2508,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
             alert.runModal()
             return
         }
-        focus(.newTab, on: local.index)
+        // Switched to first, because the tab is made on this machine and the
+        // text has to land on the same one.
+        switchTo(endpoint: local.index, session: session)
+        focusTerminal()
 
-        // The pane does not exist until the server has made it and said so, so
-        // the command waits for the snapshot rather than a guess at how long
-        // that takes.
-        waitForNewPane(session: session, tries: 40) { [weak self] pane in
-            guard let self else { return }
-            guard let pane else {
-                self.notice("could not open a terminal for the installer")
-                return
-            }
-            session.send(text: Self.setupCommand(for: machine) + "\n", to: pane)
+        // The pane comes from the reply, not from watching focus move.
+        // Watching focus accepted whatever it moved to — a click on another
+        // pane, a switch to another machine, an agent taking focus — and then
+        // typed an installer command and a newline into it. On a machine
+        // where that was an editor or an agent's prompt, the newline is the
+        // part you cannot take back.
+        let id = UUID().uuidString
+        guard let aim = aimAtActiveEndpoint(session: session),
+            let json = Command.newTab.requestJSON(id: id)
+        else {
+            notice("could not open a terminal for the installer")
+            return
         }
-    }
-
-    /// Calls back with the focused pane once it changes, or nil if it does not.
-    private func waitForNewPane(
-        session: HerdrSession, tries: Int, then act: @escaping (String?) -> Void
-    ) {
-        let before = session.lastSnapshot?.focusedPaneID
-        var remaining = tries
-        func poll() {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-                MainActor.assumeIsolated {
-                    let now = session.lastSnapshot?.focusedPaneID
-                    if let now, now != before {
-                        act(now)
-                        return
-                    }
-                    remaining -= 1
-                    if remaining <= 0 { act(nil) } else { poll() }
+        session.request(json, bootID: aim.bootID, id: id) { [weak self] body in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                guard case .success(let made) = Reply.decode(Reply.TabCreated.self, from: body)
+                else {
+                    self.notice("could not open a terminal for the installer")
+                    return
                 }
+                // The pane is that machine's, so the text goes to that machine
+                // or nowhere: `send(text:)` addresses whichever endpoint is
+                // active now, and a pane id means something different on a
+                // different server.
+                guard self.stillAimed(at: aim, doing: "install herdr"),
+                    let session = self.session
+                else { return }
+                session.send(
+                    text: Self.setupCommand(for: machine) + "\n", to: made.rootPane.paneID)
             }
         }
-        poll()
     }
 
     /// What to run to set a machine up.

@@ -187,6 +187,109 @@ final class HibernationPlanTests: XCTestCase {
         XCTAssertEqual(record.tabs[0].focused, [false], "focus is restored after the layout is")
     }
 
+    // MARK: - Layouts herdr will not rebuild
+
+    /// A balanced tree of `leaves` panes, as `layout.export` would report one.
+    private func wideLayout(leaves: Int) -> Reply.Layout {
+        func node(_ ids: ArraySlice<Int>) -> String {
+            guard ids.count > 1 else {
+                return #"{"type":"pane","pane_id":"w1:p\#(ids.first!)","cwd":"/src/augur"}"#
+            }
+            let middle = ids.startIndex + ids.count / 2
+            return """
+                {"type":"split","direction":"right","ratio":0.5,
+                 "first":\(node(ids[ids.startIndex..<middle])),
+                 "second":\(node(ids[middle..<ids.endIndex]))}
+                """
+        }
+        return decode(
+            Reply.Layout.self,
+            """
+            {"tab_id":"w1:t1","zoomed":false,"focused_pane_id":"w1:p1",
+             "root":\(node(Array(1...leaves)[...]))}
+            """)
+    }
+
+    /// A spine of `depth` nodes: every split's second child is another split.
+    private func deepLayout(depth: Int) -> Reply.Layout {
+        func node(_ level: Int) -> String {
+            guard level < depth else {
+                return #"{"type":"pane","pane_id":"w1:p\#(level)","cwd":"/src/augur"}"#
+            }
+            return """
+                {"type":"split","direction":"right","ratio":0.5,
+                 "first":{"type":"pane","pane_id":"w1:q\(level)","cwd":"/src/augur"},
+                 "second":\(node(level + 1))}
+                """
+        }
+        return decode(
+            Reply.Layout.self,
+            """
+            {"tab_id":"w1:t1","zoomed":false,"focused_pane_id":"w1:p1",
+             "root":\(node(1))}
+            """)
+    }
+
+    private func resumablePanes(_ count: Int) -> [Reply.PaneEntry] {
+        (1...count).map { agentPane(pane: "w1:p\($0)") }
+    }
+
+    /// The leaves a `deepLayout` actually has: one `q` per split, then the
+    /// `p` at the bottom. Every one needs an agent, or the plan refuses for a
+    /// reason that has nothing to do with the depth being tested.
+    private func deepPanes(depth: Int) -> [Reply.PaneEntry] {
+        (1..<depth).map { agentPane(pane: "w1:q\($0)") } + [agentPane(pane: "w1:p\(depth)")]
+    }
+
+    /// `layout.export` hands over trees `layout.apply` refuses, and nothing
+    /// stops you splitting your way into one.
+    ///
+    /// Saving and closing such a workspace is the worst outcome available: it
+    /// is gone, every revive is refused `invalid_layout` and rolls back, and
+    /// the record pointing at those conversations can never be spent.
+    func testATabWithMorePanesThanHerdrWillRebuildIsRefused() {
+        let refused = plan(
+            panes: resumablePanes(25),
+            processes: [:],
+            layouts: ["w1:t1": wideLayout(leaves: 25)])
+        XCTAssertEqual(
+            refusal(refused),
+            "w1:t1 has 25 panes, and herdr will not rebuild more than 24")
+    }
+
+    /// herdr's own boundary, so a change upstream fails here rather than at
+    /// somebody's next revive.
+    func testExactlyHerdrsLimitIsStillAllowed() {
+        let allowed = plan(
+            panes: resumablePanes(24),
+            processes: [:],
+            layouts: ["w1:t1": wideLayout(leaves: 24)])
+        XCTAssertNil(refusal(allowed), "24 is the limit, not one past it")
+    }
+
+    /// Depth is counted herdr's way, with the root as 1.
+    func testATabSplitDeeperThanHerdrWillRebuildIsRefused() {
+        let deep = deepLayout(depth: 17)
+        XCTAssertEqual(deep.root.depth, 17, "the fixture is not the depth it claims")
+        let refused = plan(
+            panes: deepPanes(depth: 17), processes: [:], layouts: ["w1:t1": deep])
+        XCTAssertEqual(
+            refusal(refused),
+            "w1:t1 is split 17 deep, and herdr will not rebuild deeper than 16")
+    }
+
+    func testExactlyHerdrsDepthLimitIsStillAllowed() {
+        let deep = deepLayout(depth: 16)
+        XCTAssertEqual(deep.root.depth, 16)
+        XCTAssertNil(
+            refusal(plan(panes: deepPanes(depth: 16), processes: [:], layouts: ["w1:t1": deep])))
+    }
+
+    /// A lone pane is depth 1, which is what herdr counts it as.
+    func testALonePaneIsDepthOne() {
+        XCTAssertEqual(LayoutNode.pane(LayoutNode.Pane(paneID: "w1:p1")).depth, 1)
+    }
+
     func testAWorkspaceWithNoAgentIsLeftAlone() {
         XCTAssertEqual(refusal(plan(panes: [plainPane()])), "no agent to bring back")
     }

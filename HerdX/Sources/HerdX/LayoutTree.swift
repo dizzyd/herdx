@@ -78,6 +78,18 @@ indirect enum LayoutNode: Equatable, Sendable {
         }
     }
 
+    /// How deep the tree goes, counting the root as 1.
+    ///
+    /// Counted herdr's way, because the number is compared against herdr's
+    /// limit: `validate_layout_node` starts at depth 1 and a lone pane is
+    /// therefore 1, not 0.
+    var depth: Int {
+        switch self {
+        case .pane: return 1
+        case .split(let split): return 1 + max(split.first.depth, split.second.depth)
+        }
+    }
+
     /// The leaf at a path, or nil when the tree does not have that shape.
     func leaf(at path: [Bool]) -> Pane? {
         switch (self, path.first) {

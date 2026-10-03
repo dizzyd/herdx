@@ -100,46 +100,6 @@ enum Worktrees {
         }
     }
 
-    /// The machine a worktree flow is working on, pinned for its whole life.
-    ///
-    /// A flow is several requests with a person's decisions between them, and
-    /// the window can move to another machine in the gaps — a sheet or a
-    /// picker can sit open for as long as you like. Workspace ids and paths
-    /// are only unique within a server, so one carried forward and resolved
-    /// against whatever is active *now* names somebody else's work.
-    struct Target: Equatable {
-        /// Which session object, by token rather than by reference: a flow
-        /// that held its session would keep it alive through the reply
-        /// callback it is waiting on, and a reply that never comes would keep
-        /// it alive for good.
-        let session: UUID
-        let endpoint: Int
-        let bootID: String
-        /// For saying which machine, when a flow has to be abandoned.
-        let label: String
-    }
-
-    /// Why a pinned flow may no longer act, or nil when it may.
-    ///
-    /// Abandoning is the answer rather than redirecting, and rather than
-    /// switching the window back: the decision was made about one machine, and
-    /// both acting on another and yanking the view to the first are worse than
-    /// stopping and saying so. The case that matters is a force-removal — a
-    /// question asked about machine A, answered after the window moved to B,
-    /// and sent with A's workspace id to B.
-    ///
-    /// A new boot id counts as a different machine: the server restarted, and
-    /// the ids the flow is holding describe a session that no longer exists.
-    static func drift(
-        from target: Target, session: UUID?, activeEndpoint: Int, bootID: String?
-    ) -> String? {
-        guard session == target.session else { return "the connection was rebuilt" }
-        guard activeEndpoint == target.endpoint, bootID == target.bootID else {
-            return "\(target.label) is no longer in front of you"
-        }
-        return nil
-    }
-
     /// Whether a refused removal is asking to be forced rather than failing.
     ///
     /// herdr answers a dirty checkout with a code, and a checkout whose
