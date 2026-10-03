@@ -193,11 +193,6 @@ extension TerminalGridView {
         exitCopyMode()
     }
 
-    /// The copy mode on screen, if it is still the one `issued` came from.
-    ///
-    /// Every reply goes through this. A reply that arrives after copy mode was
-    /// left and entered again belongs to nothing on screen, and applying it
-    /// moves the new session's cursor to a result found in the old one's pane.
     /// Esc and q, which leave copy mode (Esc clears a selection first).
     ///
     /// Never queued, so a request that is never answered cannot trap anyone in
@@ -224,6 +219,11 @@ extension TerminalGridView {
         }
     }
 
+    /// The copy mode on screen, if it is still the one `issued` came from.
+    ///
+    /// Every reply goes through this. A reply that arrives after copy mode was
+    /// left and entered again belongs to nothing on screen, and applying it
+    /// moves the new session's cursor to a result found in the old one's pane.
     private func session(matching issued: CopyMode) -> CopyMode? {
         guard let mode = copyMode, mode.isSameSession(as: issued) else { return nil }
         return mode

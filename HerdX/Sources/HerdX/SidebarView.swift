@@ -1,11 +1,5 @@
 import AppKit
 
-/// One clickable row in the sidebar.
-///
-/// Two lines, like herdr's own list: the name you are looking for on top and
-/// the context that distinguishes two rows with the same name underneath. A
-/// single line forced "paperless-go" and "paperless-go" to be told apart by a
-/// truncated suffix.
 /// A document view that fills from the top.
 ///
 /// An unflipped one anchors its content to the bottom, so a sidebar with three
@@ -14,6 +8,12 @@ final class FlippedClipView: NSView {
     override var isFlipped: Bool { true }
 }
 
+/// One clickable row in the sidebar.
+///
+/// A name and, beside it, the context that tells two rows with the same name
+/// apart: "paperless-go" and "paperless-go" were otherwise distinguishable
+/// only by a truncated suffix. Beside rather than beneath, which is the one
+/// thing that keeps the list short enough to read — see the layout below.
 final class SidebarRow: NSView {
     enum Target: Equatable {
         case endpoint(Int)
