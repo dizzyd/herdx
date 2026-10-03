@@ -39,28 +39,19 @@ enum LocalAPI {
             .path
     }
 
-    /// Which socket this run should talk to.
-    ///
-    /// The environment outranks the remembered session, exactly as it does when
-    /// the session itself is chosen — otherwise a test run pointed at a
-    /// throwaway session by `HERDR_CLIENT_SOCKET_PATH` would have its API calls
-    /// quietly land on the real one, which is the single thing a dev run must
-    /// never do.
-    static func socketPath(
-        environment: [String: String] = ProcessInfo.processInfo.environment,
-        sessionName: String? = nil,
-        sessions: () -> [SessionEntry] = SessionCatalog.list
-    ) -> String? {
-        if let api = environment["HERDR_SOCKET_PATH"], !api.isEmpty { return api }
-        if let client = environment["HERDR_CLIENT_SOCKET_PATH"], !client.isEmpty {
-            return apiSocket(besideClientSocket: client)
-        }
-        let listed = sessions()
-        if let name = sessionName, let match = listed.first(where: { $0.name == name }) {
-            return match.apiSocket
-        }
-        return listed.first(where: \.isDefault)?.apiSocket ?? listed.first?.apiSocket
-    }
+    // There is deliberately no second way to choose a session here.
+    //
+    // There used to be: a `socketPath` that re-derived one from the
+    // environment and the saved name. The window had already chosen, by its
+    // own rules — `HERDX_SESSION` outranks the saved name there — so the two
+    // could disagree, and a run aimed at a throwaway session hibernated the
+    // saved one. Workspace ids are only unique within a server, so a matching
+    // id closed a live workspace on the developer's own session.
+    //
+    // The socket now comes from `HerdrSession.apiSocket`: whatever client
+    // socket this window actually attached to, turned around by the rule
+    // above. That inherits herdr-core's `default_socket_path` precedence
+    // instead of restating it, and there is one answer rather than two.
 
     /// Sends one request and calls back on the main thread with the reply body.
     ///
@@ -110,6 +101,34 @@ enum LocalAPI {
     /// is drawing a terminal sixty times a second.
     private static let queue = DispatchQueue(label: "dev.herdr.herdx.local-api")
 
+    /// The options a request's socket needs before anything is written to it.
+    ///
+    /// Separate so a test can read them back: one of them is the difference
+    /// between a failed request and a dead app, and nothing about the call
+    /// site would show it had been dropped.
+    static func configure(_ descriptor: Int32, timeout: TimeInterval) {
+        // A peer that has gone away turns the next write into SIGPIPE, which
+        // by default kills the app — before the `wrote > 0` check below can
+        // notice, so the careful failure handling under it never ran. A herdr
+        // server stopping between the connect and the send is enough, and the
+        // bigger the request the wider the window: `layout.apply` for a large
+        // tab is not a few bytes. Measured: without this the process exits on
+        // signal 13 with no result at all.
+        var refuseSigpipe: Int32 = 1
+        setsockopt(
+            descriptor, SOL_SOCKET, SO_NOSIGPIPE, &refuseSigpipe,
+            socklen_t(MemoryLayout<Int32>.size))
+
+        // A server that accepts the connection and then says nothing must not
+        // hold this thread for the life of the process.
+        var limit = timeval(
+            tv_sec: Int(timeout), tv_usec: Int32((timeout - timeout.rounded(.down)) * 1_000_000))
+        setsockopt(
+            descriptor, SOL_SOCKET, SO_RCVTIMEO, &limit, socklen_t(MemoryLayout<timeval>.size))
+        setsockopt(
+            descriptor, SOL_SOCKET, SO_SNDTIMEO, &limit, socklen_t(MemoryLayout<timeval>.size))
+    }
+
     private static func exchange(
         json: String, id: String, path: String, timeout: TimeInterval
     ) -> Result<String, Failure> {
@@ -144,12 +163,7 @@ enum LocalAPI {
             return .failure(Failure(reason: "could not reach \(path)"))
         }
 
-        // A server that accepts the connection and then says nothing must not
-        // hold this thread for the life of the process.
-        var limit = timeval(
-            tv_sec: Int(timeout), tv_usec: Int32((timeout - timeout.rounded(.down)) * 1_000_000))
-        setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, &limit, socklen_t(MemoryLayout<timeval>.size))
-        setsockopt(descriptor, SOL_SOCKET, SO_SNDTIMEO, &limit, socklen_t(MemoryLayout<timeval>.size))
+        configure(descriptor, timeout: timeout)
 
         var outgoing = Array((json + "\n").utf8)
         var sent = 0

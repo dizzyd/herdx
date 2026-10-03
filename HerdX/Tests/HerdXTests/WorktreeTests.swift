@@ -25,10 +25,33 @@ final class WorktreeNamingTests: XCTestCase {
     /// A branch with non-ASCII in it is a branch git accepts, and the folder
     /// name still has to be one.
     func testPathSlugKeepsOnlyASCIIAlphanumerics() {
-        // Not "café": the accented letter is a letter, but not an ASCII one,
-        // and `is_ascii_alphanumeric` is what herdr applies.
+        // Precomposed: one scalar, not an ASCII one, so it goes.
         XCTAssertEqual(Worktrees.pathSlug("caf\u{e9}"), "caf")
         XCTAssertEqual(Worktrees.pathSlug("\u{4e2d}\u{6587}"), "worktree")
+    }
+
+    /// The same text decomposed is a different slug, and herdr's answer is the
+    /// one that matters — it is the one that names the directory.
+    ///
+    /// `"cafe" + U+0301` is four `Character`s and five scalars. Iterating
+    /// `Character`s loses the `e` along with the accent it carries, giving
+    /// `caf` where herdr gives `cafe`, so the preview promised a path the
+    /// server would not create.
+    func testPathSlugIteratesScalarsLikeHerdr() {
+        XCTAssertEqual(Worktrees.pathSlug("cafe\u{301}"), "cafe")
+        // The accent alone is still a separator, not a character.
+        XCTAssertEqual(Worktrees.pathSlug("a\u{301}b"), "a-b")
+        // An emoji is one Character and several scalars; none is ASCII.
+        XCTAssertEqual(Worktrees.pathSlug("x\u{1F600}y"), "x-y")
+    }
+
+    /// Lowercasing is ASCII's, not Unicode's, because herdr's is.
+    func testPathSlugLowercasesOnlyASCII() {
+        XCTAssertEqual(Worktrees.pathSlug("ABC-123"), "abc-123")
+        // Turkish dotless I lowercases to a non-ASCII letter under Unicode
+        // rules; herdr never gets that far, since it is not ASCII to begin
+        // with.
+        XCTAssertEqual(Worktrees.pathSlug("I\u{131}I"), "i-i")
     }
 
     func testGeneratedBranchMatchesHerdrsVectors() {
@@ -146,6 +169,59 @@ final class WorktreeGuardTests: XCTestCase {
                 Reply.Failure(code: "worktree_remove_failed", message: "permission denied")))
         XCTAssertFalse(Worktrees.needsForce(Reply.Failure(code: "not_found", message: nil)))
         XCTAssertFalse(Worktrees.needsForce(Reply.Failure(code: nil, message: nil)))
+    }
+}
+
+/// Does a flow still know which machine it is about?
+///
+/// A worktree flow is several requests with a person's decisions between them,
+/// and nothing stops the window moving to another machine in the gaps. These
+/// are the only thing standing between "Force Remove" answered late and a
+/// deleted checkout on a machine the question never mentioned — workspace ids
+/// are only unique within a server, so A's id means something on B.
+final class WorktreeTargetTests: XCTestCase {
+    private let target = Worktrees.Target(endpoint: 2, bootID: "boot-A", label: "Alemetry")
+
+    func testAFlowOnItsOwnMachineMayAct() {
+        XCTAssertNil(
+            Worktrees.drift(
+                from: target, sessionReplaced: false, activeEndpoint: 2, bootID: "boot-A"))
+    }
+
+    /// The force-removal case: confirmed for A, answered after the window
+    /// moved to B. B is where the request would go, so it must not be sent.
+    func testAFlowIsAbandonedOnceAnotherMachineIsInFront() {
+        XCTAssertEqual(
+            Worktrees.drift(
+                from: target, sessionReplaced: false, activeEndpoint: 3, bootID: "boot-B"),
+            "Alemetry is no longer in front of you")
+    }
+
+    /// Switching away and back is not a free pass if the server restarted in
+    /// between: the ids the flow holds describe a session that is gone, and a
+    /// workspace id can have been reissued to something else.
+    func testASameEndpointWithANewBootIsADifferentMachine() {
+        XCTAssertEqual(
+            Worktrees.drift(
+                from: target, sessionReplaced: false, activeEndpoint: 2, bootID: "boot-A2"),
+            "Alemetry is no longer in front of you")
+    }
+
+    /// A machine that has dropped has no boot id, which is not a licence to
+    /// send to whatever is there instead.
+    func testAnEndpointWithNoBootIdIsNotActedOn() {
+        XCTAssertNotNil(
+            Worktrees.drift(
+                from: target, sessionReplaced: false, activeEndpoint: 2, bootID: nil))
+    }
+
+    /// `reattach` builds a new session with its own endpoints; index 2 on the
+    /// new one need not be the machine index 2 was.
+    func testARebuiltSessionStopsTheFlowEvenOnAMatchingIndex() {
+        XCTAssertEqual(
+            Worktrees.drift(
+                from: target, sessionReplaced: true, activeEndpoint: 2, bootID: "boot-A"),
+            "the connection was rebuilt")
     }
 }
 

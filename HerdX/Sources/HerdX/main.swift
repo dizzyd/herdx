@@ -1198,6 +1198,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     private func installKeyMonitor() {
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, let session = self.session else { return event }
+            // A local monitor is called for every key this application gets,
+            // including the ones meant for Settings, the Machines sheet and
+            // every text field in them. Without this, `⌃b x` typed while
+            // renaming a tab closed a pane instead of typing an x — and resize
+            // mode, below, swallowed arrow keys in those fields too.
+            guard
+                KeyRouting.belongsToTerminal(
+                    event: event.window, terminal: self.window,
+                    firstResponder: self.window.firstResponder, terminalView: self.gridView)
+            else { return event }
             if self.resizeKey(event, session: session) { return nil }
             self.pendingDigit = Int(event.charactersIgnoringModifiers ?? "") ?? 0
             let (action, consumed) = self.chords.resolve(event)
@@ -1617,7 +1627,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
         notice("hibernating \(workspace.label)…")
         hibernator.hibernate(
             workspace: workspace, in: snapshot, endpointID: local.id,
-            socket: LocalAPI.socketPath(sessionName: preferences.sessionName)
+            socket: session.apiSocket
         ) { [weak self] result in
             guard let self else { return }
             switch result {
@@ -1653,7 +1663,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
 
         hibernator.hibernate(
             workspace: workspace, in: snapshot, endpointID: local.id,
-            socket: LocalAPI.socketPath(sessionName: preferences.sessionName)
+            socket: session.apiSocket
         ) { result in
             if case .failure(let error) = result {
                 FileHandle.standardError.write(
@@ -1685,9 +1695,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     /// started rather than leaving the click looking ignored.
     private func revive(_ id: UUID) {
         guard let record = hibernator.records.first(where: { $0.id == id }) else { return }
+        // The attached session, because the socket is derived from what this
+        // window is actually on. Without one there is nothing to revive into.
+        guard let session else {
+            notice("no herdr to revive into")
+            return
+        }
         notice("reviving \(record.label)…")
         hibernator.revive(
-            id, socket: LocalAPI.socketPath(sessionName: preferences.sessionName)
+            id, socket: session.apiSocket
         ) { [weak self] result in
             guard let self else { return }
             switch result {
@@ -1762,10 +1778,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
             NSApp.terminate(nil)
         }
 
+        guard let target = worktreeTarget(session: session) else {
+            return say("no machine to aim at")
+        }
         // Its own workspace in the repo under test, so the probe never asks
         // about whatever the session happened to be sitting in.
         ask(.createWorkspace(cwd: cwd, label: "wtprobe"), Reply.WorkspaceCreated.self,
-            session: session, failing: "workspace"
+            session: session, target: target, failing: "workspace"
         ) { made in
             let workspace = made.workspace.workspaceID
             say("workspace=\(workspace) cwd=\(cwd)")
@@ -1773,7 +1792,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
             say("worktree_directory=\(root ?? "nil")")
 
             self.ask(.worktreeList(workspace: workspace), Reply.WorktreeList.self,
-                session: session, failing: "list"
+                session: session, target: target, failing: "list"
             ) { list in
                 let branch = "worktree/probe-\(Int(Date().timeIntervalSince1970) % 100000)"
                 // Worked out before the request, exactly as the sheet shows it.
@@ -1785,7 +1804,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
                 say("predicted=\(predicted ?? "nil")")
 
                 self.ask(.worktreeCreate(workspace: workspace, branch: branch),
-                    Reply.WorktreeCreated.self, session: session, failing: "create"
+                    Reply.WorktreeCreated.self, session: session, target: target,
+                    failing: "create"
                 ) { created in
                     // What the server did, against what we told the person it
                     // would do.
@@ -1793,7 +1813,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
                     say("path_matches_preview=\(created.worktree.path == predicted)")
 
                     self.ask(.worktreeList(workspace: workspace), Reply.WorktreeList.self,
-                        session: session, failing: "relist"
+                        session: session, target: target, failing: "relist"
                     ) { after in
                         let entry = after.worktrees.first { $0.path == created.worktree.path }
                         say(
@@ -1827,7 +1847,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
                         // which, measured the overlapping way round, replaced
                         // the refusal this probe exists to read.
                         self.ask(.worktreeList(workspace: opened),
-                            Reply.WorktreeList.self, session: session, failing: "list from linked"
+                            Reply.WorktreeList.self, session: session, target: target,
+                            failing: "list from linked"
                         ) { inside in
                             let mine = inside.worktrees.first { $0.openWorkspaceID == opened }
                             say(
@@ -1856,7 +1877,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
                                 ) { forced in
                                     say("forced=\(forced.map { "refused \($0.text)" } ?? "removed")")
                                     self.ask(.worktreeList(workspace: workspace),
-                                        Reply.WorktreeList.self, session: session, failing: "final"
+                                        Reply.WorktreeList.self, session: session,
+                                        target: target, failing: "final"
                                     ) { final in
                                         let gone = !final.worktrees.contains {
                                             $0.path == created.worktree.path
@@ -1902,17 +1924,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     /// part that tells someone what to do instead.
     private func withWorktrees(
         _ action: Keymap.Action, session: HerdrSession,
-        then use: @escaping (String, Reply.WorktreeList) -> Void
+        then use: @escaping (String, Worktrees.Target, Reply.WorktreeList) -> Void
     ) {
         let workspace = session.lastSnapshot?.workspaces.first(where: \.focused)
         if let refusal = Worktrees.refusal(for: action, workspace: workspace) {
             notice(refusal)
             return
         }
-        guard let workspace else { return }
+        guard let workspace, let target = worktreeTarget(session: session) else { return }
         ask(.worktreeList(workspace: workspace.workspaceID), Reply.WorktreeList.self,
-            session: session, failing: "worktrees"
-        ) { use(workspace.workspaceID, $0) }
+            session: session, target: target, failing: "worktrees"
+        ) { use(workspace.workspaceID, target, $0) }
+    }
+
+    /// The machine in front of us now, to pin a flow to. See `Worktrees.Target`.
+    private func worktreeTarget(session: HerdrSession) -> Worktrees.Target? {
+        let endpoint = session.activeEndpoint
+        guard let bootID = session.bootID(forEndpoint: endpoint) else { return nil }
+        return Worktrees.Target(
+            endpoint: endpoint, bootID: bootID,
+            label: session.endpoints.first { $0.index == endpoint }?.label ?? "that machine")
+    }
+
+    /// Whether a flow may still act, saying so when it may not.
+    private func stillAimed(
+        at target: Worktrees.Target, session: HerdrSession, doing what: String
+    ) -> Bool {
+        guard
+            let drift = Worktrees.drift(
+                from: target,
+                // Identity, not equality: a rebuilt session is a different
+                // object holding a different set of machines.
+                sessionReplaced: self.session !== session,
+                activeEndpoint: session.activeEndpoint,
+                bootID: session.bootID(forEndpoint: target.endpoint))
+        else { return true }
+        notice("\(what): \(drift)")
+        return false
     }
 
     /// One request whose reply is read rather than only checked for rejection.
@@ -1922,13 +1970,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     /// to focus — so the body has to be decoded, and a failure named rather
     /// than swallowed.
     private func ask<Result: Decodable>(
-        _ command: Command, _ type: Result.Type, session: HerdrSession, failing label: String,
+        _ command: Command, _ type: Result.Type, session: HerdrSession,
+        target: Worktrees.Target, failing label: String,
         then use: @escaping (Result) -> Void
     ) {
+        guard stillAimed(at: target, session: session, doing: label) else { return }
         let id = UUID().uuidString
-        guard let boot = session.lastSnapshot?.bootID, let json = command.requestJSON(id: id)
-        else { return }
-        session.request(json, bootID: boot, id: id) { [weak self] body in
+        guard let json = command.requestJSON(id: id) else { return }
+        // The pinned boot id, not the active snapshot's: they are the same
+        // until the window moves, and the whole point is the case where it has.
+        session.request(json, bootID: target.bootID, id: id) { [weak self] body in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 switch Reply.decode(type, from: body) {
@@ -1941,7 +1992,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
 
     /// Asks for a branch, showing where it will be checked out as it is typed.
     private func newWorktree(session: HerdrSession) {
-        withWorktrees(.newWorktree, session: session) { workspace, list in
+        withWorktrees(.newWorktree, session: session) { workspace, target, list in
             // Absent only from a server too old to publish it; the sheet then
             // asks for a branch without claiming to know where it goes.
             let root = session.lastSnapshot?.worktreeDirectory
@@ -1957,7 +2008,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
                     }
                 }
             ) { branch in
-                self.createWorktree(branch: branch, from: workspace, session: session)
+                // The sheet may have been open across a machine switch, so the
+                // target is checked again on the way out of it rather than
+                // trusted from when it opened.
+                self.createWorktree(
+                    branch: branch, from: workspace, target: target, session: session)
             }
         }
     }
@@ -1967,22 +2022,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     /// Two steps because the request cannot ask for focus and mean it: herdr
     /// makes the workspace asynchronously, and the reply is the first thing
     /// that knows which tab there is to focus.
-    private func createWorktree(branch: String, from workspace: String, session: HerdrSession) {
+    private func createWorktree(
+        branch: String, from workspace: String, target: Worktrees.Target, session: HerdrSession
+    ) {
         // `git worktree add` plus whatever the repo runs on checkout, so this
         // is not instant and the window should not look idle while it happens.
         notice("creating \(branch)…")
         ask(.worktreeCreate(workspace: workspace, branch: branch), Reply.WorktreeCreated.self,
-            session: session, failing: "worktree \(branch)"
+            session: session, target: target, failing: "worktree \(branch)"
         ) { created in
-            guard let session = self.session else { return }
-            self.invoke(.focusTab(created.tab.tabID), session: session)
+            // A tab id from the machine this was created on. Focusing it
+            // against whatever is active now would name another machine's tab.
+            guard self.stillAimed(at: target, session: session, doing: "worktree \(branch)")
+            else { return }
+            self.invoke(.focusTab(created.tab.tabID), session: session, bootID: target.bootID)
             self.notice("worktree \(branch)")
         }
     }
 
     /// Lists the repo's checkouts and opens the chosen one.
     private func openWorktree(session: HerdrSession) {
-        withWorktrees(.openWorktree, session: session) { workspace, list in
+        withWorktrees(.openWorktree, session: session) { workspace, target, list in
             let entries = list.openable
             guard !entries.isEmpty else {
                 self.notice("no git worktrees for this repo")
@@ -2002,9 +2062,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
                         entry.path,
                     ].compactMap { $0 }.joined(separator: "  ·  ")
                     return Picker.Item(title: entry.title, detail: detail) {
+                        // A path from one machine's repo, so it goes back to
+                        // that machine or nowhere. The list can be up for a
+                        // while, and an identical path exists on more than one
+                        // of these machines.
+                        guard
+                            self.stillAimed(
+                                at: target, session: session, doing: "open \(entry.title)")
+                        else { return }
                         self.invoke(
                             .worktreeOpen(workspace: workspace, path: entry.path),
-                            session: session)
+                            session: session, bootID: target.bootID)
                     }
                 })
         }
@@ -2012,7 +2080,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
 
     /// Removes the checkout this workspace is, after asking.
     private func removeWorktree(session: HerdrSession) {
-        withWorktrees(.removeWorktree, session: session) { workspace, list in
+        withWorktrees(.removeWorktree, session: session) { workspace, target, list in
             // The guard only proved this workspace is a linked checkout. Which
             // checkout it is comes from the list, and a workspace herdr does
             // not match to one is not ours to remove.
@@ -2027,7 +2095,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
                     detail: "The checkout at \(entry.path) is deleted. The branch is not.",
                     action: "Remove")
             else { return }
-            self.sendWorktreeRemoval(entry, workspace: workspace, force: false, session: session)
+            self.sendWorktreeRemoval(
+                entry, workspace: workspace, target: target, force: false, session: session)
         }
     }
 
@@ -2039,31 +2108,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
     /// for anybody. So does this: the second question is a different question,
     /// and it names what is being thrown away.
     private func sendWorktreeRemoval(
-        _ entry: Reply.WorktreeList.Entry, workspace: String, force: Bool, session: HerdrSession
+        _ entry: Reply.WorktreeList.Entry, workspace: String, target: Worktrees.Target,
+        force: Bool, session: HerdrSession
     ) {
+        let doing = "remove \(entry.title)"
+        guard stillAimed(at: target, session: session, doing: doing) else { return }
         let id = UUID().uuidString
         let command = Command.worktreeRemove(workspace: workspace, force: force)
-        guard let boot = session.lastSnapshot?.bootID, let json = command.requestJSON(id: id)
-        else { return }
-        session.request(json, bootID: boot, id: id) { [weak self] body in
+        guard let json = command.requestJSON(id: id) else { return }
+        session.request(json, bootID: target.bootID, id: id) { [weak self] body in
             MainActor.assumeIsolated {
-                guard let self, let session = self.session else { return }
+                // The session this was sent on, not whichever one the window
+                // holds now: a rebuilt session is a different set of machines.
+                guard let self else { return }
                 guard let failure = Reply.rejection(in: body) else {
                     self.notice("removed \(entry.title)")
                     return
                 }
                 guard !force, Worktrees.needsForce(failure) else {
-                    self.notice("remove \(entry.title): \(failure.text)")
+                    self.notice("\(doing): \(failure.text)")
                     return
                 }
+                // The second question names the machine as well as the
+                // checkout, because a person who has moved on since the first
+                // one needs to know which one they are answering about.
                 guard
                     self.confirm(
-                        "Force removal of “\(entry.title)”?",
+                        "Force removal of “\(entry.title)” on \(target.label)?",
                         detail: "git will not remove it as it is: \(failure.text)",
                         action: "Force Remove")
                 else { return }
                 self.sendWorktreeRemoval(
-                    entry, workspace: workspace, force: true, session: session)
+                    entry, workspace: workspace, target: target, force: true, session: session)
             }
         }
     }

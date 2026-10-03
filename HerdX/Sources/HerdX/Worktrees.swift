@@ -15,12 +15,18 @@ enum Worktrees {
 
     /// A branch name as a folder name: lowercase, alphanumerics kept, every
     /// other run collapsed to one dash, no leading or trailing dash.
+    ///
+    /// By scalar, not by `Character`. Swift's `Character` is a grapheme
+    /// cluster, so `"cafe" + U+0301` iterates as four of them and the accent
+    /// takes the `e` with it — slugging to `caf` where herdr, which iterates
+    /// scalars, writes `cafe`. A preview that disagrees with the directory
+    /// that then appears is worse than no preview.
     static func pathSlug(_ branch: String) -> String {
         var slug = ""
         var lastWasDash = false
-        for character in branch {
-            if character.isASCII, character.isLetter || character.isNumber {
-                slug.append(Character(character.lowercased()))
+        for scalar in branch.unicodeScalars {
+            if let kept = asciiAlphanumericLowercased(scalar) {
+                slug.unicodeScalars.append(kept)
                 lastWasDash = false
             } else if !lastWasDash {
                 slug.append("-")
@@ -29,6 +35,17 @@ enum Worktrees {
         }
         let trimmed = slug.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
         return trimmed.isEmpty ? prefix : trimmed
+    }
+
+    /// Rust's `is_ascii_alphanumeric` and `to_ascii_lowercase` in one, spelled
+    /// out against code points rather than borrowed from Swift's Unicode-aware
+    /// predicates — those answer a different and larger question.
+    private static func asciiAlphanumericLowercased(_ scalar: Unicode.Scalar) -> Unicode.Scalar? {
+        switch scalar.value {
+        case 0x30...0x39, 0x61...0x7A: return scalar
+        case 0x41...0x5A: return Unicode.Scalar(scalar.value + 0x20)
+        default: return nil
+        }
     }
 
     /// The branch name the sheet opens on, so the common case is one keystroke.
@@ -81,6 +98,41 @@ enum Worktrees {
         default:
             return nil
         }
+    }
+
+    /// The machine a worktree flow is working on, pinned for its whole life.
+    ///
+    /// A flow is several requests with a person's decisions between them, and
+    /// the window can move to another machine in the gaps — a sheet or a
+    /// picker can sit open for as long as you like. Workspace ids and paths
+    /// are only unique within a server, so one carried forward and resolved
+    /// against whatever is active *now* names somebody else's work.
+    struct Target: Equatable {
+        let endpoint: Int
+        let bootID: String
+        /// For saying which machine, when a flow has to be abandoned.
+        let label: String
+    }
+
+    /// Why a pinned flow may no longer act, or nil when it may.
+    ///
+    /// Abandoning is the answer rather than redirecting, and rather than
+    /// switching the window back: the decision was made about one machine, and
+    /// both acting on another and yanking the view to the first are worse than
+    /// stopping and saying so. The case that matters is a force-removal — a
+    /// question asked about machine A, answered after the window moved to B,
+    /// and sent with A's workspace id to B.
+    ///
+    /// A new boot id counts as a different machine: the server restarted, and
+    /// the ids the flow is holding describe a session that no longer exists.
+    static func drift(
+        from target: Target, sessionReplaced: Bool, activeEndpoint: Int, bootID: String?
+    ) -> String? {
+        if sessionReplaced { return "the connection was rebuilt" }
+        guard activeEndpoint == target.endpoint, bootID == target.bootID else {
+            return "\(target.label) is no longer in front of you"
+        }
+        return nil
     }
 
     /// Whether a refused removal is asking to be forced rather than failing.

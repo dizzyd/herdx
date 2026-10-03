@@ -139,10 +139,30 @@ final class HerdrSession {
     /// `socketPath` is the herdr session to attach to; nil takes the one the
     /// core would pick, which is what honours `HERDR_SOCKET_PATH`.
     /// `machines` false attaches the local server alone.
+    /// The client socket this session actually attached to.
+    ///
+    /// Kept because the local API socket is derived from it, and deriving it
+    /// from anything else means two answers to "which session is this". There
+    /// were two: the window resolved its session with `HERDX_SESSION` first,
+    /// while hibernation asked `LocalAPI.socketPath` again from the *saved*
+    /// name — so a run aimed at a throwaway session showed the throwaway one
+    /// and hibernated the saved one. Workspace ids are per-server, so a
+    /// matching id closed a workspace on the developer's live session, which
+    /// is the one thing a dev run must never touch.
+    let clientSocket: String?
+
+    /// The API socket beside it, for the methods the client shell will not
+    /// carry. One derivation from one fact, rather than a second lookup.
+    var apiSocket: String? { clientSocket.map(LocalAPI.apiSocket(besideClientSocket:)) }
+
     init(
         cols: Int, rows: Int, cellWidth: Int, cellHeight: Int, socketPath: String?,
         machines: Bool
     ) throws {
+        // What the core will use: the given path, or the one it picks for
+        // itself, which honours `HERDR_SOCKET_PATH` and
+        // `HERDR_CLIENT_SOCKET_PATH` in that order.
+        clientSocket = socketPath ?? Self.defaultSocketPath
         if let socketPath {
             handle = socketPath.withCString {
                 hx_session_connect(
