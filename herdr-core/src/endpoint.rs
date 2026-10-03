@@ -738,6 +738,25 @@ fn framed(bytes: &[u8]) -> Option<&[u8]> {
     Some(&bytes[start..start + length])
 }
 
+/// How much of a remote's stderr to keep.
+const DIAGNOSTICS_LIMIT: usize = 4096;
+
+/// Appends to a tail that never grows past `limit`, in bytes.
+///
+/// Bytes rather than characters because trimming a `String` to its last
+/// `limit` bytes panics when the cut lands inside one — `split_off` asserts a
+/// char boundary, and a euro sign followed by 4094 of anything puts the cut in
+/// the middle of it. The panic ended the thread that reads a machine's stderr
+/// and dropped the pipe with it, so a machine that then failed to connect
+/// explained itself with "the stream ended" and nothing else: the one case the
+/// diagnostics exist for.
+fn append_bounded(tail: &mut Vec<u8>, bytes: &[u8], limit: usize) {
+    tail.extend_from_slice(bytes);
+    if tail.len() > limit {
+        tail.drain(..tail.len() - limit);
+    }
+}
+
 fn start_ssh(
     target: &str,
     session: &str,
@@ -787,19 +806,22 @@ fn start_ssh(
     let diagnostics = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let sink = std::sync::Arc::clone(&diagnostics);
     std::thread::spawn(move || {
-        let mut text = String::new();
-        // Bounded: a chatty remote must not grow this without limit.
+        // Bytes, decoded only when published. Two reasons, both of which bit:
+        // trimming a `String` to its last 4096 *bytes* panics when the cut
+        // lands inside a character — three bytes of euro sign followed by 4094
+        // of anything is enough — and that panic ends this thread and drops the
+        // pipe, so the machine then fails with no diagnostics at all, which is
+        // the thing this exists to prevent. Decoding each read on its own also
+        // mangled any character that straddled two of them.
+        let mut tail: Vec<u8> = Vec::new();
         let mut buffer = [0u8; 1024];
         while let Ok(read) = stderr.read(&mut buffer) {
             if read == 0 {
                 break;
             }
-            text.push_str(&String::from_utf8_lossy(&buffer[..read]));
-            if text.len() > 4096 {
-                text = text.split_off(text.len() - 4096);
-            }
+            append_bounded(&mut tail, &buffer[..read], DIAGNOSTICS_LIMIT);
             if let Ok(mut sink) = sink.lock() {
-                sink.clone_from(&text);
+                *sink = String::from_utf8_lossy(&tail).into_owned();
             }
         }
     });
@@ -1157,6 +1179,50 @@ mod tests {
             framed_output(split, std::time::Duration::from_secs(5)),
             Some("/tmp/agent-é.sock".into())
         );
+    }
+
+    /// The input that used to end the thread that reads a machine's stderr.
+    ///
+    /// Three bytes of euro sign then 4094 ASCII is 4097 bytes, so trimming to
+    /// the last 4096 cut one byte in — inside the euro sign. `split_off`
+    /// asserts a char boundary, so it panicked, the diagnostics thread died
+    /// and the pipe went with it; the machine then failed to connect with no
+    /// explanation, which is the one thing the diagnostics are for.
+    #[test]
+    fn a_diagnostics_tail_cut_inside_a_character_does_not_panic() {
+        let mut tail = Vec::new();
+        let mut text = String::from("\u{20AC}");
+        text.push_str(&"a".repeat(4094));
+        assert_eq!(text.len(), 4097, "the input no longer straddles the cut");
+
+        append_bounded(&mut tail, text.as_bytes(), DIAGNOSTICS_LIMIT);
+
+        assert_eq!(tail.len(), DIAGNOSTICS_LIMIT);
+        // The severed byte is published as a replacement glyph, which is what
+        // a diagnostic should do with a fragment rather than refuse to exist.
+        let shown = String::from_utf8_lossy(&tail);
+        assert!(shown.ends_with("aaa"), "the tail lost its end");
+        assert!(shown.starts_with('\u{fffd}'), "a half character read as whole");
+    }
+
+    /// Decoding each read on its own mangled anything that straddled two of
+    /// them, which keeping bytes until publication also fixes.
+    #[test]
+    fn a_diagnostics_character_split_across_reads_survives() {
+        let mut tail = Vec::new();
+        let euro = "\u{20AC}".as_bytes();
+
+        append_bounded(&mut tail, &euro[..1], DIAGNOSTICS_LIMIT);
+        append_bounded(&mut tail, &euro[1..], DIAGNOSTICS_LIMIT);
+
+        assert_eq!(String::from_utf8_lossy(&tail), "\u{20AC}");
+    }
+
+    #[test]
+    fn a_diagnostics_tail_under_the_limit_is_kept_whole() {
+        let mut tail = Vec::new();
+        append_bounded(&mut tail, b"ssh: connect refused", DIAGNOSTICS_LIMIT);
+        assert_eq!(String::from_utf8_lossy(&tail), "ssh: connect refused");
     }
 
     #[test]
