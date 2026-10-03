@@ -32,6 +32,10 @@ enum HibernationPlan {
         panes: [Reply.PaneEntry],
         processes: [String: Reply.Info],
         layouts: [String: Reply.Layout],
+        /// What is running under each pane's shell that its foreground job
+        /// does not account for. Empty means "nothing", not "not asked" — the
+        /// caller is `Hibernator`, which reads this Mac's process table.
+        background: [String: [String]] = [:],
         at: Date = Date()
     ) -> Result<Hibernated, Refusal> {
         let agents = panes.filter(\.holdsAgent)
@@ -60,6 +64,26 @@ enum HibernationPlan {
                 Refusal(
                     reason: "\(unresumable.agentName) in \(unresumable.paneID) has no session to "
                         + "resume, so it would come back as a bare shell"))
+        }
+
+        // Having a reference is not the same as being able to spend it.
+        // `AgentResume` knows which agents it can start and what a usable
+        // reference looks like for each — a letta conversation of `default:`
+        // names no agent, and herdr accepts it because it validates the
+        // *characters* rather than the meaning. Asked here rather than
+        // discovered on the way back, because by then the workspace is closed
+        // and every revive fails for the life of the record.
+        if let unstartable = agents.first(where: {
+            guard let session = $0.agentSession else { return false }
+            return AgentResume.arguments(
+                agent: session.agent, kind: session.kind, value: session.value) == nil
+        }) {
+            let session = unstartable.agentSession
+            return .failure(
+                Refusal(
+                    reason: "\(unstartable.agentName) in \(unstartable.paneID) has a session "
+                        + "HerdX cannot resume (\(session?.kind ?? "?") "
+                        + "\(session?.value ?? "?")), so it could never be brought back"))
         }
 
         var storedTabs: [Hibernated.Tab] = []
@@ -119,6 +143,16 @@ enum HibernationPlan {
                 guard info.isIdleShell else {
                     return .failure(
                         Refusal(reason: "\(info.runningDescription) is running in \(paneID)"))
+                }
+                // And behind it. `isIdleShell` reads the foreground job, which
+                // is the right question for "is this a shell at a prompt" and
+                // the wrong one for "is it safe to kill everything here": a
+                // background job has its own process group and never appears
+                // in it. Closing the workspace would take it with no record of
+                // it ever having existed.
+                if let behind = background[paneID]?.first {
+                    return .failure(
+                        Refusal(reason: "\(behind) is running in the background of \(paneID)"))
                 }
                 judged.insert(paneID)
             }

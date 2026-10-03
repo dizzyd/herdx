@@ -193,6 +193,39 @@ final class HibernationRaceTests: XCTestCase {
         XCTAssertEqual(hibernator.records.count, 1)
     }
 
+    /// Same panes is not the same work.
+    ///
+    /// A pane that swapped one conversation for another between the first
+    /// reading and the last is idle both times and keeps its id, so nothing
+    /// about its status or shape notices. The record still names the
+    /// conversation that has gone: closing ends the one that is there and
+    /// revives the one that is not.
+    func testAPaneThatChangedConversationIsNotClosed() {
+        func entry(_ value: String) -> Reply.PaneEntry {
+            Reply.PaneEntry(
+                paneID: "w1:p1", workspaceID: "w1", tabID: "w1:t1", agentStatus: .idle,
+                agentSession: Reply.Session(
+                    source: "herdr:claude", agent: "claude", kind: "id", value: value))
+        }
+        XCTAssertNotNil(
+            Hibernator.changed(from: [entry("conversation-A")], to: [entry("conversation-B")]),
+            "the record names a conversation that is no longer in the pane")
+        XCTAssertNil(Hibernator.changed(from: [entry("same")], to: [entry("same")]))
+    }
+
+    /// And a plain pane that picked up an agent is a conversation nothing
+    /// wrote down.
+    func testAPaneThatGainedAnAgentIsNotClosed() {
+        let plain = Reply.PaneEntry(
+            paneID: "w1:p1", workspaceID: "w1", tabID: "w1:t1", agentStatus: .unknown,
+            agentSession: nil)
+        let withAgent = Reply.PaneEntry(
+            paneID: "w1:p1", workspaceID: "w1", tabID: "w1:t1", agentStatus: .idle,
+            agentSession: Reply.Session(
+                source: "herdr:claude", agent: "claude", kind: "id", value: "new"))
+        XCTAssertNotNil(Hibernator.changed(from: [plain], to: [withAgent]))
+    }
+
     /// A refused reread is not an answer, and this is the question standing
     /// between a quiet workspace and one ended mid-turn.
     func testARefusedRereadStopsTheClose() throws {

@@ -124,7 +124,8 @@ final class Hibernator {
             switch HibernationPlan.plan(
                 workspace: workspace, tabs: tabs, endpointID: endpointID,
                 panes: reported.filter { $0.workspaceID == workspaceID },
-                processes: processes, layouts: layouts)
+                processes: processes, layouts: layouts,
+                background: Self.background(under: processes))
             {
             case .failure(let refusal):
                 done(.failure(refusal))
@@ -178,6 +179,30 @@ final class Hibernator {
                 processes[$0.processInfo.paneID] = $0.processInfo
             }
         }
+    }
+
+    /// What is running behind each pane's shell, which herdr does not report.
+    ///
+    /// `pane.process_info` describes the foreground job only, so a shell with
+    /// a background build or a suspended editor behind it looks idle. The
+    /// process table is read once for the whole workspace and walked per pane.
+    ///
+    /// Local only, which hibernation already is — and a pane with no shell pid
+    /// gets no entry rather than a false clean bill, because the plan refuses
+    /// a pane it cannot read anyway.
+    static func background(under processes: [String: Reply.Info]) -> [String: [String]] {
+        let shells = processes.compactMapValues(\.shellPid)
+        guard !shells.isEmpty else { return [:] }
+        let table = LocalProcesses.table()
+        var behind: [String: [String]] = [:]
+        for (paneID, shell) in shells {
+            let foreground = Set(
+                (processes[paneID]?.foregroundProcesses ?? []).map { Int32($0.pid) })
+            let found = LocalProcesses.unaccounted(
+                under: Int32(shell), foreground: foreground, in: table)
+            if !found.isEmpty { behind[paneID] = found }
+        }
+        return behind
     }
 
     /// Reads the workspace once more, immediately before closing it.
@@ -251,6 +276,21 @@ final class Hibernator {
             // record describes a workspace that no longer exists.
             return HibernationPlan.Refusal(
                 reason: "the workspace changed shape while it was being read")
+        }
+        // Same panes is not the same work. A pane that swapped one
+        // conversation for another between the first reading and this one is
+        // idle both times and keeps its id, so nothing above notices — and the
+        // record still names the conversation that has gone. Closing it would
+        // end the one that is there and bring back the one that is not.
+        //
+        // A pane that gained an agent since counts too: the record has it as a
+        // plain shell, so the conversation would be closed with nothing
+        // written down about it.
+        let was = Dictionary(inspected.map { ($0.paneID, $0.agentSession) }) { first, _ in first }
+        for pane in now where pane.agentSession != was[pane.paneID] ?? nil {
+            return HibernationPlan.Refusal(
+                reason: "\(pane.agentName) in \(pane.paneID) is not the conversation that was "
+                    + "read a moment ago")
         }
         return nil
     }

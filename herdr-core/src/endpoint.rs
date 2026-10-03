@@ -577,6 +577,9 @@ impl AgentCache {
                 .failed_at
                 .is_none_or(|at| at.elapsed() >= self.retry_after);
             if let Some((agent, at)) = &state.found {
+                // Checked again here as well as when it was stored: an agent
+                // that restarts elsewhere leaves the old path pointing at
+                // nothing, and that is worth noticing between refreshes.
                 if Path::new(agent).exists() {
                     let agent = agent.clone();
                     if at.elapsed() >= self.refresh_after && retry_due && !state.asking {
@@ -614,11 +617,22 @@ impl AgentCache {
                 let mut state = self.state.lock().unwrap();
                 state.asking = false;
                 match found {
-                    Some(agent) => {
+                    // A path that is not there is not an answer, however
+                    // confidently the shell printed it. Taken as a success it
+                    // cleared the cooldown, and `get` then threw it away for
+                    // not existing and asked again in the same breath — a
+                    // login shell per turn of the loop, forever, with
+                    // `start_ssh` never reached at all. A machine whose key
+                    // needs no agent could not connect while a stale
+                    // `SSH_AUTH_SOCK` sat in somebody's profile.
+                    Some(agent) if std::path::Path::new(&agent).exists() => {
                         state.found = Some((agent, std::time::Instant::now()));
                         state.failed_at = None;
                     }
-                    None => state.failed_at = Some(std::time::Instant::now()),
+                    _ => {
+                        state.found = None;
+                        state.failed_at = Some(std::time::Instant::now());
+                    }
                 }
                 self.answered.notify_all();
             });
@@ -1282,6 +1296,40 @@ mod tests {
                 $retry,
             );
         };
+    }
+
+    /// A shell that confidently prints a path to nothing.
+    ///
+    /// Taken as a success it cleared the retry cooldown, and `get` then threw
+    /// it away for not existing and asked again immediately — a login shell
+    /// per turn, forever, and `start_ssh` never reached. A machine whose key
+    /// needs no agent at all could not connect while a stale `SSH_AUTH_SOCK`
+    /// sat in somebody's profile.
+    #[test]
+    fn a_socket_that_is_not_there_is_a_failed_lookup_not_a_spin() {
+        use std::time::Duration;
+        fake_agent_cache!(
+            CACHE, ANSWER, ASKED, Duration::ZERO, Duration::from_secs(600),
+            Duration::from_secs(600)
+        );
+        *ANSWER.lock().unwrap() = Some("/nonexistent/herdx-agent.sock".into());
+
+        let started = std::time::Instant::now();
+        assert_eq!(CACHE.get(&|| false), None, "a path to nothing was handed to ssh");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "took {:?}; the loop never gave up",
+            started.elapsed()
+        );
+
+        // And it is now under the cooldown rather than asked again at once.
+        let before = ASKED.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(CACHE.get(&|| false), None);
+        assert_eq!(
+            ASKED.load(std::sync::atomic::Ordering::SeqCst),
+            before,
+            "the unusable answer was looked for again inside the cooldown"
+        );
     }
 
     #[test]

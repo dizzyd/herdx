@@ -94,7 +94,8 @@ final class HibernationPlanTests: XCTestCase {
         panes: [Reply.PaneEntry]? = nil,
         processes: [String: Reply.Info]? = nil,
         layouts: [String: Reply.Layout]? = nil,
-        tabs: [Snapshot.Tab]? = nil
+        tabs: [Snapshot.Tab]? = nil,
+        background: [String: [String]] = [:]
     ) -> Result<Hibernated, HibernationPlan.Refusal> {
         HibernationPlan.plan(
             workspace: workspace(),
@@ -103,6 +104,7 @@ final class HibernationPlanTests: XCTestCase {
             panes: panes ?? [agentPane(), plainPane()],
             processes: processes ?? ["w1:p2": idleShell("w1:p2")],
             layouts: layouts ?? ["w1:t1": layout()],
+            background: background,
             at: Date(timeIntervalSince1970: 1_758_000_000))
     }
 
@@ -185,6 +187,106 @@ final class HibernationPlanTests: XCTestCase {
             record.tabs[0].root.leaf(at: stored.path)?.paneID, "w1:p1",
             "the path has to address the pane the agent came out of")
         XCTAssertEqual(record.tabs[0].focused, [false], "focus is restored after the layout is")
+    }
+
+    // MARK: - What is running behind the prompt
+
+    /// `isIdleShell` reads the foreground job, which is the right question for
+    /// "is this a shell at a prompt" and the wrong one for "may everything
+    /// here be killed": a background job has its own process group and never
+    /// appears in it.
+    func testABackgroundJobBehindAnIdleShellRefuses() {
+        let refused = plan(background: ["w1:p2": ["node"]])
+        XCTAssertEqual(
+            refusal(refused), "node is running in the background of w1:p2",
+            "a dev server behind a prompt was read as an idle pane")
+    }
+
+    /// And nothing behind it is still fine, or the rule would end hibernation
+    /// for every workspace with a spare shell in it.
+    func testAnIdleShellWithNothingBehindItStillHibernates() {
+        XCTAssertNil(refusal(plan(background: [:])))
+    }
+
+    /// The agent's own pane is judged by its agent, not by what is under its
+    /// shell — the agent *is* what is under its shell.
+    func testTheAgentsOwnPaneIsNotJudgedByItsChildren() {
+        XCTAssertNil(refusal(plan(background: ["w1:p1": ["claude"]])))
+    }
+
+    /// The walk is over descendants, so a server spawned by a background
+    /// build counts as much as the build.
+    func testADescendantCountsNotJustAChild() {
+        let table = [
+            LocalProcesses.Entry(pid: 10, ppid: 1, name: "zsh"),
+            LocalProcesses.Entry(pid: 11, ppid: 10, name: "npm"),
+            LocalProcesses.Entry(pid: 12, ppid: 11, name: "node"),
+        ]
+        XCTAssertEqual(
+            LocalProcesses.unaccounted(under: 10, foreground: [10], in: table).sorted(),
+            ["node", "npm"])
+    }
+
+    /// What the foreground job already accounts for is not news: the shell
+    /// itself, and whatever `pane.process_info` listed.
+    func testTheForegroundJobIsNotCountedTwice() {
+        let table = [
+            LocalProcesses.Entry(pid: 10, ppid: 1, name: "zsh"),
+            LocalProcesses.Entry(pid: 11, ppid: 10, name: "vim"),
+        ]
+        XCTAssertTrue(
+            LocalProcesses.unaccounted(under: 10, foreground: [10, 11], in: table).isEmpty,
+            "the pane's own foreground process was reported as a background job")
+    }
+
+    /// A table read while processes come and go can disagree with itself, and
+    /// a cycle in it must not become a loop.
+    func testAnInconsistentTableDoesNotHang() {
+        let table = [
+            LocalProcesses.Entry(pid: 10, ppid: 11, name: "a"),
+            LocalProcesses.Entry(pid: 11, ppid: 10, name: "b"),
+        ]
+        XCTAssertEqual(LocalProcesses.unaccounted(under: 10, foreground: [], in: table), ["b"])
+    }
+
+    // MARK: - References revival cannot spend
+
+    /// Having a session reference is not the same as being able to use it.
+    /// herdr validates the characters, not the meaning: a letta conversation
+    /// of `default:` names no agent, and every revive would roll back.
+    func testASessionRevivalCannotResumeRefuses() {
+        let letta = agentPane(agent: "letta")
+        let refused = plan(
+            panes: [
+                Reply.PaneEntry(
+                    paneID: letta.paneID, workspaceID: letta.workspaceID, tabID: letta.tabID,
+                    agentStatus: letta.agentStatus,
+                    agentSession: Reply.Session(
+                        source: "herdr:letta", agent: "letta", kind: "id", value: "default:")),
+                plainPane(),
+            ])
+        XCTAssertEqual(
+            refusal(refused)?.contains("cannot resume"), true,
+            "a reference nothing can spend was saved and the workspace closed: "
+                + "\(refusal(refused) ?? "accepted")")
+    }
+
+    /// The same shape with an agent id after it is fine, so the rule is about
+    /// the reference rather than about letta.
+    func testAUsableLettaReferenceIsAccepted() {
+        let letta = agentPane(agent: "letta")
+        XCTAssertNil(
+            refusal(
+                plan(
+                    panes: [
+                        Reply.PaneEntry(
+                            paneID: letta.paneID, workspaceID: letta.workspaceID,
+                            tabID: letta.tabID, agentStatus: letta.agentStatus,
+                            agentSession: Reply.Session(
+                                source: "herdr:letta", agent: "letta", kind: "id",
+                                value: "default:ag-7")),
+                        plainPane(),
+                    ])))
     }
 
     // MARK: - Layouts herdr will not rebuild
