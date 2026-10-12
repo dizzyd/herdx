@@ -185,6 +185,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
             self.switchTo(endpoint: index, session: session)
             self.focusTerminal()
         }
+        sidebar.onToggleMute = { [weak self] in self?.toggleSounds() }
+        sidebar.show(muted: !preferences.agentSounds)
 
         window = NSWindow(
             contentRect: NSRect(
@@ -596,6 +598,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
                         guard let self else { return }
                         self.preferences = updated
                         self.agentSounds.isEnabled = updated.agentSounds
+                        self.sidebar.show(muted: !updated.agentSounds)
                         self.stayAwake.mode = updated.stayAwake
                         self.gridView.apply(
                             font: updated.font, lineHeight: updated.lineHeight)
@@ -2019,6 +2022,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSSp
             MainActor.assumeIsolated {
                 self?.report(rejection, reply: reply, for: command)
             }
+        }
+    }
+
+    /// Flips the agent sounds from the speaker at the foot of the sidebar.
+    ///
+    /// The same preference as Settings ▸ Sounds, not a second one: a mute the
+    /// Settings switch did not know about would leave the two disagreeing
+    /// about whether the next question gets heard.
+    private func toggleSounds() {
+        preferences.agentSounds.toggle()
+        Preferences.current = preferences
+        agentSounds.isEnabled = preferences.agentSounds
+        sidebar.show(muted: !preferences.agentSounds)
+        // The Settings window reads the store when it is refreshed, not on
+        // every change, so one that is open has to be told its switch is
+        // stale.
+        if preferencesWindow?.window?.isVisible == true {
+            preferencesWindow?.refresh()
         }
     }
 

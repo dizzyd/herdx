@@ -336,6 +336,12 @@ final class SidebarView: NSView {
     private let modes = NSSegmentedControl()
     /// Raised when the arrangement is switched, so it can be remembered.
     var onArrangementChanged: ((Arrangement) -> Void)?
+    /// The speaker in the bottom corner. Not private, so a test can ask where
+    /// it ended up.
+    let mute = MuteButton()
+    /// Raised by the speaker. The app owns the preference, so it flips it and
+    /// then says what it became through `show(muted:)`.
+    var onToggleMute: (() -> Void)?
     /// What the rows were last built from, so they are not rebuilt needlessly.
     private var lastSignature: String?
     private var chrome = Chrome(theme: .dark)
@@ -385,9 +391,11 @@ final class SidebarView: NSView {
         document.translatesAutoresizingMaskIntoConstraints = false
         document.addSubview(stack)
         scroll.documentView = document
+        mute.onToggle = { [weak self] in self?.onToggleMute?() }
 
         addSubview(modes)
         addSubview(scroll)
+        addSubview(mute)
         NSLayoutConstraint.activate([
             // Centred in a band the height of the tab strip, so the switch and
             // the tabs sit on the same line by construction rather than by a
@@ -399,7 +407,14 @@ final class SidebarView: NSView {
             scroll.topAnchor.constraint(equalTo: topAnchor, constant: TabBarView.height),
             scroll.leadingAnchor.constraint(equalTo: leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
-            scroll.bottomAnchor.constraint(equalTo: bottomAnchor),
+            // The rows stop above the speaker rather than scrolling under it:
+            // a row passing behind a floating glyph puts its name through the
+            // glyph and its click underneath it.
+            scroll.bottomAnchor.constraint(equalTo: mute.topAnchor, constant: -2),
+            // The corner, in line with the machine rows and the switch above,
+            // which both start at 8.
+            mute.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            mute.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
             // The document is as wide as the view and as tall as its rows, so
             // the stack's own height is what there is to scroll through.
             document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
@@ -424,6 +439,12 @@ final class SidebarView: NSView {
         modes.selectedSegment = arrangement == .priority ? 1 : 0
     }
 
+    /// Reflects the sound preference in the speaker, without announcing it
+    /// back.
+    func show(muted: Bool) {
+        mute.isMuted = muted
+    }
+
     /// Sets the sidebar a shade back from the terminal, so the two halves of
     /// the window read as one surface rather than two apps.
     func apply(chrome: Chrome) {
@@ -433,6 +454,7 @@ final class SidebarView: NSView {
         // in, not for whatever is behind it — so on a dark sidebar under a
         // light system appearance the unselected segment was dark on dark.
         modes.appearance = NSAppearance(named: chrome.isDark ? .darkAqua : .aqua)
+        mute.apply(chrome: chrome)
         lastSignature = nil
     }
 

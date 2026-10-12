@@ -163,7 +163,9 @@ different colours will fight over it. Give both the same theme.
 
 An agent that needs you raises a time-sensitive notification, so it breaks
 through a Focus mode; one that merely finished does not. Sounds follow the same
-rule and stay quiet for a pane you are already watching.
+rule and stay quiet for a pane you are already watching. The small speaker at
+the foot of the sidebar mutes them; it is the same switch as Settings ▸ Sounds,
+just within reach.
 
 Workspaces that have been idle for hours can be **hibernated** — closed on the
 server, remembered here, and brought back with their layout when you click them.
