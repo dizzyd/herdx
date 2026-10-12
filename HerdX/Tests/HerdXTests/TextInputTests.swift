@@ -30,8 +30,8 @@ final class TextInputTests: XCTestCase {
     }
 
     func testTheViewIsATextInputClient() {
-        XCTAssertTrue(
-            view is NSTextInputClient,
+        XCTAssertNotNil(
+            view as NSTextInputClient?,
             "without this an input method has nothing to talk to")
     }
 

@@ -8,13 +8,13 @@ import XCTest
 final class HibernationRecoveryTests: XCTestCase {
     private var directory: URL!
 
-    override func setUpWithError() throws {
+    override func setUp() async throws {
         directory = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("herdx-recovery-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     }
 
-    override func tearDownWithError() throws {
+    override func tearDown() async throws {
         try? FileManager.default.removeItem(at: directory)
     }
 
