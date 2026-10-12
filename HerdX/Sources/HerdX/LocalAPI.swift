@@ -165,7 +165,7 @@ enum LocalAPI {
 
         configure(descriptor, timeout: timeout)
 
-        var outgoing = Array((json + "\n").utf8)
+        let outgoing = Array((json + "\n").utf8)
         var sent = 0
         while sent < outgoing.count {
             let wrote = outgoing.withUnsafeBytes { buffer in

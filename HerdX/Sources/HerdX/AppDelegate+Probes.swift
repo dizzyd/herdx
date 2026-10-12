@@ -436,7 +436,6 @@ extension AppDelegate {
             // photographed too.
             let sheetAction = environment["HERDX_CAPTURE_HELP"]
                 .flatMap { Keymap.Action(rawValue: $0) ?? .help }
-            let helpWanted = sheetAction != nil
             if settings { self.showPreferences(nil) }
             if let sheetAction, let session = self.session {
                 self.perform(sheetAction, session: session)
